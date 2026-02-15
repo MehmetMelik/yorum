@@ -151,7 +151,10 @@ impl Lexer {
                 return self.lex_number(start, start_line, start_col);
             }
 
-            '_' if !self.peek().map_or(false, |c| c.is_ascii_alphanumeric() || c == '_') => {
+            '_' if !self
+                .peek()
+                .map_or(false, |c| c.is_ascii_alphanumeric() || c == '_') =>
+            {
                 TokenKind::Underscore
             }
 
@@ -307,9 +310,7 @@ impl Lexer {
         }
 
         // Check for float
-        if self.peek() == Some('.')
-            && self.peek_next().map_or(false, |c| c.is_ascii_digit())
-        {
+        if self.peek() == Some('.') && self.peek_next().map_or(false, |c| c.is_ascii_digit()) {
             self.advance(); // consume '.'
             while !self.is_at_end() && self.peek().map_or(false, |c| c.is_ascii_digit()) {
                 self.advance();
@@ -427,10 +428,7 @@ mod tests {
         let tokens = lex(r#""hello\nworld""#);
         assert_eq!(
             tokens,
-            vec![
-                TokenKind::StringLit("hello\nworld".into()),
-                TokenKind::EOF,
-            ]
+            vec![TokenKind::StringLit("hello\nworld".into()), TokenKind::EOF,]
         );
     }
 

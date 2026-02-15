@@ -98,7 +98,7 @@ pub enum TokenKind {
     Percent,   // %
     Ampersand, // &
 
-    Pipe,      // |
+    Pipe, // |
 
     // ── Special ──────────────────────────────────────────────
     Underscore, // _

@@ -133,8 +133,7 @@ impl Monomorphizer {
                         if let Some(generic_fn) = self.generic_fns.get(name).cloned() {
                             let type_args = self.infer_type_args(&generic_fn, args);
                             if !type_args.is_empty() {
-                                self.fn_instantiations
-                                    .insert((name.clone(), type_args));
+                                self.fn_instantiations.insert((name.clone(), type_args));
                             }
                         }
                     }
@@ -271,12 +270,24 @@ impl Monomorphizer {
         for decl in &mut program.declarations {
             match decl {
                 Declaration::Function(f) if f.type_params.is_empty() => {
-                    rewrite_block(&mut f.body, &self.generic_fns, &self.generic_structs, &self.fn_instantiations, &self.struct_instantiations);
+                    rewrite_block(
+                        &mut f.body,
+                        &self.generic_fns,
+                        &self.generic_structs,
+                        &self.fn_instantiations,
+                        &self.struct_instantiations,
+                    );
                 }
                 Declaration::Impl(i) => {
                     for method in &mut i.methods {
                         if method.type_params.is_empty() {
-                            rewrite_block(&mut method.body, &self.generic_fns, &self.generic_structs, &self.fn_instantiations, &self.struct_instantiations);
+                            rewrite_block(
+                                &mut method.body,
+                                &self.generic_fns,
+                                &self.generic_structs,
+                                &self.fn_instantiations,
+                                &self.struct_instantiations,
+                            );
                         }
                     }
                 }
@@ -299,11 +310,19 @@ impl Monomorphizer {
         for decl in &mut program.declarations {
             match decl {
                 Declaration::Function(f) => {
-                    rewrite_types_in_block(&mut f.body, &self.generic_structs, &self.struct_instantiations);
+                    rewrite_types_in_block(
+                        &mut f.body,
+                        &self.generic_structs,
+                        &self.struct_instantiations,
+                    );
                 }
                 Declaration::Impl(i) => {
                     for method in &mut i.methods {
-                        rewrite_types_in_block(&mut method.body, &self.generic_structs, &self.struct_instantiations);
+                        rewrite_types_in_block(
+                            &mut method.body,
+                            &self.generic_structs,
+                            &self.struct_instantiations,
+                        );
                     }
                 }
                 _ => {}
@@ -386,7 +405,11 @@ fn substitute_fn_decl(f: &FnDecl, mangled_name: &str, subst: &HashMap<String, Ty
 
 fn substitute_block(block: &Block, subst: &HashMap<String, Type>) -> Block {
     Block {
-        stmts: block.stmts.iter().map(|s| substitute_stmt(s, subst)).collect(),
+        stmts: block
+            .stmts
+            .iter()
+            .map(|s| substitute_stmt(s, subst))
+            .collect(),
         span: block.span,
     }
 }
@@ -490,11 +513,15 @@ fn substitute_expr(expr: &Expr, subst: &HashMap<String, Type>) -> Expr {
             )
         }
         ExprKind::Closure(c) => ExprKind::Closure(ClosureExpr {
-            params: c.params.iter().map(|p| Param {
-                name: p.name.clone(),
-                ty: substitute_type(&p.ty, subst),
-                span: p.span,
-            }).collect(),
+            params: c
+                .params
+                .iter()
+                .map(|p| Param {
+                    name: p.name.clone(),
+                    ty: substitute_type(&p.ty, subst),
+                    span: p.span,
+                })
+                .collect(),
             return_type: substitute_type(&c.return_type, subst),
             body: substitute_block(&c.body, subst),
             span: c.span,
@@ -529,7 +556,13 @@ fn rewrite_stmt(
 ) {
     match stmt {
         Stmt::Let(s) => {
-            rewrite_expr(&mut s.value, generic_fns, generic_structs, fn_insts, struct_insts);
+            rewrite_expr(
+                &mut s.value,
+                generic_fns,
+                generic_structs,
+                fn_insts,
+                struct_insts,
+            );
             // Rewrite struct init name in value if it's a generic struct
             if let Type::Generic(name, args) = &s.ty {
                 if generic_structs.contains_key(name) {
@@ -545,19 +578,55 @@ fn rewrite_stmt(
             }
         }
         Stmt::Assign(s) => {
-            rewrite_expr(&mut s.target, generic_fns, generic_structs, fn_insts, struct_insts);
-            rewrite_expr(&mut s.value, generic_fns, generic_structs, fn_insts, struct_insts);
+            rewrite_expr(
+                &mut s.target,
+                generic_fns,
+                generic_structs,
+                fn_insts,
+                struct_insts,
+            );
+            rewrite_expr(
+                &mut s.value,
+                generic_fns,
+                generic_structs,
+                fn_insts,
+                struct_insts,
+            );
         }
         Stmt::Return(s) => {
-            rewrite_expr(&mut s.value, generic_fns, generic_structs, fn_insts, struct_insts);
+            rewrite_expr(
+                &mut s.value,
+                generic_fns,
+                generic_structs,
+                fn_insts,
+                struct_insts,
+            );
         }
         Stmt::If(s) => {
-            rewrite_expr(&mut s.condition, generic_fns, generic_structs, fn_insts, struct_insts);
-            rewrite_block(&mut s.then_block, generic_fns, generic_structs, fn_insts, struct_insts);
+            rewrite_expr(
+                &mut s.condition,
+                generic_fns,
+                generic_structs,
+                fn_insts,
+                struct_insts,
+            );
+            rewrite_block(
+                &mut s.then_block,
+                generic_fns,
+                generic_structs,
+                fn_insts,
+                struct_insts,
+            );
             if let Some(else_branch) = &mut s.else_branch {
                 match else_branch.as_mut() {
                     ElseBranch::ElseIf(elif) => {
-                        rewrite_stmt(&mut Stmt::If(elif.clone()), generic_fns, generic_structs, fn_insts, struct_insts);
+                        rewrite_stmt(
+                            &mut Stmt::If(elif.clone()),
+                            generic_fns,
+                            generic_structs,
+                            fn_insts,
+                            struct_insts,
+                        );
                     }
                     ElseBranch::Else(block) => {
                         rewrite_block(block, generic_fns, generic_structs, fn_insts, struct_insts);
@@ -566,17 +635,47 @@ fn rewrite_stmt(
             }
         }
         Stmt::While(s) => {
-            rewrite_expr(&mut s.condition, generic_fns, generic_structs, fn_insts, struct_insts);
-            rewrite_block(&mut s.body, generic_fns, generic_structs, fn_insts, struct_insts);
+            rewrite_expr(
+                &mut s.condition,
+                generic_fns,
+                generic_structs,
+                fn_insts,
+                struct_insts,
+            );
+            rewrite_block(
+                &mut s.body,
+                generic_fns,
+                generic_structs,
+                fn_insts,
+                struct_insts,
+            );
         }
         Stmt::Match(s) => {
-            rewrite_expr(&mut s.subject, generic_fns, generic_structs, fn_insts, struct_insts);
+            rewrite_expr(
+                &mut s.subject,
+                generic_fns,
+                generic_structs,
+                fn_insts,
+                struct_insts,
+            );
             for arm in &mut s.arms {
-                rewrite_block(&mut arm.body, generic_fns, generic_structs, fn_insts, struct_insts);
+                rewrite_block(
+                    &mut arm.body,
+                    generic_fns,
+                    generic_structs,
+                    fn_insts,
+                    struct_insts,
+                );
             }
         }
         Stmt::Expr(s) => {
-            rewrite_expr(&mut s.expr, generic_fns, generic_structs, fn_insts, struct_insts);
+            rewrite_expr(
+                &mut s.expr,
+                generic_fns,
+                generic_structs,
+                fn_insts,
+                struct_insts,
+            );
         }
     }
 }
@@ -614,7 +713,13 @@ fn rewrite_expr(
             rewrite_expr(rhs, generic_fns, _generic_structs, fn_insts, _struct_insts);
         }
         ExprKind::Unary(_, operand) => {
-            rewrite_expr(operand, generic_fns, _generic_structs, fn_insts, _struct_insts);
+            rewrite_expr(
+                operand,
+                generic_fns,
+                _generic_structs,
+                fn_insts,
+                _struct_insts,
+            );
         }
         ExprKind::FieldAccess(obj, _) => {
             rewrite_expr(obj, generic_fns, _generic_structs, fn_insts, _struct_insts);
@@ -631,11 +736,23 @@ fn rewrite_expr(
         }
         ExprKind::StructInit(_, fields) => {
             for f in fields {
-                rewrite_expr(&mut f.value, generic_fns, _generic_structs, fn_insts, _struct_insts);
+                rewrite_expr(
+                    &mut f.value,
+                    generic_fns,
+                    _generic_structs,
+                    fn_insts,
+                    _struct_insts,
+                );
             }
         }
         ExprKind::Closure(c) => {
-            rewrite_block(&mut c.body, generic_fns, _generic_structs, fn_insts, _struct_insts);
+            rewrite_block(
+                &mut c.body,
+                generic_fns,
+                _generic_structs,
+                fn_insts,
+                _struct_insts,
+            );
         }
         _ => {}
     }

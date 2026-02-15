@@ -108,10 +108,14 @@ impl TypeChecker {
             is_pure: false,
             type_params: Vec::new(),
         };
-        self.functions.insert("print_int".to_string(), builtin(vec![Type::Int]));
-        self.functions.insert("print_float".to_string(), builtin(vec![Type::Float]));
-        self.functions.insert("print_bool".to_string(), builtin(vec![Type::Bool]));
-        self.functions.insert("print_str".to_string(), builtin(vec![Type::Str]));
+        self.functions
+            .insert("print_int".to_string(), builtin(vec![Type::Int]));
+        self.functions
+            .insert("print_float".to_string(), builtin(vec![Type::Float]));
+        self.functions
+            .insert("print_bool".to_string(), builtin(vec![Type::Bool]));
+        self.functions
+            .insert("print_str".to_string(), builtin(vec![Type::Str]));
     }
 
     /// Type-check an entire program. Returns Ok(()) or collected errors.
@@ -165,7 +169,11 @@ impl TypeChecker {
 
     fn register_struct(&mut self, s: &StructDecl) {
         let info = StructInfo {
-            fields: s.fields.iter().map(|f| (f.name.clone(), f.ty.clone())).collect(),
+            fields: s
+                .fields
+                .iter()
+                .map(|f| (f.name.clone(), f.ty.clone()))
+                .collect(),
             type_params: s.type_params.iter().map(|tp| tp.name.clone()).collect(),
         };
         self.structs.insert(s.name.clone(), info);
@@ -202,7 +210,11 @@ impl TypeChecker {
                     .collect(),
                 ret: self.resolve_self_type(&method.return_type, &self_ty),
                 is_pure: method.is_pure,
-                type_params: method.type_params.iter().map(|tp| tp.name.clone()).collect(),
+                type_params: method
+                    .type_params
+                    .iter()
+                    .map(|tp| tp.name.clone())
+                    .collect(),
             };
             let self_param_ty = if let Some(p) = method.params.first() {
                 self.resolve_self_type(&p.ty, &self_ty)
@@ -251,7 +263,10 @@ impl TypeChecker {
             Type::Own(inner) => Type::Own(Box::new(self.resolve_self_type(inner, concrete))),
             Type::Array(inner) => Type::Array(Box::new(self.resolve_self_type(inner, concrete))),
             Type::Fn(params, ret) => Type::Fn(
-                params.iter().map(|p| self.resolve_self_type(p, concrete)).collect(),
+                params
+                    .iter()
+                    .map(|p| self.resolve_self_type(p, concrete))
+                    .collect(),
                 Box::new(self.resolve_self_type(ret, concrete)),
             ),
             other => other.clone(),
@@ -361,10 +376,7 @@ impl TypeChecker {
                     if let Some(info) = self.lookup(name) {
                         if !info.is_mut {
                             self.errors.push(TypeError {
-                                message: format!(
-                                    "cannot assign to immutable variable '{}'",
-                                    name
-                                ),
+                                message: format!("cannot assign to immutable variable '{}'", name),
                                 span: s.span,
                             });
                         }
@@ -404,10 +416,7 @@ impl TypeChecker {
                 if let Some(cond_ty) = self.infer_expr(&s.condition) {
                     if cond_ty != Type::Bool {
                         self.errors.push(TypeError {
-                            message: format!(
-                                "if condition must be 'bool', found '{}'",
-                                cond_ty
-                            ),
+                            message: format!("if condition must be 'bool', found '{}'", cond_ty),
                             span: s.condition.span,
                         });
                     }
@@ -434,10 +443,7 @@ impl TypeChecker {
                 if let Some(cond_ty) = self.infer_expr(&s.condition) {
                     if cond_ty != Type::Bool {
                         self.errors.push(TypeError {
-                            message: format!(
-                                "while condition must be 'bool', found '{}'",
-                                cond_ty
-                            ),
+                            message: format!("while condition must be 'bool', found '{}'", cond_ty),
                             span: s.condition.span,
                         });
                     }
@@ -758,7 +764,9 @@ impl TypeChecker {
                         self.errors.push(TypeError {
                             message: format!(
                                 "method '{}' expects {} arguments, found {}",
-                                method_name, expected_args, args.len()
+                                method_name,
+                                expected_args,
+                                args.len()
                             ),
                             span: expr.span,
                         });
@@ -819,7 +827,9 @@ impl TypeChecker {
                     if let Some((_, fty)) = info.fields.iter().find(|(n, _)| n == field) {
                         // If we have type args, substitute type params in the field type
                         if let Some(args) = type_args {
-                            let subst: HashMap<String, Type> = info.type_params.iter()
+                            let subst: HashMap<String, Type> = info
+                                .type_params
+                                .iter()
                                 .zip(args.iter())
                                 .map(|(p, a)| (p.clone(), a.clone()))
                                 .collect();
@@ -829,10 +839,7 @@ impl TypeChecker {
                         }
                     } else {
                         self.errors.push(TypeError {
-                            message: format!(
-                                "struct '{}' has no field '{}'",
-                                struct_name, field
-                            ),
+                            message: format!("struct '{}' has no field '{}'", struct_name, field),
                             span: expr.span,
                         });
                         None
@@ -943,13 +950,7 @@ impl TypeChecker {
         }
     }
 
-    fn check_binary_op(
-        &mut self,
-        op: BinOp,
-        lt: &Type,
-        rt: &Type,
-        span: Span,
-    ) -> Option<Type> {
+    fn check_binary_op(&mut self, op: BinOp, lt: &Type, rt: &Type, span: Span) -> Option<Type> {
         match op {
             BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
                 if lt != rt {
@@ -977,10 +978,7 @@ impl TypeChecker {
             BinOp::Eq | BinOp::NotEq => {
                 if lt != rt {
                     self.errors.push(TypeError {
-                        message: format!(
-                            "cannot compare '{}' and '{}' for equality",
-                            lt, rt
-                        ),
+                        message: format!("cannot compare '{}' and '{}' for equality", lt, rt),
                         span,
                     });
                     return None;
@@ -990,20 +988,14 @@ impl TypeChecker {
             BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq => {
                 if lt != rt {
                     self.errors.push(TypeError {
-                        message: format!(
-                            "cannot compare '{}' and '{}'",
-                            lt, rt
-                        ),
+                        message: format!("cannot compare '{}' and '{}'", lt, rt),
                         span,
                     });
                     return None;
                 }
                 if *lt != Type::Int && *lt != Type::Float {
                     self.errors.push(TypeError {
-                        message: format!(
-                            "comparison requires 'int' or 'float', found '{}'",
-                            lt
-                        ),
+                        message: format!("comparison requires 'int' or 'float', found '{}'", lt),
                         span,
                     });
                     return None;
@@ -1065,10 +1057,15 @@ impl TypeChecker {
             Type::Named(name) if bindings.contains_key(name) => bindings[name].clone(),
             Type::TypeVar(name) if bindings.contains_key(name) => bindings[name].clone(),
             Type::Ref(inner) => Type::Ref(Box::new(self.substitute_type_vars(inner, bindings))),
-            Type::MutRef(inner) => Type::MutRef(Box::new(self.substitute_type_vars(inner, bindings))),
+            Type::MutRef(inner) => {
+                Type::MutRef(Box::new(self.substitute_type_vars(inner, bindings)))
+            }
             Type::Array(inner) => Type::Array(Box::new(self.substitute_type_vars(inner, bindings))),
             Type::Fn(params, ret) => Type::Fn(
-                params.iter().map(|p| self.substitute_type_vars(p, bindings)).collect(),
+                params
+                    .iter()
+                    .map(|p| self.substitute_type_vars(p, bindings))
+                    .collect(),
                 Box::new(self.substitute_type_vars(ret, bindings)),
             ),
             other => other.clone(),
@@ -1087,7 +1084,9 @@ impl TypeChecker {
             Type::Ref(inner) | Type::MutRef(inner) | Type::Own(inner) => self.is_valid_type(inner),
             Type::SelfType => self.current_self_type.is_some(),
             Type::TypeVar(_) => true,
-            Type::Generic(name, _) => self.structs.contains_key(name) || self.enums.contains_key(name),
+            Type::Generic(name, _) => {
+                self.structs.contains_key(name) || self.enums.contains_key(name)
+            }
             Type::Fn(_, _) => true,
         }
     }

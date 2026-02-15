@@ -298,9 +298,7 @@ fn test_trait_missing_method() {
 
 #[test]
 fn test_trait_ast_json_roundtrip() {
-    let json = parse_to_json(
-        "trait Describable { fn describe(self: &Self) -> int; }\n",
-    );
+    let json = parse_to_json("trait Describable { fn describe(self: &Self) -> int; }\n");
     let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert!(parsed.is_object());
     assert!(json.contains("Trait"));

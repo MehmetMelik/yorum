@@ -111,9 +111,7 @@ impl Parser {
         };
 
         match self.peek_kind() {
-            TokenKind::Fn => Ok(Declaration::Function(
-                self.parse_fn_decl(is_pub, is_pure)?,
-            )),
+            TokenKind::Fn => Ok(Declaration::Function(self.parse_fn_decl(is_pub, is_pure)?)),
             TokenKind::Struct => {
                 if is_pure {
                     return Err(self.error("'pure' modifier is not valid on struct declarations"));
@@ -1110,7 +1108,11 @@ impl Parser {
         if self.check(kind) {
             Ok(self.advance())
         } else {
-            Err(self.error(&format!("expected '{}', found '{}'", kind, self.peek_kind())))
+            Err(self.error(&format!(
+                "expected '{}', found '{}'",
+                kind,
+                self.peek_kind()
+            )))
         }
     }
 
@@ -1243,9 +1245,8 @@ mod tests {
 
     #[test]
     fn test_contract_clauses() {
-        let prog = parse(
-            "fn abs(x: int) -> int requires x > -100 ensures result >= 0 { return x; }",
-        );
+        let prog =
+            parse("fn abs(x: int) -> int requires x > -100 ensures result >= 0 { return x; }");
         match &prog.declarations[0] {
             Declaration::Function(f) => {
                 assert_eq!(f.contracts.len(), 2);
@@ -1258,9 +1259,7 @@ mod tests {
 
     #[test]
     fn test_if_else() {
-        let prog = parse(
-            "fn f(x: int) -> int { if x > 0 { return x; } else { return 0 - x; } }",
-        );
+        let prog = parse("fn f(x: int) -> int { if x > 0 { return x; } else { return 0 - x; } }");
         match &prog.declarations[0] {
             Declaration::Function(f) => {
                 assert_eq!(f.body.stmts.len(), 1);

@@ -31,7 +31,7 @@ impl std::error::Error for CodegenError {}
 
 #[derive(Debug, Clone)]
 struct VarSlot {
-    ptr: String,    // LLVM alloca name (e.g., "%x.addr")
+    ptr: String,     // LLVM alloca name (e.g., "%x.addr")
     llvm_ty: String, // LLVM type string (e.g., "i64")
 }
 
@@ -115,21 +115,27 @@ impl Codegen {
         self.emit_builtin_helpers();
 
         // Register built-in function return types
-        self.fn_ret_types.insert("print_int".to_string(), Type::Unit);
-        self.fn_ret_types.insert("print_float".to_string(), Type::Unit);
-        self.fn_ret_types.insert("print_bool".to_string(), Type::Unit);
-        self.fn_ret_types.insert("print_str".to_string(), Type::Unit);
+        self.fn_ret_types
+            .insert("print_int".to_string(), Type::Unit);
+        self.fn_ret_types
+            .insert("print_float".to_string(), Type::Unit);
+        self.fn_ret_types
+            .insert("print_bool".to_string(), Type::Unit);
+        self.fn_ret_types
+            .insert("print_str".to_string(), Type::Unit);
 
         // Register function return types (including impl methods with mangled names)
         for decl in &program.declarations {
             match decl {
                 Declaration::Function(f) => {
-                    self.fn_ret_types.insert(f.name.clone(), f.return_type.clone());
+                    self.fn_ret_types
+                        .insert(f.name.clone(), f.return_type.clone());
                 }
                 Declaration::Impl(i) => {
                     for method in &i.methods {
                         let mangled = format!("{}_{}", i.target_type, method.name);
-                        self.fn_ret_types.insert(mangled, method.return_type.clone());
+                        self.fn_ret_types
+                            .insert(mangled, method.return_type.clone());
                     }
                 }
                 _ => {}
@@ -166,10 +172,7 @@ impl Codegen {
     // ── Preamble ─────────────────────────────────────────────
 
     fn emit_preamble(&mut self, program: &Program) {
-        let module_name = program
-            .module_name
-            .as_deref()
-            .unwrap_or("yorum_module");
+        let module_name = program.module_name.as_deref().unwrap_or("yorum_module");
         self.preamble.push_str(&format!(
             "; ModuleID = '{}'\n\
              source_filename = \"{}.yrm\"\n\n",
@@ -178,26 +181,19 @@ impl Codegen {
     }
 
     fn emit_builtin_decls(&mut self) {
-        self.globals
-            .push_str("; ── External declarations ──\n");
-        self.globals
-            .push_str("declare i32 @printf(ptr, ...)\n");
-        self.globals
-            .push_str("declare i32 @puts(ptr)\n\n");
+        self.globals.push_str("; ── External declarations ──\n");
+        self.globals.push_str("declare i32 @printf(ptr, ...)\n");
+        self.globals.push_str("declare i32 @puts(ptr)\n\n");
 
         // Format strings (%lld\n\0 = 6 bytes, %f\n\0 = 4 bytes)
-        self.globals.push_str(
-            "@.fmt.int = private unnamed_addr constant [6 x i8] c\"%lld\\0A\\00\"\n",
-        );
-        self.globals.push_str(
-            "@.fmt.float = private unnamed_addr constant [4 x i8] c\"%f\\0A\\00\"\n",
-        );
-        self.globals.push_str(
-            "@.fmt.true = private unnamed_addr constant [6 x i8] c\"true\\0A\\00\"\n",
-        );
-        self.globals.push_str(
-            "@.fmt.false = private unnamed_addr constant [7 x i8] c\"false\\0A\\00\"\n",
-        );
+        self.globals
+            .push_str("@.fmt.int = private unnamed_addr constant [6 x i8] c\"%lld\\0A\\00\"\n");
+        self.globals
+            .push_str("@.fmt.float = private unnamed_addr constant [4 x i8] c\"%f\\0A\\00\"\n");
+        self.globals
+            .push_str("@.fmt.true = private unnamed_addr constant [6 x i8] c\"true\\0A\\00\"\n");
+        self.globals
+            .push_str("@.fmt.false = private unnamed_addr constant [7 x i8] c\"false\\0A\\00\"\n");
         self.globals.push('\n');
     }
 
@@ -247,11 +243,8 @@ impl Codegen {
         for decl in &program.declarations {
             match decl {
                 Declaration::Struct(s) => {
-                    let field_types: Vec<String> = s
-                        .fields
-                        .iter()
-                        .map(|f| self.llvm_type(&f.ty))
-                        .collect();
+                    let field_types: Vec<String> =
+                        s.fields.iter().map(|f| self.llvm_type(&f.ty)).collect();
                     let llvm_ty = format!("{{ {} }}", field_types.join(", "));
                     self.struct_layouts.insert(
                         s.name.clone(),
@@ -300,12 +293,7 @@ impl Codegen {
                 let max_payload = layout
                     .variants
                     .iter()
-                    .map(|(_, fields)| {
-                        fields
-                            .iter()
-                            .map(|t| self.type_size(t))
-                            .sum::<usize>()
-                    })
+                    .map(|(_, fields)| fields.iter().map(|t| self.type_size(t)).sum::<usize>())
                     .max()
                     .unwrap_or(0);
                 let payload_bytes = if max_payload == 0 { 8 } else { max_payload };
@@ -357,7 +345,8 @@ impl Codegen {
 
             // Track fn-typed params for indirect calls
             if let Type::Fn(_, _) = &param.ty {
-                self.closure_var_types.insert(param.name.clone(), param.ty.clone());
+                self.closure_var_types
+                    .insert(param.name.clone(), param.ty.clone());
             }
         }
 
@@ -411,7 +400,9 @@ impl Codegen {
 
         self.body.push_str(&format!(
             "define {} @{}({}) {{\n",
-            ret_ty, mangled_name, params.join(", ")
+            ret_ty,
+            mangled_name,
+            params.join(", ")
         ));
         self.body.push_str("entry:\n");
 
@@ -564,11 +555,7 @@ impl Codegen {
         let merge_label = self.fresh_label("ifcont");
 
         let has_else = s.else_branch.is_some();
-        let target_else = if has_else {
-            &else_label
-        } else {
-            &merge_label
-        };
+        let target_else = if has_else { &else_label } else { &merge_label };
 
         self.emit_line(&format!(
             "br i1 {}, label %{}, label %{}",
@@ -666,10 +653,7 @@ impl Codegen {
             match &arm.pattern {
                 Pattern::Literal(Literal::Int(n), _) => {
                     let cmp = self.fresh_temp();
-                    self.emit_line(&format!(
-                        "{} = icmp eq i64 {}, {}",
-                        cmp, subject_val, n
-                    ));
+                    self.emit_line(&format!("{} = icmp eq i64 {}, {}", cmp, subject_val, n));
                     let next = if i + 1 < s.arms.len() {
                         format!("match.check.{}", i + 1)
                     } else {
@@ -691,10 +675,7 @@ impl Codegen {
                     // Extract tag and compare
                     let tag = self.variant_tag(vname)?;
                     let cmp = self.fresh_temp();
-                    self.emit_line(&format!(
-                        "{} = icmp eq i32 {}, {}",
-                        cmp, subject_val, tag
-                    ));
+                    self.emit_line(&format!("{} = icmp eq i32 {}, {}", cmp, subject_val, tag));
                     let next = if i + 1 < s.arms.len() {
                         format!("match.check.{}", i + 1)
                     } else {
@@ -731,10 +712,7 @@ impl Codegen {
                 let ty_str = "i64".to_string(); // default to i64 for now
                 let ptr = format!("%{}.match.addr", name);
                 self.emit_line(&format!("{} = alloca {}", ptr, ty_str));
-                self.emit_line(&format!(
-                    "store {} {}, ptr {}",
-                    ty_str, subject_val, ptr
-                ));
+                self.emit_line(&format!("store {} {}, ptr {}", ty_str, subject_val, ptr));
                 self.define_var(name, &ptr, &ty_str);
             }
 
@@ -906,11 +884,7 @@ impl Codegen {
                 let llvm_ret = self.llvm_type(&ret_ty);
 
                 if llvm_ret == "void" {
-                    self.emit_line(&format!(
-                        "call void @{}({})",
-                        mangled,
-                        arg_strs.join(", ")
-                    ));
+                    self.emit_line(&format!("call void @{}({})", mangled, arg_strs.join(", ")));
                     Ok("void".to_string())
                 } else {
                     let tmp = self.fresh_temp();
@@ -930,11 +904,13 @@ impl Codegen {
             }
 
             ExprKind::StructInit(name, fields) => {
-                let _layout = self.struct_layouts.get(name).cloned().ok_or_else(|| {
-                    CodegenError {
-                        message: format!("undefined struct '{}'", name),
-                    }
-                })?;
+                let _layout =
+                    self.struct_layouts
+                        .get(name)
+                        .cloned()
+                        .ok_or_else(|| CodegenError {
+                            message: format!("undefined struct '{}'", name),
+                        })?;
                 let ptr = self.fresh_temp();
                 self.emit_line(&format!("{} = alloca %{}", ptr, name));
 
@@ -983,7 +959,11 @@ impl Codegen {
                 // LLVM requires hex float format for exact representation
                 Ok(format!("{:.6e}", f))
             }
-            Literal::Bool(b) => Ok(if *b { "true".to_string() } else { "false".to_string() }),
+            Literal::Bool(b) => Ok(if *b {
+                "true".to_string()
+            } else {
+                "false".to_string()
+            }),
             Literal::String(s) => {
                 // Emit as a global constant
                 let id = self.string_counter;
@@ -1012,7 +992,10 @@ impl Codegen {
         let captures = self.find_captures(&closure.body, &closure.params);
 
         // Build env struct type
-        let env_field_types: Vec<String> = captures.iter().map(|(_, slot)| slot.llvm_ty.clone()).collect();
+        let env_field_types: Vec<String> = captures
+            .iter()
+            .map(|(_, slot)| slot.llvm_ty.clone())
+            .collect();
         let env_llvm_ty = if env_field_types.is_empty() {
             format!("{{ i8 }}") // dummy field for empty env
         } else {
@@ -1020,12 +1003,11 @@ impl Codegen {
         };
 
         // Add env type definition
-        self.type_defs.push_str(&format!("%{} = type {}\n", env_type_name, env_llvm_ty));
+        self.type_defs
+            .push_str(&format!("%{} = type {}\n", env_type_name, env_llvm_ty));
 
         // Emit the closure function (deferred)
-        self.emit_closure_function(
-            &closure_fn_name, &env_type_name, &captures, closure,
-        )?;
+        self.emit_closure_function(&closure_fn_name, &env_type_name, &captures, closure)?;
 
         // At the closure site: alloca env, fill captures
         let env_ptr = self.fresh_temp();
@@ -1098,7 +1080,9 @@ impl Codegen {
 
         self.body.push_str(&format!(
             "define {} @{}({}) {{\n",
-            ret_ty, closure_fn_name, params_str.join(", ")
+            ret_ty,
+            closure_fn_name,
+            params_str.join(", ")
         ));
         self.body.push_str("entry:\n");
 
@@ -1157,11 +1141,7 @@ impl Codegen {
         Ok(())
     }
 
-    fn emit_indirect_call(
-        &mut self,
-        callee: &Expr,
-        args: &[Expr],
-    ) -> Result<String, CodegenError> {
+    fn emit_indirect_call(&mut self, callee: &Expr, args: &[Expr]) -> Result<String, CodegenError> {
         // Emit the callee to get the closure pair pointer
         let closure_ptr = self.emit_expr(callee)?;
 
@@ -1203,17 +1183,16 @@ impl Codegen {
         };
 
         if ret_type == "void" {
-            self.emit_line(&format!(
-                "call void {}({})",
-                fn_ptr,
-                arg_strs.join(", ")
-            ));
+            self.emit_line(&format!("call void {}({})", fn_ptr, arg_strs.join(", ")));
             Ok("void".to_string())
         } else {
             let tmp = self.fresh_temp();
             self.emit_line(&format!(
                 "{} = call {} {}({})",
-                tmp, ret_type, fn_ptr, arg_strs.join(", ")
+                tmp,
+                ret_type,
+                fn_ptr,
+                arg_strs.join(", ")
             ));
             Ok(tmp)
         }
@@ -1408,8 +1387,14 @@ impl Codegen {
             ExprKind::Binary(lhs, op, _) => {
                 // Comparison operators always produce bool
                 match op {
-                    BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::Gt | BinOp::LtEq
-                    | BinOp::GtEq | BinOp::And | BinOp::Or => false,
+                    BinOp::Eq
+                    | BinOp::NotEq
+                    | BinOp::Lt
+                    | BinOp::Gt
+                    | BinOp::LtEq
+                    | BinOp::GtEq
+                    | BinOp::And
+                    | BinOp::Or => false,
                     _ => self.expr_is_float(lhs),
                 }
             }
@@ -1459,8 +1444,14 @@ impl Codegen {
                 }
             }
             ExprKind::Binary(_, op, _) => match op {
-                BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::Gt | BinOp::LtEq
-                | BinOp::GtEq | BinOp::And | BinOp::Or => "i1".to_string(),
+                BinOp::Eq
+                | BinOp::NotEq
+                | BinOp::Lt
+                | BinOp::Gt
+                | BinOp::LtEq
+                | BinOp::GtEq
+                | BinOp::And
+                | BinOp::Or => "i1".to_string(),
                 _ => {
                     if self.expr_is_float(expr) {
                         "double".to_string()
@@ -1530,11 +1521,12 @@ impl Codegen {
         struct_name: &str,
         field_name: &str,
     ) -> Result<(usize, Type), CodegenError> {
-        let layout = self.struct_layouts.get(struct_name).ok_or_else(|| {
-            CodegenError {
+        let layout = self
+            .struct_layouts
+            .get(struct_name)
+            .ok_or_else(|| CodegenError {
                 message: format!("undefined struct '{}'", struct_name),
-            }
-        })?;
+            })?;
         for (i, (fname, fty)) in layout.fields.iter().enumerate() {
             if fname == field_name {
                 return Ok((i, fty.clone()));

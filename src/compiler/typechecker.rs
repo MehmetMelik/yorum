@@ -108,20 +108,38 @@ impl TypeChecker {
     }
 
     fn register_builtins(&mut self) {
-        let builtin = |params: Vec<Type>| FnSig {
+        let builtin = |params: Vec<Type>, ret: Type| FnSig {
             params,
-            ret: Type::Unit,
+            ret,
             is_pure: false,
             type_params: Vec::new(),
         };
+        self.functions.insert(
+            "print_int".to_string(),
+            builtin(vec![Type::Int], Type::Unit),
+        );
+        self.functions.insert(
+            "print_float".to_string(),
+            builtin(vec![Type::Float], Type::Unit),
+        );
+        self.functions.insert(
+            "print_bool".to_string(),
+            builtin(vec![Type::Bool], Type::Unit),
+        );
+        self.functions.insert(
+            "print_str".to_string(),
+            builtin(vec![Type::Str], Type::Unit),
+        );
         self.functions
-            .insert("print_int".to_string(), builtin(vec![Type::Int]));
-        self.functions
-            .insert("print_float".to_string(), builtin(vec![Type::Float]));
-        self.functions
-            .insert("print_bool".to_string(), builtin(vec![Type::Bool]));
-        self.functions
-            .insert("print_str".to_string(), builtin(vec![Type::Str]));
+            .insert("str_len".to_string(), builtin(vec![Type::Str], Type::Int));
+        self.functions.insert(
+            "str_concat".to_string(),
+            builtin(vec![Type::Str, Type::Str], Type::Str),
+        );
+        self.functions.insert(
+            "str_eq".to_string(),
+            builtin(vec![Type::Str, Type::Str], Type::Bool),
+        );
     }
 
     /// Type-check an entire program. Returns Ok(()) or collected errors.
@@ -388,6 +406,22 @@ impl TypeChecker {
                         }
                     }
                 }
+                // Check mutability for index assignment: arr[i] = val
+                if let ExprKind::Index(arr_expr, _) = &s.target.kind {
+                    if let ExprKind::Ident(name) = &arr_expr.kind {
+                        if let Some(info) = self.lookup(name) {
+                            if !info.is_mut {
+                                self.errors.push(TypeError {
+                                    message: format!(
+                                        "cannot assign to index of immutable variable '{}'",
+                                        name
+                                    ),
+                                    span: s.span,
+                                });
+                            }
+                        }
+                    }
+                }
 
                 let target_ty = self.infer_expr(&s.target);
                 let value_ty = self.infer_expr(&s.value);
@@ -459,11 +493,27 @@ impl TypeChecker {
                 self.pop_scope();
             }
 
+            Stmt::For(s) => {
+                if let Some(iter_ty) = self.infer_expr(&s.iterable) {
+                    if let Type::Array(inner) = iter_ty {
+                        self.push_scope();
+                        self.define(&s.var_name, *inner, false);
+                        self.check_block(&s.body);
+                        self.pop_scope();
+                    } else {
+                        self.errors.push(TypeError {
+                            message: format!("for loop requires an array, found '{}'", iter_ty),
+                            span: s.iterable.span,
+                        });
+                    }
+                }
+            }
+
             Stmt::Match(s) => {
-                let _subject_ty = self.infer_expr(&s.subject);
+                let subject_ty = self.infer_expr(&s.subject);
                 for arm in &s.arms {
                     self.push_scope();
-                    self.check_pattern(&arm.pattern);
+                    self.check_pattern(&arm.pattern, &subject_ty);
                     self.check_block(&arm.body);
                     self.pop_scope();
                 }
@@ -475,12 +525,21 @@ impl TypeChecker {
         }
     }
 
-    fn check_pattern(&mut self, pattern: &Pattern) {
+    fn check_pattern(&mut self, pattern: &Pattern, subject_ty: &Option<Type>) {
         match pattern {
             Pattern::Wildcard(_) => {}
             Pattern::Binding(name, _) => {
-                // Bind as unknown type for now — full inference would require the match subject type
-                self.define(name, Type::Int, false);
+                // If the subject is an enum and the binding name matches a variant, don't bind
+                if let Some(Type::Named(ref enum_name)) = subject_ty {
+                    if let Some(info) = self.enums.get(enum_name) {
+                        if info.variants.iter().any(|(vn, _)| vn == name) {
+                            return; // It's a no-data variant match, not a binding
+                        }
+                    }
+                }
+                // Bind with the subject type if known, otherwise default to Int
+                let ty = subject_ty.clone().unwrap_or(Type::Int);
+                self.define(name, ty, false);
             }
             Pattern::Literal(_, _) => {}
             Pattern::Variant(name, sub_patterns, span) => {
@@ -584,6 +643,31 @@ impl TypeChecker {
 
             ExprKind::Call(callee, args) => {
                 if let ExprKind::Ident(name) = &callee.kind {
+                    // Built-in len() for arrays
+                    if name == "len" {
+                        if args.len() != 1 {
+                            self.errors.push(TypeError {
+                                message: format!("'len' expects 1 argument, found {}", args.len()),
+                                span: expr.span,
+                            });
+                            return None;
+                        }
+                        if let Some(arg_ty) = self.infer_expr(&args[0]) {
+                            if matches!(arg_ty, Type::Array(_)) {
+                                return Some(Type::Int);
+                            } else {
+                                self.errors.push(TypeError {
+                                    message: format!(
+                                        "'len' requires an array argument, found '{}'",
+                                        arg_ty
+                                    ),
+                                    span: args[0].span,
+                                });
+                                return None;
+                            }
+                        }
+                        return None;
+                    }
                     if let Some(sig) = self.functions.get(name).cloned() {
                         if args.len() != sig.params.len() {
                             self.errors.push(TypeError {
@@ -898,6 +982,31 @@ impl TypeChecker {
 
                 let param_types: Vec<Type> = closure.params.iter().map(|p| p.ty.clone()).collect();
                 Some(Type::Fn(param_types, Box::new(closure.return_type.clone())))
+            }
+
+            ExprKind::ArrayLit(elements) => {
+                if elements.is_empty() {
+                    self.errors.push(TypeError {
+                        message: "cannot infer type of empty array literal".to_string(),
+                        span: expr.span,
+                    });
+                    return None;
+                }
+                let first_ty = self.infer_expr(&elements[0])?;
+                for (i, elem) in elements.iter().enumerate().skip(1) {
+                    if let Some(elem_ty) = self.infer_expr(elem) {
+                        if elem_ty != first_ty {
+                            self.errors.push(TypeError {
+                                message: format!(
+                                    "array element {} has type '{}', expected '{}'",
+                                    i, elem_ty, first_ty
+                                ),
+                                span: elem.span,
+                            });
+                        }
+                    }
+                }
+                Some(Type::Array(Box::new(first_ty)))
             }
 
             ExprKind::StructInit(name, fields) => {

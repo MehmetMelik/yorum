@@ -486,3 +486,235 @@ fn test_closure_ast_json_roundtrip() {
     assert!(parsed.is_object());
     assert!(json.contains("Closure"));
 }
+
+// ═══════════════════════════════════════════════════════════════
+//  Array tests
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn test_array_literal_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let nums: [int] = [1, 2, 3];\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call ptr @malloc"));
+    assert!(ir.contains("store i64 1"));
+    assert!(ir.contains("store i64 3")); // length
+}
+
+#[test]
+fn test_array_index_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let nums: [int] = [10, 20, 30];\n\
+         \x20   let x: int = nums[0];\n\
+         \x20   print_int(x);\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call void @__yorum_bounds_check"));
+    assert!(ir.contains("getelementptr i64"));
+}
+
+#[test]
+fn test_array_len_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let nums: [int] = [1, 2, 3];\n\
+         \x20   let n: int = len(nums);\n\
+         \x20   print_int(n);\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("load i64")); // loading length
+}
+
+#[test]
+fn test_array_index_assignment() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let mut arr: [int] = [10, 20];\n\
+         \x20   arr[1] = 99;\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call void @__yorum_bounds_check"));
+    assert!(ir.contains("store i64"));
+}
+
+#[test]
+fn test_array_typecheck_element_mismatch() {
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20   let nums: [int] = [1, true, 3];\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  For loop tests
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn test_for_loop_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let nums: [int] = [1, 2, 3];\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for x in nums {\n\
+         \x20       sum = sum + x;\n\
+         \x20   }\n\
+         \x20   print_int(sum);\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("for.cond"));
+    assert!(ir.contains("for.body"));
+    assert!(ir.contains("for.end"));
+}
+
+#[test]
+fn test_for_loop_typecheck() {
+    parse_and_check(
+        "fn main() -> int {\n\
+         \x20   let nums: [int] = [1, 2, 3];\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for x in nums {\n\
+         \x20       sum = sum + x;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+}
+
+#[test]
+fn test_for_loop_non_array_rejected() {
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20   let x: int = 5;\n\
+         \x20   for i in x {\n\
+         \x20       print_int(i);\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_for_loop_ast_json() {
+    let json = parse_to_json(
+        "fn main() -> int {\n\
+         \x20   let nums: [int] = [1, 2, 3];\n\
+         \x20   for x in nums { print_int(x); }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(json.contains("For"));
+    assert!(json.contains("var_name"));
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  String operation tests
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn test_str_len_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let n: int = str_len(\"hello\");\n\
+         \x20   print_int(n);\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call i64 @str_len"));
+}
+
+#[test]
+fn test_str_concat_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let s: string = str_concat(\"hello\", \" world\");\n\
+         \x20   print_str(s);\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call ptr @str_concat"));
+}
+
+#[test]
+fn test_str_eq_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let eq: bool = str_eq(\"abc\", \"abc\");\n\
+         \x20   print_bool(eq);\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call i1 @str_eq"));
+}
+
+#[test]
+fn test_str_typecheck() {
+    parse_and_check(
+        "fn main() -> int {\n\
+         \x20   let n: int = str_len(\"hello\");\n\
+         \x20   let s: string = str_concat(\"a\", \"b\");\n\
+         \x20   let eq: bool = str_eq(\"x\", \"y\");\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  Nested pattern matching tests
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn test_enum_variant_constructor_compiles() {
+    let ir = compile(
+        "enum Option { Some(int), None }\n\
+         fn main() -> int {\n\
+         \x20   let opt: Option = Some(42);\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("getelementptr %Option"));
+    assert!(ir.contains("store i32")); // tag
+}
+
+#[test]
+fn test_enum_match_with_data() {
+    let ir = compile(
+        "enum Option { Some(int), None }\n\
+         fn get_or(opt: Option, default_val: int) -> int {\n\
+         \x20   match opt {\n\
+         \x20       Some(val) => { return val; }\n\
+         \x20       None => { return default_val; }\n\
+         \x20   }\n\
+         }\n\
+         fn main() -> int {\n\
+         \x20   let opt: Option = Some(42);\n\
+         \x20   return get_or(opt, 0);\n\
+         }\n",
+    );
+    assert!(ir.contains("define i64 @get_or"));
+    assert!(ir.contains("icmp eq i32")); // tag comparison
+}
+
+#[test]
+fn test_enum_match_typecheck() {
+    parse_and_check(
+        "enum Option { Some(int), None }\n\
+         fn get_or(opt: Option, default_val: int) -> int {\n\
+         \x20   match opt {\n\
+         \x20       Some(val) => { return val; }\n\
+         \x20       None => { return default_val; }\n\
+         \x20   }\n\
+         }\n",
+    );
+}

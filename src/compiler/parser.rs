@@ -570,6 +570,7 @@ impl Parser {
             TokenKind::Return => self.parse_return_stmt(),
             TokenKind::If => self.parse_if_stmt(),
             TokenKind::While => self.parse_while_stmt(),
+            TokenKind::For => self.parse_for_stmt(),
             TokenKind::Match => self.parse_match_stmt(),
             _ => self.parse_assign_or_expr_stmt(),
         }
@@ -660,6 +661,22 @@ impl Parser {
 
         Ok(Stmt::While(WhileStmt {
             condition,
+            body,
+            span: start.merge(self.prev_span()),
+        }))
+    }
+
+    fn parse_for_stmt(&mut self) -> Result<Stmt, ParseError> {
+        let start = self.current_span();
+        self.expect(&TokenKind::For)?;
+        let var_name = self.expect_ident()?;
+        self.expect(&TokenKind::In)?;
+        let iterable = self.parse_expr()?;
+        let body = self.parse_block()?;
+
+        Ok(Stmt::For(ForStmt {
+            var_name,
+            iterable,
             body,
             span: start.merge(self.prev_span()),
         }))
@@ -978,6 +995,27 @@ impl Parser {
                         span: start,
                     })
                 }
+            }
+            TokenKind::LBracket => {
+                // Array literal: [expr, expr, ...]
+                self.advance();
+                let mut elements = Vec::new();
+                if !self.check(&TokenKind::RBracket) {
+                    elements.push(self.parse_expr()?);
+                    while self.check(&TokenKind::Comma) {
+                        self.advance();
+                        if self.check(&TokenKind::RBracket) {
+                            break;
+                        }
+                        elements.push(self.parse_expr()?);
+                    }
+                }
+                self.expect(&TokenKind::RBracket)?;
+                let span = start.merge(self.prev_span());
+                Ok(Expr {
+                    kind: ExprKind::ArrayLit(elements),
+                    span,
+                })
             }
             TokenKind::Pipe => self.parse_closure_expr(),
             TokenKind::LParen => {

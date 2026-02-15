@@ -112,6 +112,10 @@ impl Monomorphizer {
                 self.collect_from_expr(&s.condition);
                 self.collect_from_block(&s.body);
             }
+            Stmt::For(s) => {
+                self.collect_from_expr(&s.iterable);
+                self.collect_from_block(&s.body);
+            }
             Stmt::Match(s) => {
                 self.collect_from_expr(&s.subject);
                 for arm in &s.arms {
@@ -170,6 +174,11 @@ impl Monomorphizer {
                 }
                 for fi in fields {
                     self.collect_from_expr(&fi.value);
+                }
+            }
+            ExprKind::ArrayLit(elements) => {
+                for elem in elements {
+                    self.collect_from_expr(elem);
                 }
             }
             ExprKind::Closure(c) => {
@@ -438,6 +447,12 @@ fn substitute_stmt(stmt: &Stmt, subst: &HashMap<String, Type>) -> Stmt {
             body: substitute_block(&s.body, subst),
             span: s.span,
         }),
+        Stmt::For(s) => Stmt::For(ForStmt {
+            var_name: s.var_name.clone(),
+            iterable: substitute_expr(&s.iterable, subst),
+            body: substitute_block(&s.body, subst),
+            span: s.span,
+        }),
         Stmt::Match(s) => Stmt::Match(MatchStmt {
             subject: substitute_expr(&s.subject, subst),
             arms: s
@@ -511,6 +526,9 @@ fn substitute_expr(expr: &Expr, subst: &HashMap<String, Type>) -> Expr {
                     })
                     .collect(),
             )
+        }
+        ExprKind::ArrayLit(elements) => {
+            ExprKind::ArrayLit(elements.iter().map(|e| substitute_expr(e, subst)).collect())
         }
         ExprKind::Closure(c) => ExprKind::Closure(ClosureExpr {
             params: c
@@ -650,6 +668,22 @@ fn rewrite_stmt(
                 struct_insts,
             );
         }
+        Stmt::For(s) => {
+            rewrite_expr(
+                &mut s.iterable,
+                generic_fns,
+                generic_structs,
+                fn_insts,
+                struct_insts,
+            );
+            rewrite_block(
+                &mut s.body,
+                generic_fns,
+                generic_structs,
+                fn_insts,
+                struct_insts,
+            );
+        }
         Stmt::Match(s) => {
             rewrite_expr(
                 &mut s.subject,
@@ -743,6 +777,11 @@ fn rewrite_expr(
                     fn_insts,
                     _struct_insts,
                 );
+            }
+        }
+        ExprKind::ArrayLit(elements) => {
+            for elem in elements {
+                rewrite_expr(elem, generic_fns, _generic_structs, fn_insts, _struct_insts);
             }
         }
         ExprKind::Closure(c) => {

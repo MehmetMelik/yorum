@@ -79,6 +79,9 @@ pub struct Codegen {
     deferred_fns: Vec<String>,
     closure_var_types: HashMap<String, Type>,
 
+    // Array support: tracks the LLVM element type for each array variable
+    array_elem_types: HashMap<String, String>,
+
     // State within a function
     current_fn_ret_ty: Option<String>,
     block_terminated: bool,
@@ -107,6 +110,7 @@ impl Codegen {
             fn_ret_types: HashMap::new(),
             deferred_fns: Vec::new(),
             closure_var_types: HashMap::new(),
+            array_elem_types: HashMap::new(),
             current_fn_ret_ty: None,
             block_terminated: false,
         }
@@ -129,6 +133,10 @@ impl Codegen {
             .insert("print_bool".to_string(), Type::Unit);
         self.fn_ret_types
             .insert("print_str".to_string(), Type::Unit);
+        self.fn_ret_types.insert("str_len".to_string(), Type::Int);
+        self.fn_ret_types
+            .insert("str_concat".to_string(), Type::Str);
+        self.fn_ret_types.insert("str_eq".to_string(), Type::Bool);
 
         // Register function return types (including impl methods with mangled names)
         for decl in &program.declarations {
@@ -189,7 +197,14 @@ impl Codegen {
     fn emit_builtin_decls(&mut self) {
         self.globals.push_str("; ── External declarations ──\n");
         self.globals.push_str("declare i32 @printf(ptr, ...)\n");
-        self.globals.push_str("declare i32 @puts(ptr)\n\n");
+        self.globals.push_str("declare i32 @puts(ptr)\n");
+        self.globals.push_str("declare ptr @malloc(i64)\n");
+        self.globals.push_str("declare void @free(ptr)\n");
+        self.globals.push_str("declare void @abort()\n");
+        self.globals.push_str("declare i64 @strlen(ptr)\n");
+        self.globals.push_str("declare ptr @strcpy(ptr, ptr)\n");
+        self.globals.push_str("declare ptr @strcat(ptr, ptr)\n");
+        self.globals.push_str("declare i32 @strcmp(ptr, ptr)\n\n");
 
         // Format strings (%lld\n\0 = 6 bytes, %f\n\0 = 4 bytes)
         self.globals
@@ -200,6 +215,9 @@ impl Codegen {
             .push_str("@.fmt.true = private unnamed_addr constant [6 x i8] c\"true\\0A\\00\"\n");
         self.globals
             .push_str("@.fmt.false = private unnamed_addr constant [7 x i8] c\"false\\0A\\00\"\n");
+        self.globals.push_str(
+            "@.fmt.bounds = private unnamed_addr constant [40 x i8] c\"array index out of bounds: %lld >= %lld\\00\"\n",
+        );
         self.globals.push('\n');
     }
 
@@ -239,6 +257,54 @@ impl Codegen {
              entry:\n\
              \x20 call i32 @puts(ptr %s)\n\
              \x20 ret void\n\
+             }\n\n",
+        );
+        // __yorum_bounds_check — aborts on out-of-bounds access
+        self.body.push_str(
+            "define void @__yorum_bounds_check(i64 %idx, i64 %len) {\n\
+             entry:\n\
+             \x20 %neg = icmp slt i64 %idx, 0\n\
+             \x20 br i1 %neg, label %fail, label %check_upper\n\
+             check_upper:\n\
+             \x20 %oob = icmp sge i64 %idx, %len\n\
+             \x20 br i1 %oob, label %fail, label %ok\n\
+             fail:\n\
+             \x20 call i32 (ptr, ...) @printf(ptr @.fmt.bounds, i64 %idx, i64 %len)\n\
+             \x20 call void @abort()\n\
+             \x20 unreachable\n\
+             ok:\n\
+             \x20 ret void\n\
+             }\n\n",
+        );
+        // str_len — returns length of a string
+        self.body.push_str(
+            "define i64 @str_len(ptr %s) {\n\
+             entry:\n\
+             \x20 %len = call i64 @strlen(ptr %s)\n\
+             \x20 ret i64 %len\n\
+             }\n\n",
+        );
+        // str_concat — concatenates two strings into a new heap-allocated string
+        self.body.push_str(
+            "define ptr @str_concat(ptr %a, ptr %b) {\n\
+             entry:\n\
+             \x20 %la = call i64 @strlen(ptr %a)\n\
+             \x20 %lb = call i64 @strlen(ptr %b)\n\
+             \x20 %sum = add i64 %la, %lb\n\
+             \x20 %total = add i64 %sum, 1\n\
+             \x20 %buf = call ptr @malloc(i64 %total)\n\
+             \x20 call ptr @strcpy(ptr %buf, ptr %a)\n\
+             \x20 call ptr @strcat(ptr %buf, ptr %b)\n\
+             \x20 ret ptr %buf\n\
+             }\n\n",
+        );
+        // str_eq — compares two strings for equality
+        self.body.push_str(
+            "define i1 @str_eq(ptr %a, ptr %b) {\n\
+             entry:\n\
+             \x20 %cmp = call i32 @strcmp(ptr %a, ptr %b)\n\
+             \x20 %eq = icmp eq i32 %cmp, 0\n\
+             \x20 ret i1 %eq\n\
              }\n\n",
         );
     }
@@ -343,6 +409,14 @@ impl Codegen {
 
         // Alloca for each parameter
         for param in &f.params {
+            // Array params are passed as ptr to { ptr, i64 } — use directly
+            if let Type::Array(ref inner) = param.ty {
+                let elem_llvm_ty = self.llvm_type(inner);
+                self.define_var(&param.name, &format!("%{}", param.name), "{ ptr, i64 }");
+                self.array_elem_types
+                    .insert(param.name.clone(), elem_llvm_ty);
+                continue;
+            }
             let ty = self.llvm_type(&param.ty);
             let ptr = format!("%{}.addr", param.name);
             self.emit_line(&format!("{} = alloca {}", ptr, ty));
@@ -472,6 +546,7 @@ impl Codegen {
             Stmt::Return(s) => self.emit_return(s),
             Stmt::If(s) => self.emit_if(s),
             Stmt::While(s) => self.emit_while(s),
+            Stmt::For(s) => self.emit_for(s),
             Stmt::Match(s) => self.emit_match(s),
             Stmt::Expr(s) => {
                 self.emit_expr(&s.expr)?;
@@ -492,6 +567,22 @@ impl Codegen {
                 self.define_var(&s.name, &val_ptr, &ty);
                 return Ok(());
             }
+            // Enum-typed let: reuse alloca from constructor
+            if self.enum_layouts.contains_key(name) {
+                let val_ptr = self.emit_expr(&s.value)?;
+                self.define_var(&s.name, &val_ptr, &ty);
+                return Ok(());
+            }
+        }
+
+        // For array-typed variables, ArrayLit creates a { ptr, i64 } alloca.
+        // Reuse that alloca directly.
+        if let Type::Array(ref inner) = s.ty {
+            let elem_llvm_ty = self.llvm_type(inner);
+            let val_ptr = self.emit_expr(&s.value)?;
+            self.define_var(&s.name, &val_ptr, "{ ptr, i64 }");
+            self.array_elem_types.insert(s.name.clone(), elem_llvm_ty);
+            return Ok(());
         }
 
         // Track fn-typed variables for indirect calls
@@ -534,6 +625,55 @@ impl Codegen {
                 ));
                 let val = self.emit_expr(&s.value)?;
                 self.emit_line(&format!("store {} {}, ptr {}", fty, val, gep));
+                Ok(())
+            }
+            ExprKind::Index(arr_expr, idx_expr) => {
+                // arr[idx] = value
+                let arr_name = if let ExprKind::Ident(name) = &arr_expr.kind {
+                    name.clone()
+                } else {
+                    return Err(CodegenError {
+                        message: "index assignment target must be a variable".to_string(),
+                    });
+                };
+                let elem_ty = self
+                    .array_elem_types
+                    .get(&arr_name)
+                    .cloned()
+                    .unwrap_or_else(|| "i64".to_string());
+                let arr_ptr = self.emit_expr_ptr(arr_expr)?;
+
+                // Load data pointer from { ptr, i64 }
+                let data_gep = self.fresh_temp();
+                self.emit_line(&format!(
+                    "{} = getelementptr {{ ptr, i64 }}, ptr {}, i32 0, i32 0",
+                    data_gep, arr_ptr
+                ));
+                let data_ptr = self.fresh_temp();
+                self.emit_line(&format!("{} = load ptr, ptr {}", data_ptr, data_gep));
+
+                // Load length for bounds check
+                let len_gep = self.fresh_temp();
+                self.emit_line(&format!(
+                    "{} = getelementptr {{ ptr, i64 }}, ptr {}, i32 0, i32 1",
+                    len_gep, arr_ptr
+                ));
+                let len_val = self.fresh_temp();
+                self.emit_line(&format!("{} = load i64, ptr {}", len_val, len_gep));
+
+                let idx_val = self.emit_expr(idx_expr)?;
+                self.emit_line(&format!(
+                    "call void @__yorum_bounds_check(i64 {}, i64 {})",
+                    idx_val, len_val
+                ));
+
+                let elem_gep = self.fresh_temp();
+                self.emit_line(&format!(
+                    "{} = getelementptr {}, ptr {}, i64 {}",
+                    elem_gep, elem_ty, data_ptr, idx_val
+                ));
+                let val = self.emit_expr(&s.value)?;
+                self.emit_line(&format!("store {} {}, ptr {}", elem_ty, val, elem_gep));
                 Ok(())
             }
             _ => Err(CodegenError {
@@ -642,12 +782,133 @@ impl Codegen {
         Ok(())
     }
 
+    fn emit_for(&mut self, s: &ForStmt) -> Result<(), CodegenError> {
+        // Evaluate the iterable (array fat pointer)
+        let arr_val = self.emit_expr(&s.iterable)?;
+
+        // Determine the array variable name to look up elem type
+        let elem_ty = if let ExprKind::Ident(name) = &s.iterable.kind {
+            self.array_elem_types
+                .get(name)
+                .cloned()
+                .unwrap_or_else(|| "i64".to_string())
+        } else {
+            "i64".to_string()
+        };
+
+        // Load data ptr and length from { ptr, i64 }
+        let data_gep = self.fresh_temp();
+        self.emit_line(&format!(
+            "{} = getelementptr {{ ptr, i64 }}, ptr {}, i32 0, i32 0",
+            data_gep, arr_val
+        ));
+        let data_ptr = self.fresh_temp();
+        self.emit_line(&format!("{} = load ptr, ptr {}", data_ptr, data_gep));
+
+        let len_gep = self.fresh_temp();
+        self.emit_line(&format!(
+            "{} = getelementptr {{ ptr, i64 }}, ptr {}, i32 0, i32 1",
+            len_gep, arr_val
+        ));
+        let len_val = self.fresh_temp();
+        self.emit_line(&format!("{} = load i64, ptr {}", len_val, len_gep));
+
+        // Alloca for index counter
+        let idx_ptr = self.fresh_temp();
+        self.emit_line(&format!("{} = alloca i64", idx_ptr));
+        self.emit_line(&format!("store i64 0, ptr {}", idx_ptr));
+
+        // Alloca for loop variable
+        let var_ptr = format!("%{}.addr", s.var_name);
+        self.emit_line(&format!("{} = alloca {}", var_ptr, elem_ty));
+
+        let cond_label = self.fresh_label("for.cond");
+        let body_label = self.fresh_label("for.body");
+        let end_label = self.fresh_label("for.end");
+
+        self.emit_line(&format!("br label %{}", cond_label));
+
+        // Condition: idx < len
+        self.emit_label(&cond_label);
+        self.block_terminated = false;
+        let cur_idx = self.fresh_temp();
+        self.emit_line(&format!("{} = load i64, ptr {}", cur_idx, idx_ptr));
+        let cmp = self.fresh_temp();
+        self.emit_line(&format!("{} = icmp slt i64 {}, {}", cmp, cur_idx, len_val));
+        self.emit_line(&format!(
+            "br i1 {}, label %{}, label %{}",
+            cmp, body_label, end_label
+        ));
+
+        // Body
+        self.emit_label(&body_label);
+        self.block_terminated = false;
+
+        self.push_scope();
+
+        // Load element at current index into loop variable
+        let elem_gep = self.fresh_temp();
+        self.emit_line(&format!(
+            "{} = getelementptr {}, ptr {}, i64 {}",
+            elem_gep, elem_ty, data_ptr, cur_idx
+        ));
+        let elem_val = self.fresh_temp();
+        self.emit_line(&format!(
+            "{} = load {}, ptr {}",
+            elem_val, elem_ty, elem_gep
+        ));
+        self.emit_line(&format!("store {} {}, ptr {}", elem_ty, elem_val, var_ptr));
+
+        self.define_var(&s.var_name, &var_ptr, &elem_ty);
+
+        self.emit_block(&s.body)?;
+
+        if !self.block_terminated {
+            // Increment index
+            let next_idx_tmp = self.fresh_temp();
+            let cur_idx2 = self.fresh_temp();
+            self.emit_line(&format!("{} = load i64, ptr {}", cur_idx2, idx_ptr));
+            self.emit_line(&format!("{} = add i64 {}, 1", next_idx_tmp, cur_idx2));
+            self.emit_line(&format!("store i64 {}, ptr {}", next_idx_tmp, idx_ptr));
+            self.emit_line(&format!("br label %{}", cond_label));
+        }
+
+        self.pop_scope();
+
+        self.emit_label(&end_label);
+        self.block_terminated = false;
+        Ok(())
+    }
+
     fn emit_match(&mut self, s: &MatchStmt) -> Result<(), CodegenError> {
+        // Determine if the subject is an enum type
+        let subject_enum_name = self.expr_enum_name(&s.subject);
+        let is_enum = subject_enum_name.is_some();
+
         let subject_val = self.emit_expr(&s.subject)?;
         let merge_label = self.fresh_label("match.end");
 
-        // For enums with tag: extract the tag
-        // For int literals: compare directly
+        // For enums: extract tag from alloca via GEP
+        let tag_val = if is_enum {
+            let tag_gep = self.fresh_temp();
+            let enum_name = subject_enum_name.as_ref().unwrap();
+            self.emit_line(&format!(
+                "{} = getelementptr %{}, ptr {}, i32 0, i32 0",
+                tag_gep, enum_name, subject_val
+            ));
+            let tag = self.fresh_temp();
+            self.emit_line(&format!("{} = load i32, ptr {}", tag, tag_gep));
+            Some(tag)
+        } else {
+            None
+        };
+
+        let compare_val = if let Some(ref tv) = tag_val {
+            tv.clone()
+        } else {
+            subject_val.clone()
+        };
+
         let mut arm_labels: Vec<String> = Vec::new();
         for _ in &s.arms {
             arm_labels.push(self.fresh_label("match.arm"));
@@ -659,7 +920,7 @@ impl Codegen {
             match &arm.pattern {
                 Pattern::Literal(Literal::Int(n), _) => {
                     let cmp = self.fresh_temp();
-                    self.emit_line(&format!("{} = icmp eq i64 {}, {}", cmp, subject_val, n));
+                    self.emit_line(&format!("{} = icmp eq i64 {}, {}", cmp, compare_val, n));
                     let next = if i + 1 < s.arms.len() {
                         format!("match.check.{}", i + 1)
                     } else {
@@ -674,14 +935,42 @@ impl Codegen {
                         self.block_terminated = false;
                     }
                 }
-                Pattern::Wildcard(_) | Pattern::Binding(_, _) => {
+                Pattern::Wildcard(_) => {
                     self.emit_line(&format!("br label %{}", arm_labels[i]));
                 }
+                Pattern::Binding(bname, _) => {
+                    // Check if this binding name is actually a no-data enum variant
+                    if is_enum {
+                        if let Ok(tag) = self.variant_tag(bname) {
+                            let cmp = self.fresh_temp();
+                            self.emit_line(&format!(
+                                "{} = icmp eq i32 {}, {}",
+                                cmp, compare_val, tag
+                            ));
+                            let next = if i + 1 < s.arms.len() {
+                                format!("match.check.{}", i + 1)
+                            } else {
+                                default_label.clone()
+                            };
+                            self.emit_line(&format!(
+                                "br i1 {}, label %{}, label %{}",
+                                cmp, arm_labels[i], next
+                            ));
+                            if i + 1 < s.arms.len() {
+                                self.emit_label(&next);
+                                self.block_terminated = false;
+                            }
+                        } else {
+                            self.emit_line(&format!("br label %{}", arm_labels[i]));
+                        }
+                    } else {
+                        self.emit_line(&format!("br label %{}", arm_labels[i]));
+                    }
+                }
                 Pattern::Variant(vname, _, _) => {
-                    // Extract tag and compare
                     let tag = self.variant_tag(vname)?;
                     let cmp = self.fresh_temp();
-                    self.emit_line(&format!("{} = icmp eq i32 {}, {}", cmp, subject_val, tag));
+                    self.emit_line(&format!("{} = icmp eq i32 {}, {}", cmp, compare_val, tag));
                     let next = if i + 1 < s.arms.len() {
                         format!("match.check.{}", i + 1)
                     } else {
@@ -707,6 +996,7 @@ impl Codegen {
         self.emit_line("unreachable");
 
         // Emit arm bodies
+        let enum_name_clone = subject_enum_name.clone();
         for (i, arm) in s.arms.iter().enumerate() {
             self.emit_label(&arm_labels[i]);
             self.block_terminated = false;
@@ -714,12 +1004,78 @@ impl Codegen {
             self.push_scope();
 
             // Bind pattern variables
-            if let Pattern::Binding(name, _) = &arm.pattern {
-                let ty_str = "i64".to_string(); // default to i64 for now
-                let ptr = format!("%{}.match.addr", name);
-                self.emit_line(&format!("{} = alloca {}", ptr, ty_str));
-                self.emit_line(&format!("store {} {}, ptr {}", ty_str, subject_val, ptr));
-                self.define_var(name, &ptr, &ty_str);
+            match &arm.pattern {
+                Pattern::Binding(name, _) => {
+                    // Don't bind if the name matches a no-data enum variant
+                    let is_variant = is_enum && self.variant_tag(name).is_ok();
+                    if !is_variant {
+                        let ty_str = if is_enum {
+                            "i32".to_string()
+                        } else {
+                            "i64".to_string()
+                        };
+                        let val = &compare_val;
+                        let ptr = format!("%{}.match.addr", name);
+                        self.emit_line(&format!("{} = alloca {}", ptr, ty_str));
+                        self.emit_line(&format!("store {} {}, ptr {}", ty_str, val, ptr));
+                        self.define_var(name, &ptr, &ty_str);
+                    }
+                }
+                Pattern::Variant(vname, sub_patterns, _) => {
+                    // Extract payload from enum and bind sub-patterns
+                    if let Some(ref ename) = enum_name_clone {
+                        let layout = self.enum_layouts.get(ename).cloned();
+                        if let Some(layout) = layout {
+                            let variant_fields: Vec<Type> = layout
+                                .variants
+                                .iter()
+                                .find(|(n, _)| n == vname)
+                                .map(|(_, f)| f.clone())
+                                .unwrap_or_default();
+
+                            if !variant_fields.is_empty() {
+                                // GEP into payload bytes
+                                let payload_gep = self.fresh_temp();
+                                self.emit_line(&format!(
+                                    "{} = getelementptr %{}, ptr {}, i32 0, i32 1",
+                                    payload_gep, ename, subject_val
+                                ));
+
+                                // Extract each field from payload and bind to sub-patterns
+                                let mut byte_offset = 0usize;
+                                for (fi, field_ty) in variant_fields.iter().enumerate() {
+                                    let field_llvm_ty = self.llvm_type(field_ty);
+                                    if fi < sub_patterns.len() {
+                                        if let Pattern::Binding(bname, _) = &sub_patterns[fi] {
+                                            let field_ptr = self.fresh_temp();
+                                            self.emit_line(&format!(
+                                                "{} = getelementptr [0 x i8], ptr {}, i64 0, i64 {}",
+                                                field_ptr, payload_gep, byte_offset
+                                            ));
+                                            let field_val = self.fresh_temp();
+                                            self.emit_line(&format!(
+                                                "{} = load {}, ptr {}",
+                                                field_val, field_llvm_ty, field_ptr
+                                            ));
+                                            let bind_ptr = format!("%{}.match.addr", bname);
+                                            self.emit_line(&format!(
+                                                "{} = alloca {}",
+                                                bind_ptr, field_llvm_ty
+                                            ));
+                                            self.emit_line(&format!(
+                                                "store {} {}, ptr {}",
+                                                field_llvm_ty, field_val, bind_ptr
+                                            ));
+                                            self.define_var(bname, &bind_ptr, &field_llvm_ty);
+                                        }
+                                    }
+                                    byte_offset += self.llvm_type_size(&field_llvm_ty);
+                                }
+                            }
+                        }
+                    }
+                }
+                _ => {}
             }
 
             self.emit_block(&arm.body)?;
@@ -732,6 +1088,17 @@ impl Codegen {
         self.emit_label(&merge_label);
         self.block_terminated = false;
         Ok(())
+    }
+
+    fn llvm_type_size(&self, llvm_ty: &str) -> usize {
+        match llvm_ty {
+            "i64" => 8,
+            "double" => 8,
+            "i1" => 1,
+            "ptr" => 8,
+            "i32" => 4,
+            _ => 8,
+        }
     }
 
     // ── Expression emission ──────────────────────────────────
@@ -748,6 +1115,10 @@ impl Codegen {
                         message: format!("undefined variable '{}'", name),
                     })?
                     .clone();
+                // Array variables: return the pointer directly (arrays are reference types)
+                if slot.llvm_ty == "{ ptr, i64 }" {
+                    return Ok(slot.ptr.clone());
+                }
                 let tmp = self.fresh_temp();
                 self.emit_line(&format!(
                     "{} = load {}, ptr {}",
@@ -814,6 +1185,22 @@ impl Codegen {
 
             ExprKind::Call(callee, args) => {
                 if let ExprKind::Ident(name) = &callee.kind {
+                    // Built-in len() for arrays
+                    if name == "len" && args.len() == 1 {
+                        let arr_ptr = self.emit_expr_ptr(&args[0])?;
+                        let len_gep = self.fresh_temp();
+                        self.emit_line(&format!(
+                            "{} = getelementptr {{ ptr, i64 }}, ptr {}, i32 0, i32 1",
+                            len_gep, arr_ptr
+                        ));
+                        let len_val = self.fresh_temp();
+                        self.emit_line(&format!("{} = load i64, ptr {}", len_val, len_gep));
+                        return Ok(len_val);
+                    }
+                    // Check if this is an enum variant constructor
+                    if let Some(enum_name) = self.find_enum_for_variant(name) {
+                        return self.emit_enum_variant_constructor(&enum_name, name, args);
+                    }
                     // Check if this is a known function (direct call)
                     if self.fn_ret_types.contains_key(name.as_str()) {
                         let mut arg_strs = Vec::new();
@@ -934,9 +1321,117 @@ impl Codegen {
                 Ok(ptr)
             }
 
-            ExprKind::Index(_, _) => Err(CodegenError {
-                message: "array indexing not yet implemented in codegen".to_string(),
-            }),
+            ExprKind::ArrayLit(elements) => {
+                let count = elements.len();
+                if count == 0 {
+                    // Empty array: { null, 0 }
+                    let ptr = self.fresh_temp();
+                    self.emit_line(&format!("{} = alloca {{ ptr, i64 }}", ptr));
+                    let d_gep = self.fresh_temp();
+                    self.emit_line(&format!(
+                        "{} = getelementptr {{ ptr, i64 }}, ptr {}, i32 0, i32 0",
+                        d_gep, ptr
+                    ));
+                    self.emit_line(&format!("store ptr null, ptr {}", d_gep));
+                    let l_gep = self.fresh_temp();
+                    self.emit_line(&format!(
+                        "{} = getelementptr {{ ptr, i64 }}, ptr {}, i32 0, i32 1",
+                        l_gep, ptr
+                    ));
+                    self.emit_line(&format!("store i64 0, ptr {}", l_gep));
+                    return Ok(ptr);
+                }
+                // Determine element type from first element
+                let elem_ty = self.expr_llvm_type(&elements[0]);
+                let elem_size = self.llvm_type_size(&elem_ty);
+                let total_size = elem_size * count;
+
+                // malloc data
+                let data_ptr = self.fresh_temp();
+                self.emit_line(&format!(
+                    "{} = call ptr @malloc(i64 {})",
+                    data_ptr, total_size
+                ));
+
+                // Store each element
+                for (i, elem) in elements.iter().enumerate() {
+                    let val = self.emit_expr(elem)?;
+                    let gep = self.fresh_temp();
+                    self.emit_line(&format!(
+                        "{} = getelementptr {}, ptr {}, i64 {}",
+                        gep, elem_ty, data_ptr, i
+                    ));
+                    self.emit_line(&format!("store {} {}, ptr {}", elem_ty, val, gep));
+                }
+
+                // Build { ptr, i64 } fat pointer on stack
+                let fat_ptr = self.fresh_temp();
+                self.emit_line(&format!("{} = alloca {{ ptr, i64 }}", fat_ptr));
+                let d_gep = self.fresh_temp();
+                self.emit_line(&format!(
+                    "{} = getelementptr {{ ptr, i64 }}, ptr {}, i32 0, i32 0",
+                    d_gep, fat_ptr
+                ));
+                self.emit_line(&format!("store ptr {}, ptr {}", data_ptr, d_gep));
+                let l_gep = self.fresh_temp();
+                self.emit_line(&format!(
+                    "{} = getelementptr {{ ptr, i64 }}, ptr {}, i32 0, i32 1",
+                    l_gep, fat_ptr
+                ));
+                self.emit_line(&format!("store i64 {}, ptr {}", count, l_gep));
+
+                Ok(fat_ptr)
+            }
+
+            ExprKind::Index(arr_expr, idx_expr) => {
+                // Determine element type
+                let elem_ty = if let ExprKind::Ident(name) = &arr_expr.kind {
+                    self.array_elem_types
+                        .get(name)
+                        .cloned()
+                        .unwrap_or_else(|| "i64".to_string())
+                } else {
+                    "i64".to_string()
+                };
+
+                let arr_ptr = self.emit_expr_ptr(arr_expr)?;
+
+                // Load data pointer from { ptr, i64 }
+                let data_gep = self.fresh_temp();
+                self.emit_line(&format!(
+                    "{} = getelementptr {{ ptr, i64 }}, ptr {}, i32 0, i32 0",
+                    data_gep, arr_ptr
+                ));
+                let data_ptr = self.fresh_temp();
+                self.emit_line(&format!("{} = load ptr, ptr {}", data_ptr, data_gep));
+
+                // Load length for bounds check
+                let len_gep = self.fresh_temp();
+                self.emit_line(&format!(
+                    "{} = getelementptr {{ ptr, i64 }}, ptr {}, i32 0, i32 1",
+                    len_gep, arr_ptr
+                ));
+                let len_val = self.fresh_temp();
+                self.emit_line(&format!("{} = load i64, ptr {}", len_val, len_gep));
+
+                let idx_val = self.emit_expr(idx_expr)?;
+
+                // Bounds check
+                self.emit_line(&format!(
+                    "call void @__yorum_bounds_check(i64 {}, i64 {})",
+                    idx_val, len_val
+                ));
+
+                // GEP to element and load
+                let elem_gep = self.fresh_temp();
+                self.emit_line(&format!(
+                    "{} = getelementptr {}, ptr {}, i64 {}",
+                    elem_gep, elem_ty, data_ptr, idx_val
+                ));
+                let val = self.fresh_temp();
+                self.emit_line(&format!("{} = load {}, ptr {}", val, elem_ty, elem_gep));
+                Ok(val)
+            }
         }
     }
 
@@ -982,6 +1477,53 @@ impl Codegen {
                 Ok(global_name)
             }
         }
+    }
+
+    // ── Enum variant constructor ──────────────────────────────
+
+    fn emit_enum_variant_constructor(
+        &mut self,
+        enum_name: &str,
+        variant_name: &str,
+        args: &[Expr],
+    ) -> Result<String, CodegenError> {
+        let tag = self.variant_tag(variant_name)?;
+
+        // Alloca the enum type
+        let ptr = self.fresh_temp();
+        self.emit_line(&format!("{} = alloca %{}", ptr, enum_name));
+
+        // Set the tag
+        let tag_gep = self.fresh_temp();
+        self.emit_line(&format!(
+            "{} = getelementptr %{}, ptr {}, i32 0, i32 0",
+            tag_gep, enum_name, ptr
+        ));
+        self.emit_line(&format!("store i32 {}, ptr {}", tag, tag_gep));
+
+        // Store arguments into payload bytes
+        if !args.is_empty() {
+            let payload_gep = self.fresh_temp();
+            self.emit_line(&format!(
+                "{} = getelementptr %{}, ptr {}, i32 0, i32 1",
+                payload_gep, enum_name, ptr
+            ));
+
+            let mut byte_offset = 0usize;
+            for arg in args {
+                let val = self.emit_expr(arg)?;
+                let arg_ty = self.expr_llvm_type(arg);
+                let field_ptr = self.fresh_temp();
+                self.emit_line(&format!(
+                    "{} = getelementptr [0 x i8], ptr {}, i64 0, i64 {}",
+                    field_ptr, payload_gep, byte_offset
+                ));
+                self.emit_line(&format!("store {} {}, ptr {}", arg_ty, val, field_ptr));
+                byte_offset += self.llvm_type_size(&arg_ty);
+            }
+        }
+
+        Ok(ptr)
     }
 
     // ── Closure helpers ──────────────────────────────────────
@@ -1264,6 +1806,11 @@ impl Codegen {
                 Self::collect_idents_from_expr(&s.condition, locals, names);
                 Self::collect_idents_from_block(&s.body, locals, names);
             }
+            Stmt::For(s) => {
+                Self::collect_idents_from_expr(&s.iterable, locals, names);
+                locals.insert(s.var_name.clone());
+                Self::collect_idents_from_block(&s.body, locals, names);
+            }
             Stmt::Match(s) => {
                 Self::collect_idents_from_expr(&s.subject, locals, names);
                 for arm in &s.arms {
@@ -1316,6 +1863,11 @@ impl Codegen {
             ExprKind::StructInit(_, fields) => {
                 for fi in fields {
                     Self::collect_idents_from_expr(&fi.value, locals, names);
+                }
+            }
+            ExprKind::ArrayLit(elements) => {
+                for elem in elements {
+                    Self::collect_idents_from_expr(elem, locals, names);
                 }
             }
             ExprKind::Closure(c) => {
@@ -1429,6 +1981,15 @@ impl Codegen {
                 }
                 false
             }
+            ExprKind::ArrayLit(_) => false,
+            ExprKind::Index(arr_expr, _) => {
+                if let ExprKind::Ident(name) = &arr_expr.kind {
+                    if let Some(elem_ty) = self.array_elem_types.get(name) {
+                        return elem_ty == "double";
+                    }
+                }
+                false
+            }
             ExprKind::Closure(_) => false,
             _ => false,
         }
@@ -1442,7 +2003,12 @@ impl Codegen {
             ExprKind::Literal(Literal::String(_)) => "ptr".to_string(),
             ExprKind::Ident(name) => {
                 if let Some(slot) = self.lookup_var(name) {
-                    slot.llvm_ty.clone()
+                    // Array idents are returned as raw pointers by emit_expr (reference semantics)
+                    if slot.llvm_ty == "{ ptr, i64 }" {
+                        "ptr".to_string()
+                    } else {
+                        slot.llvm_ty.clone()
+                    }
                 } else {
                     "i64".to_string()
                 }
@@ -1487,6 +2053,15 @@ impl Codegen {
                     let mangled = format!("{}_{}", sname, method_name);
                     if let Some(ret_ty) = self.fn_ret_types.get(&mangled) {
                         return self.llvm_type(ret_ty);
+                    }
+                }
+                "i64".to_string()
+            }
+            ExprKind::ArrayLit(_) => "{ ptr, i64 }".to_string(),
+            ExprKind::Index(arr_expr, _) => {
+                if let ExprKind::Ident(name) = &arr_expr.kind {
+                    if let Some(elem_ty) = self.array_elem_types.get(name) {
+                        return elem_ty.clone();
                     }
                 }
                 "i64".to_string()
@@ -1539,6 +2114,33 @@ impl Codegen {
         Err(CodegenError {
             message: format!("struct '{}' has no field '{}'", struct_name, field_name),
         })
+    }
+
+    fn find_enum_for_variant(&self, variant_name: &str) -> Option<String> {
+        for (ename, layout) in &self.enum_layouts {
+            for (vname, _) in &layout.variants {
+                if vname == variant_name {
+                    return Some(ename.clone());
+                }
+            }
+        }
+        None
+    }
+
+    fn expr_enum_name(&self, expr: &Expr) -> Option<String> {
+        match &expr.kind {
+            ExprKind::Ident(name) => {
+                if let Some(slot) = self.lookup_var(name) {
+                    if let Some(stripped) = slot.llvm_ty.strip_prefix('%') {
+                        if self.enum_layouts.contains_key(stripped) {
+                            return Some(stripped.to_string());
+                        }
+                    }
+                }
+                None
+            }
+            _ => None,
+        }
     }
 
     fn variant_tag(&self, variant_name: &str) -> Result<i32, CodegenError> {

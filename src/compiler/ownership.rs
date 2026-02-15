@@ -140,6 +140,13 @@ impl OwnershipChecker {
                 self.check_block(&s.body);
                 self.pop_scope();
             }
+            Stmt::For(s) => {
+                self.check_expr_use(&s.iterable);
+                self.push_scope();
+                self.define(&s.var_name);
+                self.check_block(&s.body);
+                self.pop_scope();
+            }
             Stmt::Match(s) => {
                 self.check_expr_use(&s.subject);
                 for arm in &s.arms {
@@ -195,6 +202,11 @@ impl OwnershipChecker {
             ExprKind::StructInit(_, fields) => {
                 for fi in fields {
                     self.check_expr_use(&fi.value);
+                }
+            }
+            ExprKind::ArrayLit(elements) => {
+                for elem in elements {
+                    self.check_expr_use(elem);
                 }
             }
             ExprKind::Closure(closure) => {

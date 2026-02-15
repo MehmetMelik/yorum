@@ -1,0 +1,31 @@
+// arrays.yrm — Arrays, indexing, len, and for loops.
+//
+// Demonstrates: array literals, indexing, len(), index assignment, for loops.
+
+module arrays;
+
+fn sum_array(nums: [int]) -> int {
+    let mut total: int = 0;
+    for x in nums {
+        total = total + x;
+    }
+    return total;
+}
+
+fn main() -> int {
+    let nums: [int] = [10, 20, 30, 40, 50];
+    let n: int = len(nums);
+    print_int(n);
+
+    let first: int = nums[0];
+    print_int(first);
+
+    let total: int = sum_array(nums);
+    print_int(total);
+
+    let mut arr: [int] = [1, 2, 3];
+    arr[0] = 100;
+    print_int(arr[0]);
+
+    return 0;
+}

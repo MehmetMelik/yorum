@@ -84,6 +84,12 @@ pub struct Codegen {
     block_terminated: bool,
 }
 
+impl Default for Codegen {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Codegen {
     pub fn new() -> Self {
         Self {
@@ -899,9 +905,7 @@ impl Codegen {
                 }
             }
 
-            ExprKind::Closure(closure) => {
-                return self.emit_closure(closure);
-            }
+            ExprKind::Closure(closure) => self.emit_closure(closure),
 
             ExprKind::StructInit(name, fields) => {
                 let _layout =
@@ -997,7 +1001,7 @@ impl Codegen {
             .map(|(_, slot)| slot.llvm_ty.clone())
             .collect();
         let env_llvm_ty = if env_field_types.is_empty() {
-            format!("{{ i8 }}") // dummy field for empty env
+            "{ i8 }".to_string() // dummy field for empty env
         } else {
             format!("{{ {} }}", env_field_types.join(", "))
         };
@@ -1497,8 +1501,8 @@ impl Codegen {
             ExprKind::Ident(name) => {
                 if let Some(slot) = self.lookup_var(name) {
                     let ty = &slot.llvm_ty;
-                    if ty.starts_with('%') {
-                        Ok(ty[1..].to_string())
+                    if let Some(stripped) = ty.strip_prefix('%') {
+                        Ok(stripped.to_string())
                     } else {
                         Err(CodegenError {
                             message: format!("'{}' is not a struct", name),
@@ -1538,7 +1542,7 @@ impl Codegen {
     }
 
     fn variant_tag(&self, variant_name: &str) -> Result<i32, CodegenError> {
-        for (_ename, layout) in &self.enum_layouts {
+        for layout in self.enum_layouts.values() {
             for (i, (vname, _)) in layout.variants.iter().enumerate() {
                 if vname == variant_name {
                     return Ok(i as i32);

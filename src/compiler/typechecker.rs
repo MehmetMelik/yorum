@@ -82,6 +82,12 @@ pub struct TypeChecker {
     errors: Vec<TypeError>,
 }
 
+impl Default for TypeChecker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TypeChecker {
     pub fn new() -> Self {
         let mut checker = Self {

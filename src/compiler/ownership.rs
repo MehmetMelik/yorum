@@ -38,6 +38,12 @@ pub struct OwnershipChecker {
     errors: Vec<OwnershipError>,
 }
 
+impl Default for OwnershipChecker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl OwnershipChecker {
     pub fn new() -> Self {
         Self {

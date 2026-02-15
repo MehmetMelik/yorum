@@ -696,10 +696,10 @@ fn rewrite_expr(
                     if let Some(type_args) = type_args_opt {
                         if fn_insts.contains(&(name.clone(), type_args.clone())) {
                             let mangled = mangle_name(name, &type_args);
-                            *callee = Box::new(Expr {
+                            **callee = Expr {
                                 kind: ExprKind::Ident(mangled),
                                 span: callee.span,
-                            });
+                            };
                         }
                     }
                 }

@@ -114,9 +114,8 @@ impl Lexer {
                     TokenKind::NotEq
                 } else {
                     return Err(LexError {
-                        message: format!(
-                            "unexpected character '!'; use 'not' for logical negation"
-                        ),
+                        message: "unexpected character '!'; use 'not' for logical negation"
+                            .to_string(),
                         span: Span::new(start, self.pos, start_line, start_col),
                     });
                 }
@@ -153,7 +152,7 @@ impl Lexer {
 
             '_' if !self
                 .peek()
-                .map_or(false, |c| c.is_ascii_alphanumeric() || c == '_') =>
+                .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_') =>
             {
                 TokenKind::Underscore
             }
@@ -305,14 +304,14 @@ impl Lexer {
         start_col: u32,
     ) -> Result<Token, LexError> {
         // Already consumed first digit
-        while !self.is_at_end() && self.peek().map_or(false, |c| c.is_ascii_digit()) {
+        while !self.is_at_end() && self.peek().is_some_and(|c| c.is_ascii_digit()) {
             self.advance();
         }
 
         // Check for float
-        if self.peek() == Some('.') && self.peek_next().map_or(false, |c| c.is_ascii_digit()) {
+        if self.peek() == Some('.') && self.peek_next().is_some_and(|c| c.is_ascii_digit()) {
             self.advance(); // consume '.'
-            while !self.is_at_end() && self.peek().map_or(false, |c| c.is_ascii_digit()) {
+            while !self.is_at_end() && self.peek().is_some_and(|c| c.is_ascii_digit()) {
                 self.advance();
             }
             let text: String = self.source[start..self.pos].iter().collect();
@@ -347,7 +346,7 @@ impl Lexer {
         while !self.is_at_end()
             && self
                 .peek()
-                .map_or(false, |c| c.is_ascii_alphanumeric() || c == '_')
+                .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
         {
             self.advance();
         }
@@ -434,8 +433,8 @@ mod tests {
 
     #[test]
     fn test_float_literal() {
-        let tokens = lex("3.14");
-        assert_eq!(tokens, vec![TokenKind::FloatLit(3.14), TokenKind::EOF]);
+        let tokens = lex("3.15");
+        assert_eq!(tokens, vec![TokenKind::FloatLit(3.15), TokenKind::EOF]);
     }
 
     #[test]

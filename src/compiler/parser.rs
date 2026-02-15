@@ -710,7 +710,6 @@ impl Parser {
             }
             TokenKind::IntLit(n) => {
                 let span = self.current_span();
-                let n = n;
                 self.advance();
                 Ok(Pattern::Literal(Literal::Int(n), span))
             }
@@ -788,12 +787,7 @@ impl Parser {
     fn parse_expr_bp(&mut self, min_bp: u8) -> Result<Expr, ParseError> {
         let mut lhs = self.parse_unary()?;
 
-        loop {
-            let op = match self.try_binop() {
-                Some(op) => op,
-                None => break,
-            };
-
+        while let Some(op) = self.try_binop() {
             let (l_bp, r_bp) = infix_binding_power(op);
             if l_bp < min_bp {
                 break;
@@ -915,7 +909,6 @@ impl Parser {
 
         match self.peek_kind() {
             TokenKind::IntLit(n) => {
-                let n = n;
                 self.advance();
                 Ok(Expr {
                     kind: ExprKind::Literal(Literal::Int(n)),
@@ -923,7 +916,6 @@ impl Parser {
                 })
             }
             TokenKind::FloatLit(n) => {
-                let n = n;
                 self.advance();
                 Ok(Expr {
                     kind: ExprKind::Literal(Literal::Float(n)),
@@ -987,9 +979,7 @@ impl Parser {
                     })
                 }
             }
-            TokenKind::Pipe => {
-                return self.parse_closure_expr();
-            }
+            TokenKind::Pipe => self.parse_closure_expr(),
             TokenKind::LParen => {
                 self.advance();
                 let expr = self.parse_expr()?;

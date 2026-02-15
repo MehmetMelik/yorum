@@ -67,12 +67,17 @@ pub struct Codegen {
     temp_counter: u32,
     label_counter: u32,
     string_counter: u32,
+    closure_counter: u32,
 
     // Symbol tables
     vars: Vec<HashMap<String, VarSlot>>,
     struct_layouts: HashMap<String, StructLayout>,
     enum_layouts: HashMap<String, EnumLayout>,
     fn_ret_types: HashMap<String, Type>,
+
+    // Closure support
+    deferred_fns: Vec<String>,
+    closure_var_types: HashMap<String, Type>,
 
     // State within a function
     current_fn_ret_ty: Option<String>,
@@ -89,10 +94,13 @@ impl Codegen {
             temp_counter: 0,
             label_counter: 0,
             string_counter: 0,
+            closure_counter: 0,
             vars: Vec::new(),
             struct_layouts: HashMap::new(),
             enum_layouts: HashMap::new(),
             fn_ret_types: HashMap::new(),
+            deferred_fns: Vec::new(),
+            closure_var_types: HashMap::new(),
             current_fn_ret_ty: None,
             block_terminated: false,
         }
@@ -106,17 +114,40 @@ impl Codegen {
         self.emit_builtin_decls();
         self.emit_builtin_helpers();
 
-        // Register function return types
+        // Register built-in function return types
+        self.fn_ret_types.insert("print_int".to_string(), Type::Unit);
+        self.fn_ret_types.insert("print_float".to_string(), Type::Unit);
+        self.fn_ret_types.insert("print_bool".to_string(), Type::Unit);
+        self.fn_ret_types.insert("print_str".to_string(), Type::Unit);
+
+        // Register function return types (including impl methods with mangled names)
         for decl in &program.declarations {
-            if let Declaration::Function(f) = decl {
-                self.fn_ret_types.insert(f.name.clone(), f.return_type.clone());
+            match decl {
+                Declaration::Function(f) => {
+                    self.fn_ret_types.insert(f.name.clone(), f.return_type.clone());
+                }
+                Declaration::Impl(i) => {
+                    for method in &i.methods {
+                        let mangled = format!("{}_{}", i.target_type, method.name);
+                        self.fn_ret_types.insert(mangled, method.return_type.clone());
+                    }
+                }
+                _ => {}
             }
         }
 
-        // Emit each function
+        // Emit each function and impl methods
         for decl in &program.declarations {
-            if let Declaration::Function(f) = decl {
-                self.emit_function(f)?;
+            match decl {
+                Declaration::Function(f) => {
+                    self.emit_function(f)?;
+                }
+                Declaration::Impl(i) => {
+                    for method in &i.methods {
+                        self.emit_method(&i.target_type, method)?;
+                    }
+                }
+                _ => {}
             }
         }
 
@@ -323,6 +354,11 @@ impl Codegen {
             self.emit_line(&format!("{} = alloca {}", ptr, ty));
             self.emit_line(&format!("store {} %{}, ptr {}", ty, param.name, ptr));
             self.define_var(&param.name, &ptr, &ty);
+
+            // Track fn-typed params for indirect calls
+            if let Type::Fn(_, _) = &param.ty {
+                self.closure_var_types.insert(param.name.clone(), param.ty.clone());
+            }
         }
 
         // Emit body statements
@@ -340,6 +376,83 @@ impl Codegen {
         self.pop_scope();
         self.body.push_str("}\n\n");
         self.current_fn_ret_ty = None;
+
+        // Emit any deferred closure functions
+        for deferred in self.deferred_fns.drain(..) {
+            self.body.push_str(&deferred);
+        }
+
+        Ok(())
+    }
+
+    fn emit_method(&mut self, target_type: &str, f: &FnDecl) -> Result<(), CodegenError> {
+        self.temp_counter = 0;
+        self.label_counter = 0;
+        self.block_terminated = false;
+
+        let mangled_name = format!("{}_{}", target_type, f.name);
+        let ret_ty = self.llvm_type(&f.return_type);
+        self.current_fn_ret_ty = Some(ret_ty.clone());
+
+        let params: Vec<String> = f
+            .params
+            .iter()
+            .map(|p| {
+                let ty = self.llvm_type(&p.ty);
+                // For self params that are references to structs, pass as ptr
+                if matches!(&p.ty, Type::Ref(inner) | Type::MutRef(inner) if matches!(inner.as_ref(), Type::Named(_)))
+                {
+                    format!("ptr %{}", p.name)
+                } else {
+                    format!("{} %{}", ty, p.name)
+                }
+            })
+            .collect();
+
+        self.body.push_str(&format!(
+            "define {} @{}({}) {{\n",
+            ret_ty, mangled_name, params.join(", ")
+        ));
+        self.body.push_str("entry:\n");
+
+        self.push_scope();
+
+        for param in &f.params {
+            // For self: &StructType — store the pointer itself
+            if let Type::Ref(inner) | Type::MutRef(inner) = &param.ty {
+                if let Type::Named(sname) = inner.as_ref() {
+                    let llvm_ty = format!("%{}", sname);
+                    // self is already a ptr, use it directly
+                    self.define_var(&param.name, &format!("%{}", param.name), &llvm_ty);
+                    continue;
+                }
+            }
+            let ty = self.llvm_type(&param.ty);
+            let ptr = format!("%{}.addr", param.name);
+            self.emit_line(&format!("{} = alloca {}", ptr, ty));
+            self.emit_line(&format!("store {} %{}, ptr {}", ty, param.name, ptr));
+            self.define_var(&param.name, &ptr, &ty);
+        }
+
+        self.emit_block(&f.body)?;
+
+        if !self.block_terminated {
+            if ret_ty == "void" {
+                self.emit_line("ret void");
+            } else {
+                self.emit_line(&format!("ret {} 0", ret_ty));
+            }
+        }
+
+        self.pop_scope();
+        self.body.push_str("}\n\n");
+        self.current_fn_ret_ty = None;
+
+        // Emit any deferred closure functions
+        for deferred in self.deferred_fns.drain(..) {
+            self.body.push_str(&deferred);
+        }
+
         Ok(())
     }
 
@@ -382,6 +495,11 @@ impl Codegen {
                 self.define_var(&s.name, &val_ptr, &ty);
                 return Ok(());
             }
+        }
+
+        // Track fn-typed variables for indirect calls
+        if let Type::Fn(_, _) = &s.ty {
+            self.closure_var_types.insert(s.name.clone(), s.ty.clone());
         }
 
         let ptr = format!("%{}.addr", s.name);
@@ -712,42 +830,43 @@ impl Codegen {
 
             ExprKind::Call(callee, args) => {
                 if let ExprKind::Ident(name) = &callee.kind {
-                    let mut arg_strs = Vec::new();
-                    for arg in args {
-                        let val = self.emit_expr(arg)?;
-                        let ty = self.expr_llvm_type(arg);
-                        arg_strs.push(format!("{} {}", ty, val));
-                    }
+                    // Check if this is a known function (direct call)
+                    if self.fn_ret_types.contains_key(name.as_str()) {
+                        let mut arg_strs = Vec::new();
+                        for arg in args {
+                            let val = self.emit_expr(arg)?;
+                            let ty = self.expr_llvm_type(arg);
+                            arg_strs.push(format!("{} {}", ty, val));
+                        }
 
-                    let ret_ty = self
-                        .fn_ret_types
-                        .get(name.as_str())
-                        .cloned()
-                        .unwrap_or(Type::Unit);
-                    let llvm_ret = self.llvm_type(&ret_ty);
+                        let ret_ty = self.fn_ret_types[name.as_str()].clone();
+                        let llvm_ret = self.llvm_type(&ret_ty);
 
-                    if llvm_ret == "void" {
-                        self.emit_line(&format!(
-                            "call void @{}({})",
-                            name,
-                            arg_strs.join(", ")
-                        ));
-                        Ok("void".to_string())
+                        if llvm_ret == "void" {
+                            self.emit_line(&format!(
+                                "call void @{}({})",
+                                name,
+                                arg_strs.join(", ")
+                            ));
+                            Ok("void".to_string())
+                        } else {
+                            let tmp = self.fresh_temp();
+                            self.emit_line(&format!(
+                                "{} = call {} @{}({})",
+                                tmp,
+                                llvm_ret,
+                                name,
+                                arg_strs.join(", ")
+                            ));
+                            Ok(tmp)
+                        }
                     } else {
-                        let tmp = self.fresh_temp();
-                        self.emit_line(&format!(
-                            "{} = call {} @{}({})",
-                            tmp,
-                            llvm_ret,
-                            name,
-                            arg_strs.join(", ")
-                        ));
-                        Ok(tmp)
+                        // Indirect call through a fn-typed variable
+                        self.emit_indirect_call(callee, args)
                     }
                 } else {
-                    Err(CodegenError {
-                        message: "indirect calls not supported".to_string(),
-                    })
+                    // Indirect call through a complex expression
+                    self.emit_indirect_call(callee, args)
                 }
             }
 
@@ -765,6 +884,49 @@ impl Codegen {
                 let val = self.fresh_temp();
                 self.emit_line(&format!("{} = load {}, ptr {}", val, fty, gep));
                 Ok(val)
+            }
+
+            ExprKind::MethodCall(receiver, method_name, args) => {
+                let struct_name = self.expr_struct_name(receiver)?;
+                let recv_ptr = self.emit_expr_ptr(receiver)?;
+                let mangled = format!("{}_{}", struct_name, method_name);
+
+                let mut arg_strs = vec![format!("ptr {}", recv_ptr)];
+                for arg in args {
+                    let val = self.emit_expr(arg)?;
+                    let ty = self.expr_llvm_type(arg);
+                    arg_strs.push(format!("{} {}", ty, val));
+                }
+
+                let ret_ty = self
+                    .fn_ret_types
+                    .get(&mangled)
+                    .cloned()
+                    .unwrap_or(Type::Unit);
+                let llvm_ret = self.llvm_type(&ret_ty);
+
+                if llvm_ret == "void" {
+                    self.emit_line(&format!(
+                        "call void @{}({})",
+                        mangled,
+                        arg_strs.join(", ")
+                    ));
+                    Ok("void".to_string())
+                } else {
+                    let tmp = self.fresh_temp();
+                    self.emit_line(&format!(
+                        "{} = call {} @{}({})",
+                        tmp,
+                        llvm_ret,
+                        mangled,
+                        arg_strs.join(", ")
+                    ));
+                    Ok(tmp)
+                }
+            }
+
+            ExprKind::Closure(closure) => {
+                return self.emit_closure(closure);
             }
 
             ExprKind::StructInit(name, fields) => {
@@ -838,6 +1000,352 @@ impl Codegen {
         }
     }
 
+    // ── Closure helpers ──────────────────────────────────────
+
+    fn emit_closure(&mut self, closure: &ClosureExpr) -> Result<String, CodegenError> {
+        let closure_id = self.closure_counter;
+        self.closure_counter += 1;
+        let closure_fn_name = format!("__closure_{}", closure_id);
+        let env_type_name = format!("__env_{}", closure_id);
+
+        // Find captured variables
+        let captures = self.find_captures(&closure.body, &closure.params);
+
+        // Build env struct type
+        let env_field_types: Vec<String> = captures.iter().map(|(_, slot)| slot.llvm_ty.clone()).collect();
+        let env_llvm_ty = if env_field_types.is_empty() {
+            format!("{{ i8 }}") // dummy field for empty env
+        } else {
+            format!("{{ {} }}", env_field_types.join(", "))
+        };
+
+        // Add env type definition
+        self.type_defs.push_str(&format!("%{} = type {}\n", env_type_name, env_llvm_ty));
+
+        // Emit the closure function (deferred)
+        self.emit_closure_function(
+            &closure_fn_name, &env_type_name, &captures, closure,
+        )?;
+
+        // At the closure site: alloca env, fill captures
+        let env_ptr = self.fresh_temp();
+        self.emit_line(&format!("{} = alloca %{}", env_ptr, env_type_name));
+
+        for (i, (cap_name, cap_slot)) in captures.iter().enumerate() {
+            let gep = self.fresh_temp();
+            self.emit_line(&format!(
+                "{} = getelementptr %{}, ptr {}, i32 0, i32 {}",
+                gep, env_type_name, env_ptr, i
+            ));
+            let val = self.fresh_temp();
+            self.emit_line(&format!(
+                "{} = load {}, ptr {}",
+                val, cap_slot.llvm_ty, cap_slot.ptr
+            ));
+            self.emit_line(&format!("store {} {}, ptr {}", cap_slot.llvm_ty, val, gep));
+            let _ = cap_name; // used above via cap_slot
+        }
+
+        // Build { ptr, ptr } closure pair
+        let pair = self.fresh_temp();
+        self.emit_line(&format!("{} = alloca {{ ptr, ptr }}", pair));
+
+        let fn_gep = self.fresh_temp();
+        self.emit_line(&format!(
+            "{} = getelementptr {{ ptr, ptr }}, ptr {}, i32 0, i32 0",
+            fn_gep, pair
+        ));
+        self.emit_line(&format!("store ptr @{}, ptr {}", closure_fn_name, fn_gep));
+
+        let env_gep = self.fresh_temp();
+        self.emit_line(&format!(
+            "{} = getelementptr {{ ptr, ptr }}, ptr {}, i32 0, i32 1",
+            env_gep, pair
+        ));
+        self.emit_line(&format!("store ptr {}, ptr {}", env_ptr, env_gep));
+
+        // Return ptr to the pair
+        Ok(pair)
+    }
+
+    fn emit_closure_function(
+        &mut self,
+        closure_fn_name: &str,
+        env_type_name: &str,
+        captures: &[(String, VarSlot)],
+        closure: &ClosureExpr,
+    ) -> Result<(), CodegenError> {
+        // Save current function state
+        let saved_body = std::mem::take(&mut self.body);
+        let saved_temp = self.temp_counter;
+        let saved_label = self.label_counter;
+        let saved_terminated = self.block_terminated;
+        let saved_ret_ty = self.current_fn_ret_ty.take();
+        let saved_vars = std::mem::take(&mut self.vars);
+
+        self.temp_counter = 0;
+        self.label_counter = 0;
+        self.block_terminated = false;
+
+        let ret_ty = self.llvm_type(&closure.return_type);
+        self.current_fn_ret_ty = Some(ret_ty.clone());
+
+        // Build param list: ptr %env, then explicit params
+        let mut params_str = vec!["ptr %env".to_string()];
+        for p in &closure.params {
+            params_str.push(format!("{} %{}", self.llvm_type(&p.ty), p.name));
+        }
+
+        self.body.push_str(&format!(
+            "define {} @{}({}) {{\n",
+            ret_ty, closure_fn_name, params_str.join(", ")
+        ));
+        self.body.push_str("entry:\n");
+
+        self.push_scope();
+
+        // Load captures from env struct
+        for (i, (cap_name, cap_slot)) in captures.iter().enumerate() {
+            let gep = self.fresh_temp();
+            self.emit_line(&format!(
+                "{} = getelementptr %{}, ptr %env, i32 0, i32 {}",
+                gep, env_type_name, i
+            ));
+            let ptr = format!("%{}.cap", cap_name);
+            self.emit_line(&format!("{} = alloca {}", ptr, cap_slot.llvm_ty));
+            let val = self.fresh_temp();
+            self.emit_line(&format!("{} = load {}, ptr {}", val, cap_slot.llvm_ty, gep));
+            self.emit_line(&format!("store {} {}, ptr {}", cap_slot.llvm_ty, val, ptr));
+            self.define_var(cap_name, &ptr, &cap_slot.llvm_ty);
+        }
+
+        // Alloca for explicit params
+        for param in &closure.params {
+            let ty = self.llvm_type(&param.ty);
+            let ptr = format!("%{}.addr", param.name);
+            self.emit_line(&format!("{} = alloca {}", ptr, ty));
+            self.emit_line(&format!("store {} %{}, ptr {}", ty, param.name, ptr));
+            self.define_var(&param.name, &ptr, &ty);
+        }
+
+        // Emit closure body
+        self.emit_block(&closure.body)?;
+
+        if !self.block_terminated {
+            if ret_ty == "void" {
+                self.emit_line("ret void");
+            } else {
+                self.emit_line(&format!("ret {} 0", ret_ty));
+            }
+        }
+
+        self.pop_scope();
+        self.body.push_str("}\n\n");
+
+        // Save the closure function IR
+        let closure_fn_ir = std::mem::take(&mut self.body);
+        self.deferred_fns.push(closure_fn_ir);
+
+        // Restore saved state
+        self.body = saved_body;
+        self.temp_counter = saved_temp;
+        self.label_counter = saved_label;
+        self.block_terminated = saved_terminated;
+        self.current_fn_ret_ty = saved_ret_ty;
+        self.vars = saved_vars;
+
+        Ok(())
+    }
+
+    fn emit_indirect_call(
+        &mut self,
+        callee: &Expr,
+        args: &[Expr],
+    ) -> Result<String, CodegenError> {
+        // Emit the callee to get the closure pair pointer
+        let closure_ptr = self.emit_expr(callee)?;
+
+        // Extract fn_ptr from { ptr, ptr } pair
+        let fn_gep = self.fresh_temp();
+        self.emit_line(&format!(
+            "{} = getelementptr {{ ptr, ptr }}, ptr {}, i32 0, i32 0",
+            fn_gep, closure_ptr
+        ));
+        let fn_ptr = self.fresh_temp();
+        self.emit_line(&format!("{} = load ptr, ptr {}", fn_ptr, fn_gep));
+
+        // Extract env_ptr
+        let env_gep = self.fresh_temp();
+        self.emit_line(&format!(
+            "{} = getelementptr {{ ptr, ptr }}, ptr {}, i32 0, i32 1",
+            env_gep, closure_ptr
+        ));
+        let env_ptr = self.fresh_temp();
+        self.emit_line(&format!("{} = load ptr, ptr {}", env_ptr, env_gep));
+
+        // Emit arguments
+        let mut arg_strs = vec![format!("ptr {}", env_ptr)];
+        for arg in args {
+            let val = self.emit_expr(arg)?;
+            let ty = self.expr_llvm_type(arg);
+            arg_strs.push(format!("{} {}", ty, val));
+        }
+
+        // Determine return type from closure_var_types
+        let ret_type = if let ExprKind::Ident(name) = &callee.kind {
+            if let Some(Type::Fn(_, ret)) = self.closure_var_types.get(name) {
+                self.llvm_type(ret)
+            } else {
+                "i64".to_string() // fallback
+            }
+        } else {
+            "i64".to_string() // fallback
+        };
+
+        if ret_type == "void" {
+            self.emit_line(&format!(
+                "call void {}({})",
+                fn_ptr,
+                arg_strs.join(", ")
+            ));
+            Ok("void".to_string())
+        } else {
+            let tmp = self.fresh_temp();
+            self.emit_line(&format!(
+                "{} = call {} {}({})",
+                tmp, ret_type, fn_ptr, arg_strs.join(", ")
+            ));
+            Ok(tmp)
+        }
+    }
+
+    fn find_captures(&self, body: &Block, params: &[Param]) -> Vec<(String, VarSlot)> {
+        let param_names: std::collections::HashSet<String> =
+            params.iter().map(|p| p.name.clone()).collect();
+        let mut ident_names = std::collections::HashSet::new();
+        Self::collect_idents_from_block(body, &param_names, &mut ident_names);
+
+        let mut captures = Vec::new();
+        for name in ident_names {
+            if let Some(slot) = self.lookup_var(&name) {
+                captures.push((name, slot.clone()));
+            }
+        }
+        captures.sort_by(|a, b| a.0.cmp(&b.0));
+        captures
+    }
+
+    fn collect_idents_from_block(
+        block: &Block,
+        locals: &std::collections::HashSet<String>,
+        names: &mut std::collections::HashSet<String>,
+    ) {
+        let mut local_scope = locals.clone();
+        for stmt in &block.stmts {
+            Self::collect_idents_from_stmt(stmt, &mut local_scope, names);
+        }
+    }
+
+    fn collect_idents_from_stmt(
+        stmt: &Stmt,
+        locals: &mut std::collections::HashSet<String>,
+        names: &mut std::collections::HashSet<String>,
+    ) {
+        match stmt {
+            Stmt::Let(s) => {
+                Self::collect_idents_from_expr(&s.value, locals, names);
+                locals.insert(s.name.clone());
+            }
+            Stmt::Assign(s) => {
+                Self::collect_idents_from_expr(&s.target, locals, names);
+                Self::collect_idents_from_expr(&s.value, locals, names);
+            }
+            Stmt::Return(s) => {
+                Self::collect_idents_from_expr(&s.value, locals, names);
+            }
+            Stmt::If(s) => {
+                Self::collect_idents_from_expr(&s.condition, locals, names);
+                Self::collect_idents_from_block(&s.then_block, locals, names);
+                if let Some(eb) = &s.else_branch {
+                    match eb.as_ref() {
+                        ElseBranch::ElseIf(elif) => {
+                            Self::collect_idents_from_stmt(&Stmt::If(elif.clone()), locals, names);
+                        }
+                        ElseBranch::Else(block) => {
+                            Self::collect_idents_from_block(block, locals, names);
+                        }
+                    }
+                }
+            }
+            Stmt::While(s) => {
+                Self::collect_idents_from_expr(&s.condition, locals, names);
+                Self::collect_idents_from_block(&s.body, locals, names);
+            }
+            Stmt::Match(s) => {
+                Self::collect_idents_from_expr(&s.subject, locals, names);
+                for arm in &s.arms {
+                    Self::collect_idents_from_block(&arm.body, locals, names);
+                }
+            }
+            Stmt::Expr(s) => {
+                Self::collect_idents_from_expr(&s.expr, locals, names);
+            }
+        }
+    }
+
+    fn collect_idents_from_expr(
+        expr: &Expr,
+        locals: &std::collections::HashSet<String>,
+        names: &mut std::collections::HashSet<String>,
+    ) {
+        match &expr.kind {
+            ExprKind::Ident(name) => {
+                if !locals.contains(name) {
+                    names.insert(name.clone());
+                }
+            }
+            ExprKind::Binary(l, _, r) => {
+                Self::collect_idents_from_expr(l, locals, names);
+                Self::collect_idents_from_expr(r, locals, names);
+            }
+            ExprKind::Unary(_, operand) => {
+                Self::collect_idents_from_expr(operand, locals, names);
+            }
+            ExprKind::Call(callee, args) => {
+                Self::collect_idents_from_expr(callee, locals, names);
+                for arg in args {
+                    Self::collect_idents_from_expr(arg, locals, names);
+                }
+            }
+            ExprKind::FieldAccess(obj, _) => {
+                Self::collect_idents_from_expr(obj, locals, names);
+            }
+            ExprKind::MethodCall(recv, _, args) => {
+                Self::collect_idents_from_expr(recv, locals, names);
+                for arg in args {
+                    Self::collect_idents_from_expr(arg, locals, names);
+                }
+            }
+            ExprKind::Index(arr, idx) => {
+                Self::collect_idents_from_expr(arr, locals, names);
+                Self::collect_idents_from_expr(idx, locals, names);
+            }
+            ExprKind::StructInit(_, fields) => {
+                for fi in fields {
+                    Self::collect_idents_from_expr(&fi.value, locals, names);
+                }
+            }
+            ExprKind::Closure(c) => {
+                let mut inner_locals = locals.clone();
+                for p in &c.params {
+                    inner_locals.insert(p.name.clone());
+                }
+                Self::collect_idents_from_block(&c.body, &inner_locals, names);
+            }
+            ExprKind::Literal(_) => {}
+        }
+    }
+
     // ── Type helpers ─────────────────────────────────────────
 
     fn llvm_type(&self, ty: &Type) -> String {
@@ -856,6 +1364,10 @@ impl Codegen {
             }
             Type::Array(_) => "ptr".to_string(),
             Type::Ref(_) | Type::MutRef(_) | Type::Own(_) => "ptr".to_string(),
+            Type::SelfType => panic!("Type::SelfType should be resolved before codegen"),
+            Type::TypeVar(_) => panic!("Type::TypeVar should be resolved before codegen"),
+            Type::Generic(name, _) => format!("%{}", name),
+            Type::Fn(_, _) => "ptr".to_string(),
         }
     }
 
@@ -873,6 +1385,8 @@ impl Codegen {
                     8
                 }
             }
+            Type::SelfType | Type::TypeVar(_) => panic!("should be resolved before codegen"),
+            Type::Generic(_, _) | Type::Fn(_, _) => 8,
             _ => 8,
         }
     }
@@ -917,6 +1431,16 @@ impl Codegen {
                 }
                 false
             }
+            ExprKind::MethodCall(receiver, method_name, _) => {
+                if let Ok(sname) = self.expr_struct_name(receiver) {
+                    let mangled = format!("{}_{}", sname, method_name);
+                    if let Some(ret_ty) = self.fn_ret_types.get(&mangled) {
+                        return *ret_ty == Type::Float;
+                    }
+                }
+                false
+            }
+            ExprKind::Closure(_) => false,
             _ => false,
         }
     }
@@ -955,6 +1479,24 @@ impl Codegen {
                 }
                 "i64".to_string()
             }
+            ExprKind::FieldAccess(obj, field) => {
+                if let Ok(sname) = self.expr_struct_name(obj) {
+                    if let Ok((_, fty)) = self.struct_field_index(&sname, field) {
+                        return self.llvm_type(&fty);
+                    }
+                }
+                "i64".to_string()
+            }
+            ExprKind::MethodCall(receiver, method_name, _) => {
+                if let Ok(sname) = self.expr_struct_name(receiver) {
+                    let mangled = format!("{}_{}", sname, method_name);
+                    if let Some(ret_ty) = self.fn_ret_types.get(&mangled) {
+                        return self.llvm_type(ret_ty);
+                    }
+                }
+                "i64".to_string()
+            }
+            ExprKind::Closure(_) => "ptr".to_string(),
             _ => "i64".to_string(),
         }
     }

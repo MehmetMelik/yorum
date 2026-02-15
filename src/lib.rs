@@ -2,6 +2,7 @@ pub mod compiler;
 
 use compiler::codegen::Codegen;
 use compiler::lexer::Lexer;
+use compiler::monomorphize::monomorphize;
 use compiler::ownership::OwnershipChecker;
 use compiler::parser::Parser;
 use compiler::typechecker::TypeChecker;
@@ -34,7 +35,10 @@ pub fn compile_to_ir(source: &str) -> Result<String, String> {
             .join("\n")
     })?;
 
-    // Phase 5: Code generation
+    // Phase 5: Monomorphize generics
+    let program = monomorphize(program);
+
+    // Phase 6: Code generation
     let mut codegen = Codegen::new();
     let ir = codegen.generate(&program).map_err(|e| format!("{}", e))?;
 

@@ -85,6 +85,7 @@ impl Lexer {
             '*' => TokenKind::Star,
             '%' => TokenKind::Percent,
             '&' => TokenKind::Ampersand,
+            '|' => TokenKind::Pipe,
 
             '-' => {
                 if self.peek() == Some('>') {

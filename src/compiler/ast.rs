@@ -34,6 +34,8 @@ pub enum Declaration {
     Struct(StructDecl),
     Enum(EnumDecl),
     Const(ConstDecl),
+    Impl(ImplDecl),
+    Trait(TraitDecl),
 }
 
 /// Function declaration with optional purity, contracts, and effect annotations.
@@ -42,6 +44,7 @@ pub struct FnDecl {
     pub name: String,
     pub is_pure: bool,
     pub is_pub: bool,
+    pub type_params: Vec<TypeParam>,
     pub params: Vec<Param>,
     pub return_type: Type,
     pub contracts: Vec<Contract>,
@@ -68,6 +71,7 @@ pub enum Contract {
 pub struct StructDecl {
     pub name: String,
     pub is_pub: bool,
+    pub type_params: Vec<TypeParam>,
     pub fields: Vec<Field>,
     pub span: Span,
 }
@@ -83,6 +87,7 @@ pub struct Field {
 pub struct EnumDecl {
     pub name: String,
     pub is_pub: bool,
+    pub type_params: Vec<TypeParam>,
     pub variants: Vec<Variant>,
     pub span: Span,
 }
@@ -103,6 +108,39 @@ pub struct ConstDecl {
     pub span: Span,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImplDecl {
+    pub target_type: String,
+    pub trait_name: Option<String>,
+    pub type_params: Vec<TypeParam>,
+    pub methods: Vec<FnDecl>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TraitDecl {
+    pub name: String,
+    pub is_pub: bool,
+    pub methods: Vec<TraitMethod>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TraitMethod {
+    pub name: String,
+    pub params: Vec<Param>,
+    pub return_type: Type,
+    pub default_body: Option<Block>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TypeParam {
+    pub name: String,
+    pub bounds: Vec<String>,
+    pub span: Span,
+}
+
 // ═══════════════════════════════════════════════════════════════
 //  Types
 // ═══════════════════════════════════════════════════════════════
@@ -119,6 +157,10 @@ pub enum Type {
     Ref(Box<Type>),
     MutRef(Box<Type>),
     Own(Box<Type>),
+    SelfType,
+    TypeVar(String),
+    Generic(String, Vec<Type>),
+    Fn(Vec<Type>, Box<Type>),
 }
 
 impl std::fmt::Display for Type {
@@ -134,6 +176,28 @@ impl std::fmt::Display for Type {
             Type::Ref(inner) => write!(f, "&{}", inner),
             Type::MutRef(inner) => write!(f, "&mut {}", inner),
             Type::Own(inner) => write!(f, "own {}", inner),
+            Type::SelfType => write!(f, "Self"),
+            Type::TypeVar(name) => write!(f, "{}", name),
+            Type::Generic(name, args) => {
+                write!(f, "{}<", name)?;
+                for (i, arg) in args.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", arg)?;
+                }
+                write!(f, ">")
+            }
+            Type::Fn(params, ret) => {
+                write!(f, "fn(")?;
+                for (i, p) in params.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", p)?;
+                }
+                write!(f, ") -> {}", ret)
+            }
         }
     }
 }
@@ -248,8 +312,18 @@ pub enum ExprKind {
     Unary(UnaryOp, Box<Expr>),
     Call(Box<Expr>, Vec<Expr>),
     FieldAccess(Box<Expr>, String),
+    MethodCall(Box<Expr>, String, Vec<Expr>),
     Index(Box<Expr>, Box<Expr>),
     StructInit(String, Vec<FieldInit>),
+    Closure(ClosureExpr),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClosureExpr {
+    pub params: Vec<Param>,
+    pub return_type: Type,
+    pub body: Block,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

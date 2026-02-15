@@ -48,8 +48,27 @@ impl OwnershipChecker {
 
     pub fn check_program(&mut self, program: &Program) -> Result<(), Vec<OwnershipError>> {
         for decl in &program.declarations {
-            if let Declaration::Function(f) = decl {
-                self.check_function(f);
+            match decl {
+                Declaration::Function(f) => self.check_function(f),
+                Declaration::Impl(i) => {
+                    for method in &i.methods {
+                        self.check_function(method);
+                    }
+                }
+                Declaration::Trait(t) => {
+                    for method in &t.methods {
+                        if let Some(body) = &method.default_body {
+                            // Check default method bodies (create a temporary FnDecl)
+                            self.push_scope();
+                            for param in &method.params {
+                                self.define(&param.name);
+                            }
+                            self.check_block(body);
+                            self.pop_scope();
+                        }
+                    }
+                }
+                _ => {}
             }
         }
 
@@ -157,6 +176,12 @@ impl OwnershipChecker {
             ExprKind::FieldAccess(obj, _) => {
                 self.check_expr_use(obj);
             }
+            ExprKind::MethodCall(receiver, _, args) => {
+                self.check_expr_use(receiver);
+                for arg in args {
+                    self.check_expr_use(arg);
+                }
+            }
             ExprKind::Index(arr, idx) => {
                 self.check_expr_use(arr);
                 self.check_expr_use(idx);
@@ -165,6 +190,15 @@ impl OwnershipChecker {
                 for fi in fields {
                     self.check_expr_use(&fi.value);
                 }
+            }
+            ExprKind::Closure(closure) => {
+                // Check the closure body in a new scope
+                self.push_scope();
+                for param in &closure.params {
+                    self.define(&param.name);
+                }
+                self.check_block(&closure.body);
+                self.pop_scope();
             }
             ExprKind::Literal(_) => {}
         }

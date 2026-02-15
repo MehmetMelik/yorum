@@ -43,6 +43,8 @@ pub enum TokenKind {
     Pure,
     Own,
     Impl,
+    Trait,
+    SelfType,
 
     // Logical operators (keyword-based, no &&/||/! ambiguity)
     And,
@@ -96,6 +98,8 @@ pub enum TokenKind {
     Percent,   // %
     Ampersand, // &
 
+    Pipe,      // |
+
     // ── Special ──────────────────────────────────────────────
     Underscore, // _
     EOF,
@@ -124,6 +128,8 @@ impl TokenKind {
             "pure" => Some(TokenKind::Pure),
             "own" => Some(TokenKind::Own),
             "impl" => Some(TokenKind::Impl),
+            "trait" => Some(TokenKind::Trait),
+            "Self" => Some(TokenKind::SelfType),
             "and" => Some(TokenKind::And),
             "or" => Some(TokenKind::Or),
             "not" => Some(TokenKind::Not),
@@ -172,6 +178,8 @@ impl fmt::Display for TokenKind {
             TokenKind::Pure => write!(f, "pure"),
             TokenKind::Own => write!(f, "own"),
             TokenKind::Impl => write!(f, "impl"),
+            TokenKind::Trait => write!(f, "trait"),
+            TokenKind::SelfType => write!(f, "Self"),
             TokenKind::And => write!(f, "and"),
             TokenKind::Or => write!(f, "or"),
             TokenKind::Not => write!(f, "not"),
@@ -210,6 +218,7 @@ impl fmt::Display for TokenKind {
             TokenKind::Slash => write!(f, "/"),
             TokenKind::Percent => write!(f, "%"),
             TokenKind::Ampersand => write!(f, "&"),
+            TokenKind::Pipe => write!(f, "|"),
             TokenKind::Underscore => write!(f, "_"),
             TokenKind::EOF => write!(f, "<EOF>"),
         }

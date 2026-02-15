@@ -1,6 +1,7 @@
 pub mod ast;
 pub mod codegen;
 pub mod lexer;
+pub mod monomorphize;
 pub mod ownership;
 pub mod parser;
 pub mod span;

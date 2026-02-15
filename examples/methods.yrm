@@ -1,0 +1,23 @@
+struct Point { x: int, y: int }
+
+impl Point {
+    fn get_x(self: &Point) -> int {
+        return self.x;
+    }
+
+    fn get_y(self: &Point) -> int {
+        return self.y;
+    }
+
+    fn sum(self: &Point) -> int {
+        return self.x + self.y;
+    }
+}
+
+fn main() -> int {
+    let p: Point = Point { x: 42, y: 10 };
+    print_int(p.get_x());
+    print_int(p.get_y());
+    print_int(p.sum());
+    return 0;
+}

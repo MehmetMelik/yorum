@@ -1,0 +1,18 @@
+fn identity<T>(x: T) -> T {
+    return x;
+}
+
+struct Pair<T, U> { first: T, second: U }
+
+fn main() -> int {
+    let x: int = identity(42);
+    let y: float = identity(3.14);
+    print_int(x);
+    print_float(y);
+
+    let p: Pair<int, float> = Pair { first: 1, second: 2.0 };
+    print_int(p.first);
+    print_float(p.second);
+
+    return 0;
+}

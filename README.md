@@ -5,8 +5,8 @@
 <h1 align="center">Yorum</h1>
 
 <p align="center">
-  <a href="https://github.com/kosem/yorum/actions/workflows/ci.yml"><img src="https://github.com/kosem/yorum/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://github.com/kosem/yorum/releases/latest"><img src="https://img.shields.io/github/v/release/kosem/yorum?label=release" alt="Release"></a>
+  <a href="https://github.com/MehmetMelik/yorum/actions/workflows/ci.yml"><img src="https://github.com/MehmetMelik/yorum/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/MehmetMelik/yorum/releases/latest"><img src="https://img.shields.io/github/v/release/MehmetMelik/yorum?label=release" alt="Release"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/lang-Rust-orange.svg" alt="Rust">
   <img src="https://img.shields.io/badge/LLVM-IR%20output-purple.svg" alt="LLVM IR">

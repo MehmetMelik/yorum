@@ -1,0 +1,101 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <!-- Background gradient -->
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0f172a"/>
+      <stop offset="100%" stop-color="#1e293b"/>
+    </linearGradient>
+
+    <!-- Y-branch gradient: teal to blue -->
+    <linearGradient id="branch" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#22d3ee"/>
+      <stop offset="50%" stop-color="#3b82f6"/>
+      <stop offset="100%" stop-color="#6366f1"/>
+    </linearGradient>
+
+    <!-- Node glow -->
+    <radialGradient id="nodeGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#22d3ee" stop-opacity="0.6"/>
+      <stop offset="100%" stop-color="#22d3ee" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- Subtle outer glow filter -->
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="3" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Rounded background -->
+  <rect width="512" height="512" rx="96" ry="96" fill="url(#bg)"/>
+
+  <!-- Subtle grid pattern for "code" feel -->
+  <g opacity="0.04" stroke="#94a3b8" stroke-width="1">
+    <line x1="128" y1="0" x2="128" y2="512"/>
+    <line x1="256" y1="0" x2="256" y2="512"/>
+    <line x1="384" y1="0" x2="384" y2="512"/>
+    <line x1="0" y1="128" x2="512" y2="128"/>
+    <line x1="0" y1="256" x2="512" y2="256"/>
+    <line x1="0" y1="384" x2="512" y2="384"/>
+  </g>
+
+  <!-- AST-branch Y shape -->
+  <g filter="url(#glow)">
+    <!-- Left branch: top-left to center -->
+    <line x1="126" y1="116" x2="256" y2="260" stroke="url(#branch)" stroke-width="28" stroke-linecap="round"/>
+
+    <!-- Right branch: top-right to center -->
+    <line x1="386" y1="116" x2="256" y2="260" stroke="url(#branch)" stroke-width="28" stroke-linecap="round"/>
+
+    <!-- Trunk: center down -->
+    <line x1="256" y1="260" x2="256" y2="410" stroke="url(#branch)" stroke-width="28" stroke-linecap="round"/>
+  </g>
+
+  <!-- AST nodes at branch tips and junction -->
+  <g filter="url(#glow)">
+    <!-- Top-left node -->
+    <circle cx="126" cy="116" r="18" fill="#0f172a" stroke="#22d3ee" stroke-width="4"/>
+    <circle cx="126" cy="116" r="8" fill="#22d3ee"/>
+
+    <!-- Top-right node -->
+    <circle cx="386" cy="116" r="18" fill="#0f172a" stroke="#22d3ee" stroke-width="4"/>
+    <circle cx="386" cy="116" r="8" fill="#22d3ee"/>
+
+    <!-- Center junction node -->
+    <circle cx="256" cy="260" r="22" fill="#0f172a" stroke="#3b82f6" stroke-width="4.5"/>
+    <circle cx="256" cy="260" r="10" fill="#3b82f6"/>
+
+    <!-- Bottom node (root/output) -->
+    <circle cx="256" cy="410" r="18" fill="#0f172a" stroke="#6366f1" stroke-width="4"/>
+    <circle cx="256" cy="410" r="8" fill="#6366f1"/>
+  </g>
+
+  <!-- Small decorative sub-nodes on left branch -->
+  <g opacity="0.5" filter="url(#glow)">
+    <circle cx="88" cy="152" r="6" fill="#22d3ee" opacity="0.3"/>
+    <line x1="88" y1="152" x2="126" y2="116" stroke="#22d3ee" stroke-width="2" opacity="0.3" stroke-linecap="round"/>
+
+    <circle cx="152" cy="80" r="6" fill="#22d3ee" opacity="0.3"/>
+    <line x1="152" y1="80" x2="126" y2="116" stroke="#22d3ee" stroke-width="2" opacity="0.3" stroke-linecap="round"/>
+  </g>
+
+  <!-- Small decorative sub-nodes on right branch -->
+  <g opacity="0.5" filter="url(#glow)">
+    <circle cx="424" cy="152" r="6" fill="#22d3ee" opacity="0.3"/>
+    <line x1="424" y1="152" x2="386" y2="116" stroke="#22d3ee" stroke-width="2" opacity="0.3" stroke-linecap="round"/>
+
+    <circle cx="360" cy="80" r="6" fill="#22d3ee" opacity="0.3"/>
+    <line x1="360" y1="80" x2="386" y2="116" stroke="#22d3ee" stroke-width="2" opacity="0.3" stroke-linecap="round"/>
+  </g>
+
+  <!-- Angle brackets < > hinting at "code" / "IR" flanking the trunk -->
+  <g fill="none" stroke="#6366f1" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" opacity="0.35">
+    <!-- Left angle bracket < -->
+    <polyline points="190,320 170,345 190,370"/>
+    <!-- Right angle bracket > -->
+    <polyline points="322,320 342,345 322,370"/>
+  </g>
+</svg>

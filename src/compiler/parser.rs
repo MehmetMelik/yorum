@@ -515,7 +515,14 @@ impl Parser {
                         args.push(self.parse_type()?);
                     }
                     self.expect(&TokenKind::Gt)?;
-                    Ok(Type::Generic(name, args))
+                    // Special-case Task<T> and Chan<T>
+                    if name == "Task" && args.len() == 1 {
+                        Ok(Type::Task(Box::new(args.into_iter().next().unwrap())))
+                    } else if name == "Chan" && args.len() == 1 {
+                        Ok(Type::Chan(Box::new(args.into_iter().next().unwrap())))
+                    } else {
+                        Ok(Type::Generic(name, args))
+                    }
                 } else {
                     Ok(Type::Named(name))
                 }
@@ -1014,6 +1021,15 @@ impl Parser {
                 let span = start.merge(self.prev_span());
                 Ok(Expr {
                     kind: ExprKind::ArrayLit(elements),
+                    span,
+                })
+            }
+            TokenKind::Spawn => {
+                self.advance();
+                let block = self.parse_block()?;
+                let span = start.merge(self.prev_span());
+                Ok(Expr {
+                    kind: ExprKind::Spawn(block),
                     span,
                 })
             }

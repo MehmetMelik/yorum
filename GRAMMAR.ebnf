@@ -1,6 +1,6 @@
 (* ═══════════════════════════════════════════════════════════════ *)
 (*  Yorum Language — Formal Grammar (EBNF)                       *)
-(*  Version 0.2.0                                                 *)
+(*  Version 0.4.0                                                 *)
 (* ═══════════════════════════════════════════════════════════════ *)
 
 (* ── Top-level ─────────────────────────────────────────────── *)
@@ -75,6 +75,8 @@ type            = "int"
                 | "string"
                 | "unit"
                 | "Self"               (* implementing type in trait/impl *)
+                | "Task" "<" type ">"  (* task handle *)
+                | "Chan" "<" type ">"  (* channel *)
                 | IDENT [ "<" type_list ">" ]   (* named, optionally generic *)
                 | "fn" "(" [ type_list ] ")" "->" type   (* function type *)
                 | "[" type "]"          (* array *)
@@ -90,6 +92,7 @@ stmt            = let_stmt
                 | return_stmt
                 | if_stmt
                 | while_stmt
+                | for_stmt
                 | match_stmt
                 | assign_or_expr_stmt ;
 
@@ -100,6 +103,8 @@ return_stmt     = "return" [ expr ] ";" ;
 if_stmt         = "if" expr block [ "else" ( if_stmt | block ) ] ;
 
 while_stmt      = "while" expr block ;
+
+for_stmt        = "for" IDENT "in" expr block ;
 
 match_stmt      = "match" expr "{" { match_arm } "}" ;
 
@@ -161,7 +166,13 @@ primary         = INT_LIT
                 | STRING_LIT
                 | IDENT [ struct_init ]
                 | "(" expr ")"
+                | array_lit
+                | spawn_expr
                 | closure_expr ;
+
+array_lit       = "[" [ expr { "," expr } [ "," ] ] "]" ;
+
+spawn_expr      = "spawn" block ;
 
 closure_expr    = "|" [ param_list ] "|" "->" type block ;
 
@@ -197,7 +208,7 @@ ESCAPE          = "\\" ( "n" | "t" | "r" | "\\" | '"' | "0" ) ;
 (* Doc comments:   /// ...    (stored as metadata)               *)
 
 (* ── Keywords ──────────────────────────────────────────────── *)
-(* fn  let  mut  return  if  else  while  for  in  match         *)
+(* fn  let  mut  return  if  else  while  for  in  match  spawn  *)
 (* struct  enum  module  use  const  pub  pure  own  impl  trait *)
 (* and  or  not  true  false  Self                               *)
 (* requires  ensures  effects                                    *)

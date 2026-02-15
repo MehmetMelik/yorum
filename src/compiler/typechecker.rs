@@ -79,6 +79,7 @@ pub struct TypeChecker {
     type_param_scope: Vec<HashSet<String>>,
     current_self_type: Option<Type>,
     current_fn_ret: Option<Type>,
+    current_fn_is_pure: bool,
     errors: Vec<TypeError>,
 }
 
@@ -101,6 +102,7 @@ impl TypeChecker {
             type_param_scope: Vec::new(),
             current_self_type: None,
             current_fn_ret: None,
+            current_fn_is_pure: false,
             errors: Vec::new(),
         };
         checker.register_builtins();
@@ -108,37 +110,39 @@ impl TypeChecker {
     }
 
     fn register_builtins(&mut self) {
-        let builtin = |params: Vec<Type>, ret: Type| FnSig {
+        let builtin = |params: Vec<Type>, ret: Type, is_pure: bool| FnSig {
             params,
             ret,
-            is_pure: false,
+            is_pure,
             type_params: Vec::new(),
         };
         self.functions.insert(
             "print_int".to_string(),
-            builtin(vec![Type::Int], Type::Unit),
+            builtin(vec![Type::Int], Type::Unit, false),
         );
         self.functions.insert(
             "print_float".to_string(),
-            builtin(vec![Type::Float], Type::Unit),
+            builtin(vec![Type::Float], Type::Unit, false),
         );
         self.functions.insert(
             "print_bool".to_string(),
-            builtin(vec![Type::Bool], Type::Unit),
+            builtin(vec![Type::Bool], Type::Unit, false),
         );
         self.functions.insert(
             "print_str".to_string(),
-            builtin(vec![Type::Str], Type::Unit),
+            builtin(vec![Type::Str], Type::Unit, false),
         );
-        self.functions
-            .insert("str_len".to_string(), builtin(vec![Type::Str], Type::Int));
+        self.functions.insert(
+            "str_len".to_string(),
+            builtin(vec![Type::Str], Type::Int, true),
+        );
         self.functions.insert(
             "str_concat".to_string(),
-            builtin(vec![Type::Str, Type::Str], Type::Str),
+            builtin(vec![Type::Str, Type::Str], Type::Str, false),
         );
         self.functions.insert(
             "str_eq".to_string(),
-            builtin(vec![Type::Str, Type::Str], Type::Bool),
+            builtin(vec![Type::Str, Type::Str], Type::Bool, true),
         );
     }
 
@@ -293,6 +297,8 @@ impl TypeChecker {
                     .collect(),
                 Box::new(self.resolve_self_type(ret, concrete)),
             ),
+            Type::Task(inner) => Type::Task(Box::new(self.resolve_self_type(inner, concrete))),
+            Type::Chan(inner) => Type::Chan(Box::new(self.resolve_self_type(inner, concrete))),
             other => other.clone(),
         }
     }
@@ -318,6 +324,7 @@ impl TypeChecker {
         }
 
         self.current_fn_ret = Some(f.return_type.clone());
+        self.current_fn_is_pure = f.is_pure;
         self.push_scope();
 
         // Bind parameters
@@ -334,9 +341,32 @@ impl TypeChecker {
         // Bind "result" for ensures clauses
         self.define("result", f.return_type.clone(), false);
 
+        // Type-check contract expressions
+        for contract in &f.contracts {
+            match contract {
+                Contract::Requires(expr) | Contract::Ensures(expr) => {
+                    if let Some(ty) = self.infer_expr(expr) {
+                        if ty != Type::Bool {
+                            let kind = if matches!(contract, Contract::Requires(_)) {
+                                "requires"
+                            } else {
+                                "ensures"
+                            };
+                            self.errors.push(TypeError {
+                                message: format!("{} clause must be 'bool', found '{}'", kind, ty),
+                                span: expr.span,
+                            });
+                        }
+                    }
+                }
+                Contract::Effects(_) => {}
+            }
+        }
+
         self.check_block(&f.body);
         self.pop_scope();
         self.current_fn_ret = None;
+        self.current_fn_is_pure = false;
 
         if !f.type_params.is_empty() {
             self.type_param_scope.pop();
@@ -668,7 +698,89 @@ impl TypeChecker {
                         }
                         return None;
                     }
+                    // Built-in concurrency functions
+                    if name == "chan" {
+                        if !args.is_empty() {
+                            self.errors.push(TypeError {
+                                message: "chan() takes no arguments".to_string(),
+                                span: expr.span,
+                            });
+                        }
+                        // Type is inferred from the let binding context
+                        // For now return Chan<int> as default; the let stmt will set the real type
+                        return Some(Type::Chan(Box::new(Type::Int)));
+                    }
+                    if name == "send" {
+                        if args.len() != 2 {
+                            self.errors.push(TypeError {
+                                message: format!(
+                                    "'send' expects 2 arguments, found {}",
+                                    args.len()
+                                ),
+                                span: expr.span,
+                            });
+                            return None;
+                        }
+                        if let Some(ch_ty) = self.infer_expr(&args[0]) {
+                            if let Type::Chan(inner) = &ch_ty {
+                                if let Some(val_ty) = self.infer_expr(&args[1]) {
+                                    if val_ty != **inner {
+                                        self.errors.push(TypeError {
+                                            message: format!(
+                                                "send: channel expects '{}', found '{}'",
+                                                inner, val_ty
+                                            ),
+                                            span: args[1].span,
+                                        });
+                                    }
+                                }
+                            } else {
+                                self.errors.push(TypeError {
+                                    message: format!(
+                                        "send: first argument must be a channel, found '{}'",
+                                        ch_ty
+                                    ),
+                                    span: args[0].span,
+                                });
+                            }
+                        }
+                        return Some(Type::Unit);
+                    }
+                    if name == "recv" {
+                        if args.len() != 1 {
+                            self.errors.push(TypeError {
+                                message: format!("'recv' expects 1 argument, found {}", args.len()),
+                                span: expr.span,
+                            });
+                            return None;
+                        }
+                        if let Some(ch_ty) = self.infer_expr(&args[0]) {
+                            if let Type::Chan(inner) = ch_ty {
+                                return Some(*inner);
+                            } else {
+                                self.errors.push(TypeError {
+                                    message: format!(
+                                        "recv: argument must be a channel, found '{}'",
+                                        ch_ty
+                                    ),
+                                    span: args[0].span,
+                                });
+                            }
+                        }
+                        return None;
+                    }
+
                     if let Some(sig) = self.functions.get(name).cloned() {
+                        // Enforce purity: pure functions cannot call impure functions
+                        if self.current_fn_is_pure && !sig.is_pure {
+                            self.errors.push(TypeError {
+                                message: format!(
+                                    "pure function cannot call impure function '{}'",
+                                    name
+                                ),
+                                span: expr.span,
+                            });
+                        }
                         if args.len() != sig.params.len() {
                             self.errors.push(TypeError {
                                 message: format!(
@@ -811,6 +923,29 @@ impl TypeChecker {
 
             ExprKind::MethodCall(receiver, method_name, args) => {
                 let recv_ty = self.infer_expr(receiver)?;
+
+                // Handle .join() on Task<T>
+                if let Type::Task(inner) = &recv_ty {
+                    if method_name == "join" {
+                        if !args.is_empty() {
+                            self.errors.push(TypeError {
+                                message: "join() takes no arguments".to_string(),
+                                span: expr.span,
+                            });
+                        }
+                        return Some(*inner.clone());
+                    } else {
+                        self.errors.push(TypeError {
+                            message: format!(
+                                "no method '{}' found for type '{}'",
+                                method_name, recv_ty
+                            ),
+                            span: expr.span,
+                        });
+                        return None;
+                    }
+                }
+
                 let type_name = match &recv_ty {
                     Type::Named(n) => n.clone(),
                     Type::Ref(inner) | Type::MutRef(inner) => {
@@ -1009,6 +1144,22 @@ impl TypeChecker {
                 Some(Type::Array(Box::new(first_ty)))
             }
 
+            ExprKind::Spawn(block) => {
+                // Spawn block: push scope, check block, infer return type
+                if self.current_fn_is_pure {
+                    self.errors.push(TypeError {
+                        message: "pure function cannot use spawn".to_string(),
+                        span: expr.span,
+                    });
+                }
+                self.push_scope();
+                self.check_block(block);
+                // Infer the return type from the last return statement in the block
+                let inner_ty = self.infer_spawn_return_type(block);
+                self.pop_scope();
+                Some(Type::Task(Box::new(inner_ty)))
+            }
+
             ExprKind::StructInit(name, fields) => {
                 if let Some(info) = self.structs.get(name).cloned() {
                     // Check that all fields are provided
@@ -1183,6 +1334,8 @@ impl TypeChecker {
                     .collect(),
                 Box::new(self.substitute_type_vars(ret, bindings)),
             ),
+            Type::Task(inner) => Type::Task(Box::new(self.substitute_type_vars(inner, bindings))),
+            Type::Chan(inner) => Type::Chan(Box::new(self.substitute_type_vars(inner, bindings))),
             other => other.clone(),
         }
     }
@@ -1203,6 +1356,52 @@ impl TypeChecker {
                 self.structs.contains_key(name) || self.enums.contains_key(name)
             }
             Type::Fn(_, _) => true,
+            Type::Task(inner) => self.is_valid_type(inner),
+            Type::Chan(inner) => self.is_valid_type(inner),
+        }
+    }
+
+    fn infer_spawn_return_type(&self, block: &Block) -> Type {
+        for stmt in block.stmts.iter().rev() {
+            if let Stmt::Return(ret) = stmt {
+                // Try to infer from the return expression
+                if let Some(ty) = self.infer_expr_type_simple(&ret.value) {
+                    return ty;
+                }
+            }
+        }
+        Type::Unit
+    }
+
+    /// Simple expression type inference without mutation (no error pushing).
+    fn infer_expr_type_simple(&self, expr: &Expr) -> Option<Type> {
+        match &expr.kind {
+            ExprKind::Literal(lit) => Some(match lit {
+                Literal::Int(_) => Type::Int,
+                Literal::Float(_) => Type::Float,
+                Literal::Bool(_) => Type::Bool,
+                Literal::String(_) => Type::Str,
+            }),
+            ExprKind::Ident(name) => self.lookup(name).map(|info| info.ty.clone()),
+            ExprKind::Binary(_, op, _) => match op {
+                BinOp::Eq
+                | BinOp::NotEq
+                | BinOp::Lt
+                | BinOp::Gt
+                | BinOp::LtEq
+                | BinOp::GtEq
+                | BinOp::And
+                | BinOp::Or => Some(Type::Bool),
+                BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
+                    // Infer from LHS
+                    if let ExprKind::Literal(Literal::Float(_)) = &expr.kind {
+                        Some(Type::Float)
+                    } else {
+                        Some(Type::Int)
+                    }
+                }
+            },
+            _ => None,
         }
     }
 }

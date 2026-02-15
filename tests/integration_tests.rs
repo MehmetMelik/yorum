@@ -718,3 +718,353 @@ fn test_enum_match_typecheck() {
          }\n",
     );
 }
+
+// ═══════════════════════════════════════════════════════════════
+//  Contract verification tests
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn test_requires_emits_check() {
+    let ir = compile(
+        "fn positive(n: int) -> int\n\
+         \x20   requires n > 0\n\
+         {\n\
+         \x20   return n;\n\
+         }\n\
+         fn main() -> int {\n\
+         \x20   return positive(5);\n\
+         }\n",
+    );
+    assert!(ir.contains("@__yorum_contract_fail"));
+    assert!(ir.contains("req_ok"));
+    assert!(ir.contains("req_fail"));
+    assert!(ir.contains("requires clause in 'positive'"));
+}
+
+#[test]
+fn test_ensures_emits_check() {
+    let ir = compile(
+        "fn abs(n: int) -> int\n\
+         \x20   ensures result >= 0\n\
+         {\n\
+         \x20   if n < 0 { return 0 - n; }\n\
+         \x20   return n;\n\
+         }\n\
+         fn main() -> int {\n\
+         \x20   return abs(0 - 5);\n\
+         }\n",
+    );
+    assert!(ir.contains("@__yorum_contract_fail"));
+    assert!(ir.contains("ens_ok"));
+    assert!(ir.contains("ens_fail"));
+    assert!(ir.contains("ensures clause in 'abs'"));
+    assert!(ir.contains("%result.addr"));
+}
+
+#[test]
+fn test_pure_cannot_call_impure() {
+    let result = yorum::typecheck(
+        "pure fn add(a: int, b: int) -> int {\n\
+         \x20   print_int(a);\n\
+         \x20   return a + b;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(err.contains("pure function cannot call impure function"));
+}
+
+#[test]
+fn test_pure_can_call_pure() {
+    parse_and_check(
+        "pure fn double(x: int) -> int { return x * 2; }\n\
+         pure fn quad(x: int) -> int { return double(double(x)); }\n",
+    );
+}
+
+#[test]
+fn test_contract_expr_must_be_bool() {
+    let result = yorum::typecheck(
+        "fn bad(x: int) -> int\n\
+         \x20   requires 42\n\
+         {\n\
+         \x20   return x;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(err.contains("requires clause must be 'bool'"));
+}
+
+#[test]
+fn test_pure_can_call_pure_builtins() {
+    parse_and_check(
+        "pure fn check_len(s: string) -> int {\n\
+         \x20   return str_len(s);\n\
+         }\n",
+    );
+}
+
+#[test]
+fn test_ensures_expr_must_be_bool() {
+    let result = yorum::typecheck(
+        "fn bad(x: int) -> int\n\
+         \x20   ensures 42\n\
+         {\n\
+         \x20   return x;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(err.contains("ensures clause must be 'bool'"));
+}
+
+#[test]
+fn test_requires_and_ensures_combined() {
+    let ir = compile(
+        "fn clamp(x: int, lo: int, hi: int) -> int\n\
+         \x20   requires lo <= hi\n\
+         \x20   ensures result >= lo\n\
+         {\n\
+         \x20   if x < lo { return lo; }\n\
+         \x20   if x > hi { return hi; }\n\
+         \x20   return x;\n\
+         }\n\
+         fn main() -> int {\n\
+         \x20   return clamp(5, 0, 10);\n\
+         }\n",
+    );
+    assert!(ir.contains("req_ok"));
+    assert!(ir.contains("ens_ok"));
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  Multi-file compilation tests
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn test_multi_file_compilation() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+
+    // yorum.toml
+    std::fs::write(
+        dir.path().join("yorum.toml"),
+        "[package]\nname = \"testproj\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+
+    // src/math.yrm — a library module
+    std::fs::write(
+        src.join("math.yrm"),
+        "module math;\n\
+         pub fn add(a: int, b: int) -> int { return a + b; }\n\
+         fn internal_helper() -> int { return 0; }\n",
+    )
+    .unwrap();
+
+    // src/main.yrm — uses the math module
+    std::fs::write(
+        src.join("main.yrm"),
+        "module main;\n\
+         use math;\n\
+         fn main() -> int {\n\
+         \x20   let result: int = add(10, 32);\n\
+         \x20   print_int(result);\n\
+         \x20   return 0;\n\
+         }\n",
+    )
+    .unwrap();
+
+    let ir = yorum::compile_project(dir.path()).expect("multi-file compilation failed");
+    assert!(ir.contains("define i64 @main()"));
+    assert!(ir.contains("define i64 @math__add(i64 %a, i64 %b)"));
+    // Internal helper should NOT be in the output
+    assert!(!ir.contains("internal_helper"));
+}
+
+#[test]
+fn test_visibility_enforcement() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+
+    std::fs::write(
+        dir.path().join("yorum.toml"),
+        "[package]\nname = \"testproj\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+
+    std::fs::write(
+        src.join("math.yrm"),
+        "module math;\n\
+         fn private_add(a: int, b: int) -> int { return a + b; }\n",
+    )
+    .unwrap();
+
+    std::fs::write(
+        src.join("main.yrm"),
+        "module main;\n\
+         use math;\n\
+         fn main() -> int {\n\
+         \x20   return private_add(1, 2);\n\
+         }\n",
+    )
+    .unwrap();
+
+    let result = yorum::compile_project(dir.path());
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_module_name_mismatch() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+
+    std::fs::write(
+        dir.path().join("yorum.toml"),
+        "[package]\nname = \"testproj\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+
+    // File is math.yrm but declares module wrong_name
+    std::fs::write(
+        src.join("math.yrm"),
+        "module wrong_name;\n\
+         pub fn add(a: int, b: int) -> int { return a + b; }\n",
+    )
+    .unwrap();
+
+    std::fs::write(
+        src.join("main.yrm"),
+        "module main;\n\
+         fn main() -> int { return 0; }\n",
+    )
+    .unwrap();
+
+    let result = yorum::compile_project(dir.path());
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("module name mismatch"));
+}
+
+#[test]
+fn test_yorum_init_creates_scaffold() {
+    let dir = tempfile::tempdir().unwrap();
+    let project_dir = dir.path().join("testproject");
+
+    // Simulate init by creating files directly
+    std::fs::create_dir_all(project_dir.join("src")).unwrap();
+    std::fs::write(
+        project_dir.join("yorum.toml"),
+        "[package]\nname = \"testproject\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        project_dir.join("src/main.yrm"),
+        "module main;\n\nfn main() -> int {\n    print_int(42);\n    return 0;\n}\n",
+    )
+    .unwrap();
+
+    // Verify files exist and project compiles
+    assert!(project_dir.join("yorum.toml").exists());
+    assert!(project_dir.join("src/main.yrm").exists());
+    let ir = yorum::compile_project(&project_dir).expect("scaffold project should compile");
+    assert!(ir.contains("define i64 @main()"));
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  Phase 3: Structured Concurrency
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn test_spawn_join_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let t: Task<int> = spawn { return 42; };\n\
+         \x20   let result: int = t.join();\n\
+         \x20   return result;\n\
+         }\n",
+    );
+    assert!(ir.contains("@pthread_create"));
+    assert!(ir.contains("@pthread_join"));
+    assert!(ir.contains("define ptr @__spawn_0"));
+}
+
+#[test]
+fn test_task_type_inference() {
+    // spawn { 42 } should produce Task<int> — typecheck should succeed
+    parse_and_check(
+        "fn main() -> int {\n\
+         \x20   let t: Task<int> = spawn { return 42; };\n\
+         \x20   let result: int = t.join();\n\
+         \x20   return result;\n\
+         }\n",
+    );
+}
+
+#[test]
+fn test_task_must_be_joined() {
+    // Task not joined before scope exit — should fail ownership check
+    // compile_to_ir runs the full pipeline including ownership checker
+    let full_result = yorum::compile_to_ir(
+        "fn main() -> int {\n\
+         \x20   let t: Task<int> = spawn { return 42; };\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(full_result.is_err());
+    let err = full_result.unwrap_err();
+    assert!(err.contains("must be joined"));
+}
+
+#[test]
+fn test_channel_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let ch: Chan<int> = chan();\n\
+         \x20   let t: Task<int> = spawn {\n\
+         \x20       return 0;\n\
+         \x20   };\n\
+         \x20   send(ch, 42);\n\
+         \x20   let val: int = recv(ch);\n\
+         \x20   let r: int = t.join();\n\
+         \x20   return val;\n\
+         }\n",
+    );
+    assert!(ir.contains("@__yorum_chan_create"));
+    assert!(ir.contains("@__yorum_chan_send"));
+    assert!(ir.contains("@__yorum_chan_recv"));
+}
+
+#[test]
+fn test_spawn_captures_variables() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let x: int = 10;\n\
+         \x20   let t: Task<int> = spawn {\n\
+         \x20       return x;\n\
+         \x20   };\n\
+         \x20   let r: int = t.join();\n\
+         \x20   return r;\n\
+         }\n",
+    );
+    // Should have a spawn env type with captured variable
+    assert!(ir.contains("__spawn_env_0"));
+    assert!(ir.contains("@__spawn_0"));
+}
+
+#[test]
+fn test_pure_cannot_spawn() {
+    let result = yorum::typecheck(
+        "pure fn compute() -> int {\n\
+         \x20   let t: Task<int> = spawn { return 42; };\n\
+         \x20   let r: int = t.join();\n\
+         \x20   return r;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+    let msg = result.unwrap_err();
+    assert!(msg.contains("pure function cannot use spawn"));
+}

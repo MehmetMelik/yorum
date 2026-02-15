@@ -1,9 +1,11 @@
 pub mod ast;
 pub mod codegen;
 pub mod lexer;
+pub mod module_resolver;
 pub mod monomorphize;
 pub mod ownership;
 pub mod parser;
+pub mod project;
 pub mod span;
 pub mod token;
 pub mod typechecker;

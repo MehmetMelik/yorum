@@ -1,0 +1,14 @@
+module concurrency;
+
+fn main() -> int {
+    let t1: Task<int> = spawn {
+        return 10;
+    };
+    let t2: Task<int> = spawn {
+        return 32;
+    };
+    let a: int = t1.join();
+    let b: int = t2.join();
+    print_int(a + b);
+    return 0;
+}

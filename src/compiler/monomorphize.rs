@@ -184,6 +184,9 @@ impl Monomorphizer {
             ExprKind::Closure(c) => {
                 self.collect_from_block(&c.body);
             }
+            ExprKind::Spawn(block) => {
+                self.collect_from_block(block);
+            }
             _ => {}
         }
     }
@@ -373,6 +376,8 @@ fn substitute_type(ty: &Type, subst: &HashMap<String, Type>) -> Type {
         Type::MutRef(inner) => Type::MutRef(Box::new(substitute_type(inner, subst))),
         Type::Own(inner) => Type::Own(Box::new(substitute_type(inner, subst))),
         Type::Array(inner) => Type::Array(Box::new(substitute_type(inner, subst))),
+        Type::Task(inner) => Type::Task(Box::new(substitute_type(inner, subst))),
+        Type::Chan(inner) => Type::Chan(Box::new(substitute_type(inner, subst))),
         Type::Fn(params, ret) => Type::Fn(
             params.iter().map(|p| substitute_type(p, subst)).collect(),
             Box::new(substitute_type(ret, subst)),
@@ -406,7 +411,15 @@ fn substitute_fn_decl(f: &FnDecl, mangled_name: &str, subst: &HashMap<String, Ty
             })
             .collect(),
         return_type: substitute_type(&f.return_type, subst),
-        contracts: f.contracts.clone(),
+        contracts: f
+            .contracts
+            .iter()
+            .map(|c| match c {
+                Contract::Requires(e) => Contract::Requires(substitute_expr(e, subst)),
+                Contract::Ensures(e) => Contract::Ensures(substitute_expr(e, subst)),
+                Contract::Effects(e) => Contract::Effects(e.clone()),
+            })
+            .collect(),
         body: substitute_block(&f.body, subst),
         span: f.span,
     }
@@ -544,6 +557,7 @@ fn substitute_expr(expr: &Expr, subst: &HashMap<String, Type>) -> Expr {
             body: substitute_block(&c.body, subst),
             span: c.span,
         }),
+        ExprKind::Spawn(block) => ExprKind::Spawn(substitute_block(block, subst)),
         other => other.clone(),
     };
     Expr {
@@ -787,6 +801,15 @@ fn rewrite_expr(
         ExprKind::Closure(c) => {
             rewrite_block(
                 &mut c.body,
+                generic_fns,
+                _generic_structs,
+                fn_insts,
+                _struct_insts,
+            );
+        }
+        ExprKind::Spawn(block) => {
+            rewrite_block(
+                block,
                 generic_fns,
                 _generic_structs,
                 fn_insts,

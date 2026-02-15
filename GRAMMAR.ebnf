@@ -1,6 +1,6 @@
 (* ═══════════════════════════════════════════════════════════════ *)
 (*  Yorum Language — Formal Grammar (EBNF)                       *)
-(*  Version 0.1.0                                                 *)
+(*  Version 0.2.0                                                 *)
 (* ═══════════════════════════════════════════════════════════════ *)
 
 (* ── Top-level ─────────────────────────────────────────────── *)
@@ -18,9 +18,11 @@ module_path     = IDENT { "." IDENT } ;
 declaration     = [ "pub" ] [ "pure" ] fn_decl
                 | [ "pub" ] struct_decl
                 | [ "pub" ] enum_decl
-                | [ "pub" ] const_decl ;
+                | [ "pub" ] const_decl
+                | impl_decl
+                | [ "pub" ] trait_decl ;
 
-fn_decl         = "fn" IDENT "(" [ param_list ] ")" "->" type
+fn_decl         = "fn" IDENT [ type_params ] "(" [ param_list ] ")" "->" type
                   { contract_clause }
                   block ;
 
@@ -32,13 +34,13 @@ contract_clause = "requires" expr
                 | "ensures"  expr
                 | "effects"  IDENT { "," IDENT } ;
 
-struct_decl     = "struct" IDENT "{" field_list "}" ;
+struct_decl     = "struct" IDENT [ type_params ] "{" field_list "}" ;
 
 field_list      = field { "," field } [ "," ] ;
 
 field           = IDENT ":" type ;
 
-enum_decl       = "enum" IDENT "{" variant_list "}" ;
+enum_decl       = "enum" IDENT [ type_params ] "{" variant_list "}" ;
 
 variant_list    = variant { "," variant } [ "," ] ;
 
@@ -48,6 +50,23 @@ type_list       = type { "," type } ;
 
 const_decl      = "const" IDENT ":" type "=" expr ";" ;
 
+impl_decl       = "impl" IDENT [ type_params ]
+                  [ "for" IDENT ]
+                  "{" { [ "pub" ] [ "pure" ] fn_decl } "}" ;
+
+trait_decl      = "trait" IDENT "{"
+                  { trait_method }
+                  "}" ;
+
+trait_method    = "fn" IDENT "(" [ param_list ] ")" "->" type
+                  ( ";" | block ) ;
+
+type_params     = "<" type_param { "," type_param } ">" ;
+
+type_param      = IDENT [ ":" bound_list ] ;
+
+bound_list      = IDENT { "+" IDENT } ;
+
 (* ── Types ─────────────────────────────────────────────────── *)
 
 type            = "int"
@@ -55,7 +74,9 @@ type            = "int"
                 | "bool"
                 | "string"
                 | "unit"
-                | IDENT                 (* named / struct / enum *)
+                | "Self"               (* implementing type in trait/impl *)
+                | IDENT [ "<" type_list ">" ]   (* named, optionally generic *)
+                | "fn" "(" [ type_list ] ")" "->" type   (* function type *)
                 | "[" type "]"          (* array *)
                 | "&" type              (* immutable reference *)
                 | "&" "mut" type        (* mutable reference *)
@@ -103,7 +124,7 @@ pattern_list    = pattern { "," pattern } ;
 (*   5. +  -                                                     *)
 (*   6. *  /  %                                                  *)
 (*   7. unary: -  not                                            *)
-(*   8. postfix: call, field access, index                       *)
+(*   8. postfix: call, method call, field access, index          *)
 
 expr            = or_expr ;
 
@@ -122,9 +143,11 @@ mul_expr        = unary_expr { ( "*" | "/" | "%" ) unary_expr } ;
 unary_expr      = ( "-" | "not" ) unary_expr
                 | postfix_expr ;
 
-postfix_expr    = primary { call_suffix | field_suffix | index_suffix } ;
+postfix_expr    = primary { call_suffix | method_suffix | field_suffix | index_suffix } ;
 
 call_suffix     = "(" [ arg_list ] ")" ;
+
+method_suffix   = "." IDENT "(" [ arg_list ] ")" ;
 
 field_suffix    = "." IDENT ;
 
@@ -137,7 +160,10 @@ primary         = INT_LIT
                 | "true" | "false"
                 | STRING_LIT
                 | IDENT [ struct_init ]
-                | "(" expr ")" ;
+                | "(" expr ")"
+                | closure_expr ;
+
+closure_expr    = "|" [ param_list ] "|" "->" type block ;
 
 struct_init     = "{" field_init_list "}" ;
 
@@ -172,7 +198,7 @@ ESCAPE          = "\\" ( "n" | "t" | "r" | "\\" | '"' | "0" ) ;
 
 (* ── Keywords ──────────────────────────────────────────────── *)
 (* fn  let  mut  return  if  else  while  for  in  match         *)
-(* struct  enum  module  use  const  pub  pure  own  impl        *)
-(* and  or  not  true  false                                     *)
+(* struct  enum  module  use  const  pub  pure  own  impl  trait *)
+(* and  or  not  true  false  Self                               *)
 (* requires  ensures  effects                                    *)
 (* int  float  bool  string  unit                                *)

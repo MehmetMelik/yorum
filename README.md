@@ -96,6 +96,7 @@ exactly one owner.
 | `&T` | Immutable reference | `ptr` |
 | `&mut T` | Mutable reference | `ptr` |
 | `own T` | Explicit ownership | `ptr` |
+| `[T]` | Array (heap-allocated) | `{ ptr, i64 }` |
 | `fn(T) -> U` | Function type (closures) | `ptr` |
 
 No implicit coercion between any types.
@@ -218,26 +219,65 @@ Closures capture variables from their enclosing scope. They compile to
 and the function takes the environment as its first argument. Closures can be
 passed to higher-order functions via `fn(T) -> U` types.
 
+### Arrays and For Loops
+
+```
+fn sum_array(nums: [int]) -> int {
+    let mut total: int = 0;
+    for x in nums {
+        total = total + x;
+    }
+    return total;
+}
+
+fn main() -> int {
+    let nums: [int] = [10, 20, 30, 40, 50];
+    print_int(len(nums));          // 5
+    print_int(nums[0]);            // 10
+    print_int(sum_array(nums));    // 150
+
+    let mut arr: [int] = [1, 2, 3];
+    arr[0] = 100;
+    print_int(arr[0]);             // 100
+    return 0;
+}
+```
+
+Arrays are heap-allocated fat pointers (`{ ptr, i64 }` — data pointer + length).
+`len(arr)` returns the length. Index access includes runtime bounds checking.
+`for x in arr { ... }` iterates over array elements.
+
+### String Operations
+
+```
+let n: int = str_len("hello");                    // 5
+let s: string = str_concat("hello", " world");    // "hello world"
+let eq: bool = str_eq("abc", "abc");              // true
+```
+
+Built-in string functions: `str_len`, `str_concat`, `str_eq`.
+
 ### Enums and Pattern Matching
 
 ```
-enum Direction {
-    North,
-    South,
-    East,
-    West,
+enum Option { Some(int), None }
+
+fn get_or(opt: Option, default_val: int) -> int {
+    match opt {
+        Some(val) => { return val; }
+        None => { return default_val; }
+    }
 }
 
-fn delta_x(dir: int) -> int {
-    match dir {
-        2 => { return 1; },
-        3 => { return -1; },
-        _ => { return 0; },
-    }
+fn main() -> int {
+    let x: Option = Some(42);
+    print_int(get_or(x, 0));    // 42
+    return 0;
 }
 ```
 
-Match arms always use block bodies (`=> { ... }`). Wildcard `_` catches
+Enums support data-carrying variants. Match arms use block bodies (`=> { ... }`)
+and can destructure variant payloads into bindings. Wildcard `_` catches
 remaining cases. No fallthrough.
 
 ### Control Flow
@@ -420,13 +460,13 @@ source.yrm
 | Monomorphizer | `src/compiler/monomorphize.rs` | Eliminates generics by cloning concrete instantiations |
 | Codegen | `src/compiler/codegen.rs` | Textual LLVM IR, alloca/load/store pattern |
 
-The compiler is ~6,600 lines of Rust with only `serde` and `serde_json` as
+The compiler is ~7,500 lines of Rust with only `serde` and `serde_json` as
 dependencies.
 
 ## Testing
 
 ```bash
-cargo test                    # 70 tests (34 unit + 36 integration)
+cargo test                    # 86 tests (34 unit + 52 integration)
 cargo test compiler::lexer    # tests in one module
 cargo test test_fibonacci     # single test by name
 ```
@@ -435,14 +475,14 @@ cargo test test_fibonacci     # single test by name
 
 - **[SPEC.md](SPEC.md)** — Full language specification
 - **[GRAMMAR.ebnf](GRAMMAR.ebnf)** — Formal grammar in EBNF notation
-- **[examples/](examples/)** — Working programs that compile to native binaries (methods, traits, generics, closures)
+- **[examples/](examples/)** — Working programs that compile to native binaries (methods, traits, generics, closures, arrays, strings)
 
 ## Roadmap
 
 | Version | Features | Status |
 |---|---|---|
 | **v0.2** | Generics, closures, `impl` blocks, trait system | Done |
-| **v0.3** | Arrays/slices, string operations, `for` loops, nested pattern matching | |
+| **v0.3** | Arrays, string operations, `for` loops, nested pattern matching | Done |
 | **v0.4** | Structured concurrency, runtime contract verification, package manager | |
 | **v1.0** | Self-hosting compiler, standard library, LSP server | |
 

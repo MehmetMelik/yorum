@@ -1,0 +1,46 @@
+// structs.yrm — Struct types and field access.
+//
+// Demonstrates: struct definition, initialization, field access,
+//               functions operating on structs.
+
+module structs;
+
+struct Point {
+    x: int,
+    y: int
+}
+
+struct Rect {
+    width: int,
+    height: int
+}
+
+// Compute the area of a rectangle.
+pure fn area(w: int, h: int) -> int {
+    return w * h;
+}
+
+// Compute Manhattan distance from origin.
+pure fn manhattan(px: int, py: int) -> int {
+    let mut ax: int = px;
+    let mut ay: int = py;
+    if ax < 0 {
+        ax = 0 - ax;
+    }
+    if ay < 0 {
+        ay = 0 - ay;
+    }
+    return ax + ay;
+}
+
+fn main() -> int {
+    let p: Point = Point { x: 3, y: 4 };
+    let r: Rect = Rect { width: 10, height: 5 };
+
+    print_int(p.x);
+    print_int(p.y);
+    print_int(area(r.width, r.height));
+    print_int(manhattan(p.x, p.y));
+
+    return 0;
+}

@@ -1,0 +1,63 @@
+// pattern_match.yrm — Enums and pattern matching.
+//
+// Demonstrates: enum definitions, match statements, wildcard patterns.
+
+module pattern_match;
+
+enum Direction {
+    North,
+    South,
+    East,
+    West
+}
+
+// Map a direction to its delta-x.
+fn direction_dx(dir: int) -> int {
+    match dir {
+        2 => {
+            return 1;
+        },
+        3 => {
+            return -1;
+        },
+        _ => {
+            return 0;
+        },
+    }
+}
+
+// Map a direction to its delta-y.
+fn direction_dy(dir: int) -> int {
+    match dir {
+        0 => {
+            return 1;
+        },
+        1 => {
+            return -1;
+        },
+        _ => {
+            return 0;
+        },
+    }
+}
+
+fn main() -> int {
+    // North = 0, South = 1, East = 2, West = 3
+    let mut x: int = 0;
+    let mut y: int = 0;
+
+    // Walk: North, East, East, South
+    x = x + direction_dx(0);
+    y = y + direction_dy(0);
+    x = x + direction_dx(2);
+    y = y + direction_dy(2);
+    x = x + direction_dx(2);
+    y = y + direction_dy(2);
+    x = x + direction_dx(1);
+    y = y + direction_dy(1);
+
+    print_int(x);
+    print_int(y);
+
+    return 0;
+}

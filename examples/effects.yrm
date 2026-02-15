@@ -1,0 +1,49 @@
+// effects.yrm — Effect annotations and purity.
+//
+// Demonstrates: pure vs impure functions, effect annotations,
+//               contract clauses (requires/ensures).
+
+module fx;
+
+// A pure function — no side effects, deterministic.
+pure fn square(x: int) -> int
+    ensures result >= 0
+{
+    return x * x;
+}
+
+// A pure function with a precondition.
+pure fn safe_div(a: int, b: int) -> int
+    requires b != 0
+{
+    return a / b;
+}
+
+// An impure function — performs IO.
+fn display_result(label: int, value: int) -> unit
+    effects io
+{
+    print_int(label);
+    print_int(value);
+}
+
+// Compute the sum of squares from 1 to n.
+pure fn sum_of_squares(n: int) -> int
+    requires n >= 0
+    ensures result >= 0
+{
+    let mut total: int = 0;
+    let mut i: int = 1;
+    while i <= n {
+        total = total + square(i);
+        i = i + 1;
+    }
+    return total;
+}
+
+fn main() -> int {
+    let result: int = sum_of_squares(10);
+    display_result(10, result);
+    print_int(safe_div(100, 7));
+    return 0;
+}

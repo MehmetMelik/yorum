@@ -1,0 +1,178 @@
+(* ═══════════════════════════════════════════════════════════════ *)
+(*  Yorum Language — Formal Grammar (EBNF)                       *)
+(*  Version 0.1.0                                                 *)
+(* ═══════════════════════════════════════════════════════════════ *)
+
+(* ── Top-level ─────────────────────────────────────────────── *)
+
+program         = [ module_decl ] { use_decl } { declaration } ;
+
+module_decl     = "module" IDENT ";" ;
+
+use_decl        = "use" module_path ";" ;
+
+module_path     = IDENT { "." IDENT } ;
+
+(* ── Declarations ──────────────────────────────────────────── *)
+
+declaration     = [ "pub" ] [ "pure" ] fn_decl
+                | [ "pub" ] struct_decl
+                | [ "pub" ] enum_decl
+                | [ "pub" ] const_decl ;
+
+fn_decl         = "fn" IDENT "(" [ param_list ] ")" "->" type
+                  { contract_clause }
+                  block ;
+
+param_list      = param { "," param } [ "," ] ;
+
+param           = IDENT ":" type ;
+
+contract_clause = "requires" expr
+                | "ensures"  expr
+                | "effects"  IDENT { "," IDENT } ;
+
+struct_decl     = "struct" IDENT "{" field_list "}" ;
+
+field_list      = field { "," field } [ "," ] ;
+
+field           = IDENT ":" type ;
+
+enum_decl       = "enum" IDENT "{" variant_list "}" ;
+
+variant_list    = variant { "," variant } [ "," ] ;
+
+variant         = IDENT [ "(" type_list ")" ] ;
+
+type_list       = type { "," type } ;
+
+const_decl      = "const" IDENT ":" type "=" expr ";" ;
+
+(* ── Types ─────────────────────────────────────────────────── *)
+
+type            = "int"
+                | "float"
+                | "bool"
+                | "string"
+                | "unit"
+                | IDENT                 (* named / struct / enum *)
+                | "[" type "]"          (* array *)
+                | "&" type              (* immutable reference *)
+                | "&" "mut" type        (* mutable reference *)
+                | "own" type ;          (* explicit ownership *)
+
+(* ── Blocks and Statements ─────────────────────────────────── *)
+
+block           = "{" { stmt } "}" ;
+
+stmt            = let_stmt
+                | return_stmt
+                | if_stmt
+                | while_stmt
+                | match_stmt
+                | assign_or_expr_stmt ;
+
+let_stmt        = "let" [ "mut" ] IDENT ":" type "=" expr ";" ;
+
+return_stmt     = "return" [ expr ] ";" ;
+
+if_stmt         = "if" expr block [ "else" ( if_stmt | block ) ] ;
+
+while_stmt      = "while" expr block ;
+
+match_stmt      = "match" expr "{" { match_arm } "}" ;
+
+match_arm       = pattern "=>" block [ "," ] ;
+
+assign_or_expr_stmt = expr [ "=" expr ] ";" ;
+
+(* ── Patterns ──────────────────────────────────────────────── *)
+
+pattern         = "_"                           (* wildcard *)
+                | IDENT [ "(" pattern_list ")" ] (* binding or variant *)
+                | literal ;                      (* literal match *)
+
+pattern_list    = pattern { "," pattern } ;
+
+(* ── Expressions ───────────────────────────────────────────── *)
+(* Precedence (lowest to highest):                               *)
+(*   1. or                                                       *)
+(*   2. and                                                      *)
+(*   3. ==  !=                                                   *)
+(*   4. <  >  <=  >=                                             *)
+(*   5. +  -                                                     *)
+(*   6. *  /  %                                                  *)
+(*   7. unary: -  not                                            *)
+(*   8. postfix: call, field access, index                       *)
+
+expr            = or_expr ;
+
+or_expr         = and_expr { "or" and_expr } ;
+
+and_expr        = eq_expr { "and" eq_expr } ;
+
+eq_expr         = cmp_expr { ( "==" | "!=" ) cmp_expr } ;
+
+cmp_expr        = add_expr { ( "<" | ">" | "<=" | ">=" ) add_expr } ;
+
+add_expr        = mul_expr { ( "+" | "-" ) mul_expr } ;
+
+mul_expr        = unary_expr { ( "*" | "/" | "%" ) unary_expr } ;
+
+unary_expr      = ( "-" | "not" ) unary_expr
+                | postfix_expr ;
+
+postfix_expr    = primary { call_suffix | field_suffix | index_suffix } ;
+
+call_suffix     = "(" [ arg_list ] ")" ;
+
+field_suffix    = "." IDENT ;
+
+index_suffix    = "[" expr "]" ;
+
+arg_list        = expr { "," expr } [ "," ] ;
+
+primary         = INT_LIT
+                | FLOAT_LIT
+                | "true" | "false"
+                | STRING_LIT
+                | IDENT [ struct_init ]
+                | "(" expr ")" ;
+
+struct_init     = "{" field_init_list "}" ;
+
+field_init_list = field_init { "," field_init } [ "," ] ;
+
+field_init      = IDENT ":" expr ;
+
+(* ── Literals ──────────────────────────────────────────────── *)
+
+literal         = INT_LIT | FLOAT_LIT | "true" | "false" | STRING_LIT ;
+
+(* ── Lexical tokens ────────────────────────────────────────── *)
+
+INT_LIT         = DIGIT { DIGIT } ;
+
+FLOAT_LIT       = DIGIT { DIGIT } "." DIGIT { DIGIT } ;
+
+STRING_LIT      = '"' { CHAR | ESCAPE } '"' ;
+
+IDENT           = ( ALPHA | "_" ) { ALPHA | DIGIT | "_" } ;
+
+ALPHA           = "a" .. "z" | "A" .. "Z" ;
+
+DIGIT           = "0" .. "9" ;
+
+ESCAPE          = "\\" ( "n" | "t" | "r" | "\\" | '"' | "0" ) ;
+
+(* ── Comments ──────────────────────────────────────────────── *)
+(* Line comments:  // ...                                        *)
+(* Block comments: /* ... */  (nestable)                         *)
+(* Doc comments:   /// ...    (stored as metadata)               *)
+
+(* ── Keywords ──────────────────────────────────────────────── *)
+(* fn  let  mut  return  if  else  while  for  in  match         *)
+(* struct  enum  module  use  const  pub  pure  own  impl        *)
+(* and  or  not  true  false                                     *)
+(* requires  ensures  effects                                    *)
+(* int  float  bool  string  unit                                *)

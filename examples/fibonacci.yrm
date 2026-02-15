@@ -1,0 +1,49 @@
+// fibonacci.yrm — Recursive and iterative Fibonacci.
+//
+// Demonstrates: recursion, while loops, mutable variables, contracts.
+
+module fibonacci;
+
+// Recursive Fibonacci with contract annotations.
+pure fn fib_recursive(n: int) -> int
+    requires n >= 0
+    ensures result >= 0
+{
+    if n <= 1 {
+        return n;
+    }
+    return fib_recursive(n - 1) + fib_recursive(n - 2);
+}
+
+// Iterative Fibonacci — more efficient.
+pure fn fib_iterative(n: int) -> int
+    requires n >= 0
+    ensures result >= 0
+{
+    if n <= 1 {
+        return n;
+    }
+
+    let mut a: int = 0;
+    let mut b: int = 1;
+    let mut i: int = 2;
+
+    while i <= n {
+        let temp: int = b;
+        b = a + b;
+        a = temp;
+        i = i + 1;
+    }
+
+    return b;
+}
+
+fn main() -> int {
+    // Print Fibonacci numbers 0 through 10
+    let mut i: int = 0;
+    while i <= 10 {
+        print_int(fib_iterative(i));
+        i = i + 1;
+    }
+    return 0;
+}

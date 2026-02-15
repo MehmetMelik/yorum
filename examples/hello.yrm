@@ -1,0 +1,10 @@
+// hello.yrm — The simplest Yorum program.
+//
+// Demonstrates: module declaration, function definition, print builtin.
+
+module hello;
+
+fn main() -> int {
+    print_int(42);
+    return 0;
+}

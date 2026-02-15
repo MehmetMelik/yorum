@@ -79,3 +79,9 @@ Source → Lexer → Vec<Token> → Parser → AST (Program) → TypeChecker →
 ### Example programs
 
 `examples/*.yrm` — all compile to native binaries and run correctly. Use these as references for valid Yorum syntax.
+
+## Git Workflow
+
+- **Branches**: Use `feature/<descriptive-name>` for feature branches (e.g., `feature/arrays-and-loops`). Never use version numbers in branch names — versions are only for tags and releases.
+- **CI**: Runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and `cargo test`. All three must pass before merging.
+- **Releases**: Tag with `vX.Y.Z` and push the tag. The release workflow builds binaries for 5 targets and creates a GitHub release automatically.

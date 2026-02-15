@@ -96,6 +96,75 @@ Multi-file projects (`yorum build`) add a front-end step: `ModuleResolver` disco
 
 `examples/*.yrm` — all compile to native binaries and run correctly. Use these as references for valid Yorum syntax.
 
+## Current Work: v0.5 — Self-hosting Compiler
+
+**Branch:** `feature/self-hosting-compiler`
+
+**Goal:** Write the Yorum compiler in Yorum itself. The current compiler is ~8,900 lines of Rust. The self-hosting compiler must read `.yrm` source files and emit LLVM IR, matching the Rust compiler's output.
+
+### Strategy
+
+Self-hosting requires two phases:
+1. **Language extensions** — add missing features to the Rust compiler so Yorum is expressive enough to write a compiler
+2. **Yorum compiler in Yorum** — rewrite the compiler as a Yorum project, bootstrap via the Rust compiler
+
+### Phase 1: Language extensions needed
+
+The following features must be added to the Rust compiler (each touching token.rs → ast.rs → parser.rs → typechecker.rs → ownership.rs → monomorphize.rs → codegen.rs):
+
+**P1a: Core type system additions**
+- `char` type — 8-bit character, literals `'a'`, `'\n'`. LLVM: `i8`. Needed for lexing
+- Type casting builtins — `int_to_str`, `str_to_int`, `char_to_int`, `int_to_char`, `float_to_int`, `int_to_float`
+
+**P1b: String/char operations**
+- `str_charAt(s, i) -> char` — index into string (bounds-checked)
+- `str_sub(s, start, len) -> string` — substring extraction
+- `str_from_char(c) -> string` — char to single-char string
+- `char_is_alpha(c) -> bool`, `char_is_digit(c) -> bool`, `char_is_whitespace(c) -> bool` — classification
+
+**P1c: Dynamic arrays (Vec)**
+- `push(arr, val)` — append element, growing backing buffer
+- `pop(arr) -> T` — remove last element
+- Arrays must become resizable (realloc-based). Current arrays are fixed-size after creation
+
+**P1d: File I/O**
+- `file_read(path: string) -> string` — read entire file to string
+- `file_write(path: string, content: string) -> bool` — write string to file
+- `print_err(s: string)` — write to stderr
+
+**P1e: Process interaction**
+- `args() -> [string]` — command-line arguments
+- `exit(code: int)` — terminate with exit code
+
+**P1f: HashMap** (can be implemented in Yorum once the above exist, or as a builtin)
+- Needed for symbol tables, keyword lookup, type environments
+- Could be a hash table backed by arrays + hashing builtins, or a native builtin type
+
+### Phase 2: Self-hosting compiler in Yorum
+
+Write as a multi-file Yorum project (`yorum-in-yorum/`) with modules:
+- `lexer` — char-by-char tokenization using `str_charAt`, `char_is_*`
+- `token` — token types as enums
+- `parser` — recursive descent + Pratt parsing
+- `ast` — AST types as structs/enums
+- `typechecker` — two-pass type checking with scope stack
+- `ownership` — move checker
+- `codegen` — LLVM IR string emission via `str_concat`
+- `main` — CLI entry point using `args()`
+
+Bootstrap chain: Rust compiler compiles Yorum compiler → Yorum compiler compiles itself → compare output.
+
+### What already works (no changes needed)
+
+- Generics with monomorphization
+- Structs, enums, pattern matching
+- Closures with capture
+- Fixed-size arrays, for loops
+- Ownership/move checking
+- Traits with static dispatch
+- Multi-file compilation (`yorum build`)
+- Contracts (`requires`/`ensures`)
+
 ## Git Workflow
 
 - **Branches**: Use `feature/<descriptive-name>` for feature branches (e.g., `feature/arrays-and-loops`). Never use version numbers in branch names — versions are only for tags and releases.

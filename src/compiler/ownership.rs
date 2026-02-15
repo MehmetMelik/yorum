@@ -35,6 +35,8 @@ enum VarState {
 
 pub struct OwnershipChecker {
     scopes: Vec<HashMap<String, VarState>>,
+    /// Track Task variables that must be joined before scope exit
+    task_vars: Vec<HashSet<String>>,
     errors: Vec<OwnershipError>,
 }
 
@@ -48,6 +50,7 @@ impl OwnershipChecker {
     pub fn new() -> Self {
         Self {
             scopes: Vec::new(),
+            task_vars: Vec::new(),
             errors: Vec::new(),
         }
     }
@@ -105,6 +108,14 @@ impl OwnershipChecker {
             Stmt::Let(s) => {
                 self.check_expr_use(&s.value);
                 self.define(&s.name);
+                // Track Task variables for must-consume enforcement
+                if matches!(s.value.kind, ExprKind::Spawn(_)) || matches!(s.ty, Type::Task(_)) {
+                    if let Some(tasks) = self.task_vars.last_mut() {
+                        tasks.insert(s.name.clone());
+                    }
+                }
+                // Track .join() calls in the value expression
+                self.track_join_calls(&s.value);
             }
             Stmt::Assign(s) => {
                 self.check_expr_use(&s.value);
@@ -158,7 +169,23 @@ impl OwnershipChecker {
             }
             Stmt::Expr(s) => {
                 self.check_expr_use(&s.expr);
+                // Track .join() calls to remove from must-consume
+                self.track_join_calls(&s.expr);
             }
+        }
+    }
+
+    /// If the expression is a .join() call or uses .join(), mark the Task as consumed.
+    fn track_join_calls(&mut self, expr: &Expr) {
+        match &expr.kind {
+            ExprKind::MethodCall(receiver, method, _) if method == "join" => {
+                if let ExprKind::Ident(name) = &receiver.kind {
+                    for tasks in self.task_vars.iter_mut().rev() {
+                        tasks.remove(name);
+                    }
+                }
+            }
+            _ => {}
         }
     }
 
@@ -218,6 +245,11 @@ impl OwnershipChecker {
                 self.check_block(&closure.body);
                 self.pop_scope();
             }
+            ExprKind::Spawn(block) => {
+                self.push_scope();
+                self.check_block(block);
+                self.pop_scope();
+            }
             ExprKind::Literal(_) => {}
         }
     }
@@ -258,9 +290,19 @@ impl OwnershipChecker {
 
     fn push_scope(&mut self) {
         self.scopes.push(HashMap::new());
+        self.task_vars.push(HashSet::new());
     }
 
     fn pop_scope(&mut self) {
+        // Check for unconsumed Task variables
+        if let Some(tasks) = self.task_vars.pop() {
+            for name in &tasks {
+                self.errors.push(OwnershipError {
+                    message: format!("Task '{}' must be joined before scope exit", name),
+                    span: crate::compiler::span::Span::synthetic(),
+                });
+            }
+        }
         self.scopes.pop();
     }
 

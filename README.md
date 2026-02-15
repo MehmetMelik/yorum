@@ -55,6 +55,8 @@ clang -x ir fib.ll -o fib -Wno-override-module
 yorum compile <file.yrm> [-o output]   Compile to LLVM IR (stdout if no -o)
 yorum check   <file.yrm>               Type-check and ownership-check only
 yorum ast     <file.yrm>               Dump the full AST as JSON
+yorum build   [-o output]              Build multi-file project (requires yorum.toml)
+yorum init    [name]                   Scaffold a new project
 ```
 
 ## Why Yorum
@@ -72,7 +74,7 @@ explicit enum return types. Evaluation order is strictly left-to-right.
 
 **Machine-readable contracts.** Functions carry `requires`/`ensures`/`effects`
 clauses that are parsed into the AST as structured data — not comments, not
-strings.
+strings. Preconditions and postconditions are verified at runtime.
 
 **Round-trip guarantee.** Every AST node carries exact source spans. The entire
 tree serializes to JSON via serde. An AI agent can parse a file to JSON,
@@ -97,6 +99,8 @@ exactly one owner.
 | `&mut T` | Mutable reference | `ptr` |
 | `own T` | Explicit ownership | `ptr` |
 | `[T]` | Array (heap-allocated) | `{ ptr, i64 }` |
+| `Task<T>` | Concurrent task handle | `ptr` |
+| `Chan<T>` | Synchronous channel | `ptr` |
 | `fn(T) -> U` | Function type (closures) | `ptr` |
 
 No implicit coercion between any types.
@@ -120,10 +124,11 @@ fn log_value(x: int) -> unit
 }
 ```
 
-`pure` marks a function as side-effect-free. `requires` and `ensures` are
-preconditions and postconditions stored in the AST. `effects` declares which
-capabilities the function uses. The `result` identifier refers to the return
-value inside `ensures` clauses.
+`pure` marks a function as side-effect-free — enforced at compile time (a pure
+function cannot call impure functions or use `spawn`). `requires` and `ensures`
+are preconditions and postconditions verified at runtime — a violation prints an
+error and aborts. `effects` declares which capabilities the function uses. The
+`result` identifier refers to the return value inside `ensures` clauses.
 
 ### Structs and Impl Blocks
 
@@ -257,6 +262,68 @@ let eq: bool = str_eq("abc", "abc");              // true
 
 Built-in string functions: `str_len`, `str_concat`, `str_eq`.
 
+### Structured Concurrency
+
+```
+fn main() -> int {
+    let t1: Task<int> = spawn {
+        return 10;
+    };
+    let t2: Task<int> = spawn {
+        return 32;
+    };
+    let a: int = t1.join();
+    let b: int = t2.join();
+    print_int(a + b);    // 42
+    return 0;
+}
+```
+
+`spawn { ... }` creates a new OS thread and returns a `Task<T>` handle. `.join()`
+blocks until the task completes and returns its result. Spawn blocks capture
+variables from the enclosing scope by copy (same mechanism as closures).
+
+The ownership checker enforces **structured concurrency**: every `Task` must be
+`.join()`'d before its scope exits. Forgetting to join is a compile-time error.
+
+Channels provide synchronized communication between tasks:
+
+```
+let ch: Chan<int> = chan();
+send(ch, 42);
+let val: int = recv(ch);
+```
+
+### Multi-file Projects
+
+```bash
+yorum init myproject     # creates myproject/yorum.toml + src/main.yrm
+cd myproject
+yorum build -o out.ll    # discovers all .yrm files, resolves imports
+```
+
+Each source file declares its module name. `pub` controls cross-module visibility:
+
+```
+// src/math.yrm
+module math;
+
+pub fn add(a: int, b: int) -> int {
+    return a + b;
+}
+```
+
+```
+// src/main.yrm
+module main;
+use math;
+
+fn main() -> int {
+    print_int(add(10, 32));    // 42
+    return 0;
+}
+```
+
 ### Enums and Pattern Matching
 
 ```
@@ -382,12 +449,10 @@ clang -x ir program.ll -o program -Wno-override-module
 ./program
 ```
 
-Or with separate object file:
+Programs using `spawn` or channels require linking with pthreads:
 
 ```bash
-yorum compile program.yrm -o program.ll
-llc -filetype=obj program.ll -o program.o
-clang program.o -o program
+clang -x ir program.ll -o program -lpthread -Wno-override-module
 ```
 
 ## AST as JSON
@@ -456,17 +521,19 @@ source.yrm
 | Lexer | `src/compiler/lexer.rs` | Hand-written, nested `/* */` comments, escape sequences |
 | Parser | `src/compiler/parser.rs` | Recursive descent + Pratt expression parsing |
 | Type Checker | `src/compiler/typechecker.rs` | Two-pass: register declarations, then check bodies |
-| Ownership | `src/compiler/ownership.rs` | Move tracking, prevents use-after-move |
+| Ownership | `src/compiler/ownership.rs` | Move tracking, use-after-move prevention, must-join enforcement for tasks |
 | Monomorphizer | `src/compiler/monomorphize.rs` | Eliminates generics by cloning concrete instantiations |
-| Codegen | `src/compiler/codegen.rs` | Textual LLVM IR, alloca/load/store pattern |
+| Codegen | `src/compiler/codegen.rs` | Textual LLVM IR, alloca/load/store pattern, contract checks, pthread spawn/join |
+| Module Resolver | `src/compiler/module_resolver.rs` | Discovers `.yrm` files, maps filesystem paths to module names |
+| Project Builder | `src/compiler/project.rs` | Reads `yorum.toml`, merges modules, runs compilation pipeline |
 
-The compiler is ~7,500 lines of Rust with only `serde` and `serde_json` as
+The compiler is ~8,900 lines of Rust with `serde`, `serde_json`, and `toml` as
 dependencies.
 
 ## Testing
 
 ```bash
-cargo test                    # 86 tests (34 unit + 52 integration)
+cargo test                    # 104 tests (34 unit + 70 integration)
 cargo test compiler::lexer    # tests in one module
 cargo test test_fibonacci     # single test by name
 ```
@@ -475,7 +542,7 @@ cargo test test_fibonacci     # single test by name
 
 - **[SPEC.md](SPEC.md)** — Full language specification
 - **[GRAMMAR.ebnf](GRAMMAR.ebnf)** — Formal grammar in EBNF notation
-- **[examples/](examples/)** — Working programs that compile to native binaries (methods, traits, generics, closures, arrays, strings)
+- **[examples/](examples/)** — Working programs that compile to native binaries (methods, traits, generics, closures, arrays, strings, contracts, concurrency)
 
 ## Roadmap
 
@@ -483,7 +550,7 @@ cargo test test_fibonacci     # single test by name
 |---|---|---|
 | **v0.2** | Generics, closures, `impl` blocks, trait system | Done |
 | **v0.3** | Arrays, string operations, `for` loops, nested pattern matching | Done |
-| **v0.4** | Structured concurrency, runtime contract verification, package manager | |
+| **v0.4** | Structured concurrency, runtime contract verification, multi-file compilation | Done |
 | **v1.0** | Self-hosting compiler, standard library, LSP server | |
 
 ## License

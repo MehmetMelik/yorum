@@ -1,0 +1,11 @@
+module main;
+
+use math;
+
+fn main() -> int {
+    let sum: int = add(10, 32);
+    let product: int = multiply(6, 7);
+    print_int(sum);
+    print_int(product);
+    return 0;
+}

@@ -45,6 +45,7 @@ pub enum TokenKind {
     Impl,
     Trait,
     SelfType,
+    Spawn,
 
     // Logical operators (keyword-based, no &&/||/! ambiguity)
     And,
@@ -130,6 +131,7 @@ impl TokenKind {
             "impl" => Some(TokenKind::Impl),
             "trait" => Some(TokenKind::Trait),
             "Self" => Some(TokenKind::SelfType),
+            "spawn" => Some(TokenKind::Spawn),
             "and" => Some(TokenKind::And),
             "or" => Some(TokenKind::Or),
             "not" => Some(TokenKind::Not),
@@ -180,6 +182,7 @@ impl fmt::Display for TokenKind {
             TokenKind::Impl => write!(f, "impl"),
             TokenKind::Trait => write!(f, "trait"),
             TokenKind::SelfType => write!(f, "Self"),
+            TokenKind::Spawn => write!(f, "spawn"),
             TokenKind::And => write!(f, "and"),
             TokenKind::Or => write!(f, "or"),
             TokenKind::Not => write!(f, "not"),

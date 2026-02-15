@@ -1,4 +1,5 @@
 pub mod compiler;
+pub mod manifest;
 
 use compiler::codegen::Codegen;
 use compiler::lexer::Lexer;
@@ -78,4 +79,9 @@ pub fn typecheck(source: &str) -> Result<(), String> {
     })?;
 
     Ok(())
+}
+
+/// Compile a multi-file Yorum project from a root directory containing yorum.toml.
+pub fn compile_project(root_dir: &std::path::Path) -> Result<String, String> {
+    compiler::project::compile_project(root_dir)
 }

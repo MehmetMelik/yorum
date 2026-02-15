@@ -161,6 +161,8 @@ pub enum Type {
     TypeVar(String),
     Generic(String, Vec<Type>),
     Fn(Vec<Type>, Box<Type>),
+    Task(Box<Type>),
+    Chan(Box<Type>),
 }
 
 impl std::fmt::Display for Type {
@@ -198,6 +200,8 @@ impl std::fmt::Display for Type {
                 }
                 write!(f, ") -> {}", ret)
             }
+            Type::Task(inner) => write!(f, "Task<{}>", inner),
+            Type::Chan(inner) => write!(f, "Chan<{}>", inner),
         }
     }
 }
@@ -326,6 +330,7 @@ pub enum ExprKind {
     StructInit(String, Vec<FieldInit>),
     Closure(ClosureExpr),
     ArrayLit(Vec<Expr>),
+    Spawn(Block),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

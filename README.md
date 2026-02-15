@@ -96,6 +96,7 @@ exactly one owner.
 | `&T` | Immutable reference | `ptr` |
 | `&mut T` | Mutable reference | `ptr` |
 | `own T` | Explicit ownership | `ptr` |
+| `fn(T) -> U` | Function type (closures) | `ptr` |
 
 No implicit coercion between any types.
 
@@ -123,7 +124,7 @@ preconditions and postconditions stored in the AST. `effects` declares which
 capabilities the function uses. The `result` identifier refers to the return
 value inside `ensures` clauses.
 
-### Structs
+### Structs and Impl Blocks
 
 ```
 struct Point {
@@ -131,13 +132,91 @@ struct Point {
     y: int,
 }
 
+impl Point {
+    fn get_x(self: &Point) -> int {
+        return self.x;
+    }
+
+    fn manhattan(self: &Point) -> int {
+        return self.x + self.y;
+    }
+}
+
 fn main() -> int {
     let p: Point = Point { x: 3, y: 4 };
-    print_int(p.x);    // 3
-    print_int(p.y);    // 4
+    print_int(p.get_x());       // 3
+    print_int(p.manhattan());    // 7
     return 0;
 }
 ```
+
+Methods are declared inside `impl` blocks. The receiver is an explicit `self`
+parameter. Method calls use dot syntax (`p.get_x()`). Methods compile to
+top-level functions with mangled names (`@Point_get_x`).
+
+### Traits
+
+```
+trait Describable {
+    fn describe(self: &Self) -> int;
+}
+
+impl Describable for Point {
+    fn describe(self: &Point) -> int {
+        return self.x + self.y;
+    }
+}
+```
+
+Traits define interfaces that types must implement. `Self` refers to the
+implementing type inside trait and impl blocks. Dispatch is static — no vtables,
+no runtime cost. The compiler verifies that all required methods are implemented
+with matching signatures.
+
+### Generics
+
+```
+fn identity<T>(x: T) -> T {
+    return x;
+}
+
+struct Pair<T, U> {
+    first: T,
+    second: U,
+}
+
+fn main() -> int {
+    let x: int = identity(42);
+    let p: Pair<int, float> = Pair { first: 1, second: 2.0 };
+    print_int(p.first);      // 1
+    print_float(p.second);   // 2.0
+    return x;
+}
+```
+
+Type parameters work on functions, structs, and enums. Type arguments are
+inferred at call sites. The compiler monomorphizes all generic code before
+codegen — `identity<int>` becomes `identity__int`, `Pair<int, float>` becomes
+`Pair__int__float`. No generics survive to LLVM IR.
+
+### Closures
+
+```
+fn apply(f: fn(int) -> int, x: int) -> int {
+    return f(x);
+}
+
+fn main() -> int {
+    let offset: int = 10;
+    let f: fn(int) -> int = |x: int| -> int { return x + offset; };
+    return apply(f, 32);   // 42
+}
+```
+
+Closures capture variables from their enclosing scope. They compile to
+`{ fn_ptr, env_ptr }` pairs — the environment struct holds captured values,
+and the function takes the environment as its first argument. Closures can be
+passed to higher-order functions via `fn(T) -> U` types.
 
 ### Enums and Pattern Matching
 
@@ -214,7 +293,7 @@ fn divide(a: int, b: int) -> Result {
 | 5 | `+` `-` | left |
 | 6 | `*` `/` `%` | left |
 | 7 | `-` (unary), `not` | prefix |
-| 8 | `()` `.field` `[i]` | postfix |
+| 8 | `()` `.field` `.method()` `[i]` | postfix |
 
 ## LLVM IR Output
 
@@ -311,22 +390,25 @@ information preserved.
 source.yrm
     |
     v
-  Lexer ──────── Vec<Token>
+  Lexer ──────────── Vec<Token>
     |
     v
-  Parser ─────── AST (Program)  ──── serde ────> JSON
+  Parser ─────────── AST (Program)  ──── serde ────> JSON
     |
     v
-  TypeChecker ── type errors
+  TypeChecker ────── type errors
     |
     v
-  OwnershipChecker ── move errors
+  OwnershipChecker ─ move errors
     |
     v
-  Codegen ─────── LLVM IR (text)
+  Monomorphizer ──── concrete AST (no generics)
     |
     v
-  clang ────────── native binary
+  Codegen ────────── LLVM IR (text)
+    |
+    v
+  clang ──────────── native binary
 ```
 
 | Phase | Source | What it does |
@@ -335,15 +417,16 @@ source.yrm
 | Parser | `src/compiler/parser.rs` | Recursive descent + Pratt expression parsing |
 | Type Checker | `src/compiler/typechecker.rs` | Two-pass: register declarations, then check bodies |
 | Ownership | `src/compiler/ownership.rs` | Move tracking, prevents use-after-move |
+| Monomorphizer | `src/compiler/monomorphize.rs` | Eliminates generics by cloning concrete instantiations |
 | Codegen | `src/compiler/codegen.rs` | Textual LLVM IR, alloca/load/store pattern |
 
-The compiler is ~4,600 lines of Rust with only `serde` and `serde_json` as
+The compiler is ~6,600 lines of Rust with only `serde` and `serde_json` as
 dependencies.
 
 ## Testing
 
 ```bash
-cargo test                    # 52 tests (34 unit + 18 integration)
+cargo test                    # 70 tests (34 unit + 36 integration)
 cargo test compiler::lexer    # tests in one module
 cargo test test_fibonacci     # single test by name
 ```
@@ -352,16 +435,16 @@ cargo test test_fibonacci     # single test by name
 
 - **[SPEC.md](SPEC.md)** — Full language specification
 - **[GRAMMAR.ebnf](GRAMMAR.ebnf)** — Formal grammar in EBNF notation
-- **[examples/](examples/)** — Working programs that compile to native binaries
+- **[examples/](examples/)** — Working programs that compile to native binaries (methods, traits, generics, closures)
 
 ## Roadmap
 
-| Version | Features |
-|---|---|
-| **v0.2** | Generics, closures, `impl` blocks, trait system |
-| **v0.3** | Arrays/slices, string operations, `for` loops, nested pattern matching |
-| **v0.4** | Structured concurrency, runtime contract verification, package manager |
-| **v1.0** | Self-hosting compiler, standard library, LSP server |
+| Version | Features | Status |
+|---|---|---|
+| **v0.2** | Generics, closures, `impl` blocks, trait system | Done |
+| **v0.3** | Arrays/slices, string operations, `for` loops, nested pattern matching | |
+| **v0.4** | Structured concurrency, runtime contract verification, package manager | |
+| **v1.0** | Self-hosting compiler, standard library, LSP server | |
 
 ## License
 

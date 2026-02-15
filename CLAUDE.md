@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 cargo build                          # dev build
 cargo build --release                # release build
-cargo test                           # all tests (52 unit + integration)
+cargo test                           # all tests (70: 34 unit + 36 integration)
 cargo test compiler::lexer           # tests in one module
 cargo test test_fibonacci_compiles   # single test by name
 cargo test -- --nocapture            # see stdout from tests
@@ -37,7 +37,7 @@ This is a compiler for the Yorum language — an LLM-first, statically typed lan
 The pipeline is strictly sequential — each phase consumes the output of the previous one. The full chain is orchestrated in `src/lib.rs`:
 
 ```
-Source → Lexer → Vec<Token> → Parser → AST (Program) → TypeChecker → OwnershipChecker → Codegen → LLVM IR string
+Source → Lexer → Vec<Token> → Parser → AST (Program) → TypeChecker → OwnershipChecker → Monomorphizer → Codegen → LLVM IR string
 ```
 
 ### Key modules (in `src/compiler/`)
@@ -49,7 +49,8 @@ Source → Lexer → Vec<Token> → Parser → AST (Program) → TypeChecker →
 - **`parser.rs`** — Recursive descent parser with Pratt expression parsing (`parse_expr_bp`). Operator precedence is defined in `infix_binding_power()`. Struct init is disambiguated from blocks via 2-token lookahead in `is_struct_init_lookahead()`
 - **`typechecker.rs`** — Two-pass: first registers all function signatures, struct layouts, and enum definitions; then checks function bodies. Uses a scope stack (`Vec<HashMap<String, VarInfo>>`) for lexical scoping. Built-in functions (`print_int`, `print_float`, `print_bool`, `print_str`) are registered in `register_builtins()`
 - **`ownership.rs`** — Simplified move checker. Tracks `Owned`/`Moved`/`Borrowed` state per variable. Prevents use-after-move
-- **`codegen.rs`** — Emits textual LLVM IR. Uses alloca/load/store pattern (LLVM's mem2reg promotes to SSA). Each expression emitter returns the LLVM SSA value name (e.g., `%t3`). Struct-typed let bindings reuse the alloca from `StructInit` directly instead of store/load
+- **`monomorphize.rs`** — Eliminates generics before codegen. Collects all concrete instantiations of generic functions/structs/enums, clones declarations with type variables substituted, and rewrites call sites to use mangled names (`identity__int`, `Pair__int__float`)
+- **`codegen.rs`** — Emits textual LLVM IR. Uses alloca/load/store pattern (LLVM's mem2reg promotes to SSA). Each expression emitter returns the LLVM SSA value name (e.g., `%t3`). Struct-typed let bindings reuse the alloca from `StructInit` directly instead of store/load. Closures compile to `{ ptr, ptr }` pairs (fn_ptr + env_ptr) with deferred function emission
 
 ### Important codegen details
 

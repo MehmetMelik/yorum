@@ -235,6 +235,7 @@ impl Monomorphizer {
             ExprKind::Literal(Literal::Int(_)) => Some(Type::Int),
             ExprKind::Literal(Literal::Float(_)) => Some(Type::Float),
             ExprKind::Literal(Literal::Bool(_)) => Some(Type::Bool),
+            ExprKind::Literal(Literal::Char(_)) => Some(Type::Char),
             ExprKind::Literal(Literal::String(_)) => Some(Type::Str),
             _ => None,
         }
@@ -352,6 +353,7 @@ fn mangle_name(base: &str, type_args: &[Type]) -> String {
             Type::Int => "int".to_string(),
             Type::Float => "float".to_string(),
             Type::Bool => "bool".to_string(),
+            Type::Char => "char".to_string(),
             Type::Str => "string".to_string(),
             Type::Named(n) => n.clone(),
             _ => format!("{}", t),

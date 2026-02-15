@@ -19,6 +19,7 @@ pub enum TokenKind {
     IntLit(i64),
     FloatLit(f64),
     StringLit(String),
+    CharLit(char),
 
     // ── Identifier ───────────────────────────────────────────
     Ident(String),
@@ -66,6 +67,7 @@ pub enum TokenKind {
     FloatType,
     BoolType,
     StringType,
+    CharType,
     UnitType,
 
     // ── Delimiters ───────────────────────────────────────────
@@ -144,6 +146,7 @@ impl TokenKind {
             "float" => Some(TokenKind::FloatType),
             "bool" => Some(TokenKind::BoolType),
             "string" => Some(TokenKind::StringType),
+            "char" => Some(TokenKind::CharType),
             "unit" => Some(TokenKind::UnitType),
             _ => None,
         }
@@ -160,6 +163,7 @@ impl fmt::Display for TokenKind {
             TokenKind::IntLit(n) => write!(f, "{}", n),
             TokenKind::FloatLit(n) => write!(f, "{}", n),
             TokenKind::StringLit(s) => write!(f, "\"{}\"", s),
+            TokenKind::CharLit(c) => write!(f, "'{}'", c),
             TokenKind::Ident(s) => write!(f, "{}", s),
             TokenKind::Fn => write!(f, "fn"),
             TokenKind::Let => write!(f, "let"),
@@ -195,6 +199,7 @@ impl fmt::Display for TokenKind {
             TokenKind::FloatType => write!(f, "float"),
             TokenKind::BoolType => write!(f, "bool"),
             TokenKind::StringType => write!(f, "string"),
+            TokenKind::CharType => write!(f, "char"),
             TokenKind::UnitType => write!(f, "unit"),
             TokenKind::LParen => write!(f, "("),
             TokenKind::RParen => write!(f, ")"),

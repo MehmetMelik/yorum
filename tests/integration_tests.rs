@@ -1068,3 +1068,169 @@ fn test_pure_cannot_spawn() {
     let msg = result.unwrap_err();
     assert!(msg.contains("pure function cannot use spawn"));
 }
+
+// ═══════════════════════════════════════════════════════════════
+//  Char type tests
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn test_char_literal_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let c: char = 'a';\n\
+         \x20   print_char(c);\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("@print_char"));
+    assert!(ir.contains("i8"));
+}
+
+#[test]
+fn test_char_comparison_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let c: char = 'x';\n\
+         \x20   if c == 'x' { return 1; }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("icmp eq i8"));
+}
+
+#[test]
+fn test_char_ordering_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let c: char = 'b';\n\
+         \x20   if c >= 'a' { return 1; }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("icmp sge i8"));
+}
+
+#[test]
+fn test_char_to_int_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let c: char = 'A';\n\
+         \x20   let n: int = char_to_int(c);\n\
+         \x20   return n;\n\
+         }\n",
+    );
+    assert!(ir.contains("@char_to_int"));
+    assert!(ir.contains("zext i8"));
+}
+
+#[test]
+fn test_int_to_char_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let c: char = int_to_char(65);\n\
+         \x20   print_char(c);\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("@int_to_char"));
+    assert!(ir.contains("trunc i64"));
+}
+
+#[test]
+fn test_int_to_float_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let f: float = int_to_float(42);\n\
+         \x20   print_float(f);\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("@int_to_float"));
+    assert!(ir.contains("sitofp i64"));
+}
+
+#[test]
+fn test_float_to_int_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let n: int = float_to_int(3.14);\n\
+         \x20   return n;\n\
+         }\n",
+    );
+    assert!(ir.contains("@float_to_int"));
+    assert!(ir.contains("fptosi double"));
+}
+
+#[test]
+fn test_int_to_str_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let s: string = int_to_str(42);\n\
+         \x20   print_str(s);\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("@int_to_str"));
+    assert!(ir.contains("@snprintf"));
+}
+
+#[test]
+fn test_str_to_int_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let n: int = str_to_int(\"42\");\n\
+         \x20   return n;\n\
+         }\n",
+    );
+    assert!(ir.contains("@str_to_int"));
+    assert!(ir.contains("@atol"));
+}
+
+#[test]
+fn test_char_typecheck_errors() {
+    // Cannot add chars
+    let result = yorum::typecheck(
+        "fn f() -> char {\n\
+         \x20   let a: char = 'a';\n\
+         \x20   let b: char = 'b';\n\
+         \x20   return a + b;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+
+    // Cannot assign int to char
+    let result = yorum::typecheck(
+        "fn f() -> int {\n\
+         \x20   let c: char = 42;\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_char_escape_in_literal() {
+    parse_and_check(
+        "fn main() -> int {\n\
+         \x20   let nl: char = '\\n';\n\
+         \x20   let tab: char = '\\t';\n\
+         \x20   let nul: char = '\\0';\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+}
+
+#[test]
+fn test_casting_type_errors() {
+    // char_to_int expects char, not int
+    let result = yorum::typecheck("fn f() -> int { return char_to_int(42); }");
+    assert!(result.is_err());
+
+    // int_to_char expects int, not string
+    let result = yorum::typecheck("fn f() -> char { return int_to_char(\"hello\"); }");
+    assert!(result.is_err());
+
+    // float_to_int expects float, not int
+    let result = yorum::typecheck("fn f() -> int { return float_to_int(42); }");
+    assert!(result.is_err());
+}

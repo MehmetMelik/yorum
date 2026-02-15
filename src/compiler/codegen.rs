@@ -147,6 +147,20 @@ impl Codegen {
         self.fn_ret_types
             .insert("str_concat".to_string(), Type::Str);
         self.fn_ret_types.insert("str_eq".to_string(), Type::Bool);
+        self.fn_ret_types
+            .insert("print_char".to_string(), Type::Unit);
+        self.fn_ret_types
+            .insert("char_to_int".to_string(), Type::Int);
+        self.fn_ret_types
+            .insert("int_to_char".to_string(), Type::Char);
+        self.fn_ret_types
+            .insert("int_to_float".to_string(), Type::Float);
+        self.fn_ret_types
+            .insert("float_to_int".to_string(), Type::Int);
+        self.fn_ret_types
+            .insert("int_to_str".to_string(), Type::Str);
+        self.fn_ret_types
+            .insert("str_to_int".to_string(), Type::Int);
 
         // Register function return types (including impl methods with mangled names)
         for decl in &program.declarations {
@@ -236,7 +250,11 @@ impl Codegen {
         self.globals
             .push_str("declare i32 @pthread_cond_destroy(ptr)\n");
         self.globals
-            .push_str("declare ptr @memcpy(ptr, ptr, i64)\n\n");
+            .push_str("declare ptr @memcpy(ptr, ptr, i64)\n");
+        self.globals
+            .push_str("declare i32 @snprintf(ptr, i64, ptr, ...)\n");
+        self.globals.push_str("declare i64 @atol(ptr)\n");
+        self.globals.push_str("declare i32 @putchar(i32)\n\n");
 
         // Format strings (%lld\n\0 = 6 bytes, %f\n\0 = 4 bytes)
         self.globals
@@ -251,8 +269,10 @@ impl Codegen {
             "@.fmt.bounds = private unnamed_addr constant [40 x i8] c\"array index out of bounds: %lld >= %lld\\00\"\n",
         );
         self.globals.push_str(
-            "@.fmt.contract = private unnamed_addr constant [27 x i8] c\"contract violation: %s\\0A\\00\"\n",
+            "@.fmt.contract = private unnamed_addr constant [24 x i8] c\"contract violation: %s\\0A\\00\"\n",
         );
+        self.globals
+            .push_str("@.fmt.lld = private unnamed_addr constant [5 x i8] c\"%lld\\00\"\n");
         self.globals.push('\n');
     }
 
@@ -403,6 +423,65 @@ impl Codegen {
              \x20 store i32 0, ptr %ready\n\
              \x20 call i32 @pthread_mutex_unlock(ptr %ch)\n\
              \x20 ret i64 %val\n\
+             }\n\n",
+        );
+
+        // print_char — prints a single character
+        self.body.push_str(
+            "define void @print_char(i8 %c) {\n\
+             entry:\n\
+             \x20 %ext = zext i8 %c to i32\n\
+             \x20 call i32 @putchar(i32 %ext)\n\
+             \x20 ret void\n\
+             }\n\n",
+        );
+        // char_to_int — zero-extends i8 to i64
+        self.body.push_str(
+            "define i64 @char_to_int(i8 %c) {\n\
+             entry:\n\
+             \x20 %ext = zext i8 %c to i64\n\
+             \x20 ret i64 %ext\n\
+             }\n\n",
+        );
+        // int_to_char — truncates i64 to i8
+        self.body.push_str(
+            "define i8 @int_to_char(i64 %n) {\n\
+             entry:\n\
+             \x20 %trunc = trunc i64 %n to i8\n\
+             \x20 ret i8 %trunc\n\
+             }\n\n",
+        );
+        // int_to_float — converts i64 to double
+        self.body.push_str(
+            "define double @int_to_float(i64 %n) {\n\
+             entry:\n\
+             \x20 %f = sitofp i64 %n to double\n\
+             \x20 ret double %f\n\
+             }\n\n",
+        );
+        // float_to_int — converts double to i64
+        self.body.push_str(
+            "define i64 @float_to_int(double %f) {\n\
+             entry:\n\
+             \x20 %n = fptosi double %f to i64\n\
+             \x20 ret i64 %n\n\
+             }\n\n",
+        );
+        // int_to_str — converts i64 to heap-allocated decimal string
+        self.body.push_str(
+            "define ptr @int_to_str(i64 %n) {\n\
+             entry:\n\
+             \x20 %buf = call ptr @malloc(i64 24)\n\
+             \x20 call i32 (ptr, i64, ptr, ...) @snprintf(ptr %buf, i64 24, ptr @.fmt.lld, i64 %n)\n\
+             \x20 ret ptr %buf\n\
+             }\n\n",
+        );
+        // str_to_int — parses string to i64
+        self.body.push_str(
+            "define i64 @str_to_int(ptr %s) {\n\
+             entry:\n\
+             \x20 %n = call i64 @atol(ptr %s)\n\
+             \x20 ret i64 %n\n\
              }\n\n",
         );
     }
@@ -1068,6 +1147,26 @@ impl Codegen {
                         self.block_terminated = false;
                     }
                 }
+                Pattern::Literal(Literal::Char(c), _) => {
+                    let cmp = self.fresh_temp();
+                    self.emit_line(&format!(
+                        "{} = icmp eq i8 {}, {}",
+                        cmp, compare_val, *c as u8
+                    ));
+                    let next = if i + 1 < s.arms.len() {
+                        format!("match.check.{}", i + 1)
+                    } else {
+                        default_label.clone()
+                    };
+                    self.emit_line(&format!(
+                        "br i1 {}, label %{}, label %{}",
+                        cmp, arm_labels[i], next
+                    ));
+                    if i + 1 < s.arms.len() {
+                        self.emit_label(&next);
+                        self.block_terminated = false;
+                    }
+                }
                 Pattern::Wildcard(_) => {
                     self.emit_line(&format!("br label %{}", arm_labels[i]));
                 }
@@ -1267,29 +1366,32 @@ impl Codegen {
 
                 // Determine the operand type from the LHS
                 let is_float = self.expr_is_float(lhs);
+                let is_char = !is_float && self.expr_is_char(lhs);
+                // Integer type string: "i8" for char, "i64" for int
+                let ity = if is_char { "i8" } else { "i64" };
 
                 let instr = match (op, is_float) {
-                    (BinOp::Add, false) => format!("{} = add i64 {}, {}", tmp, l, r),
+                    (BinOp::Add, false) => format!("{} = add {} {}, {}", tmp, ity, l, r),
                     (BinOp::Add, true) => format!("{} = fadd double {}, {}", tmp, l, r),
-                    (BinOp::Sub, false) => format!("{} = sub i64 {}, {}", tmp, l, r),
+                    (BinOp::Sub, false) => format!("{} = sub {} {}, {}", tmp, ity, l, r),
                     (BinOp::Sub, true) => format!("{} = fsub double {}, {}", tmp, l, r),
-                    (BinOp::Mul, false) => format!("{} = mul i64 {}, {}", tmp, l, r),
+                    (BinOp::Mul, false) => format!("{} = mul {} {}, {}", tmp, ity, l, r),
                     (BinOp::Mul, true) => format!("{} = fmul double {}, {}", tmp, l, r),
-                    (BinOp::Div, false) => format!("{} = sdiv i64 {}, {}", tmp, l, r),
+                    (BinOp::Div, false) => format!("{} = sdiv {} {}, {}", tmp, ity, l, r),
                     (BinOp::Div, true) => format!("{} = fdiv double {}, {}", tmp, l, r),
-                    (BinOp::Mod, false) => format!("{} = srem i64 {}, {}", tmp, l, r),
+                    (BinOp::Mod, false) => format!("{} = srem {} {}, {}", tmp, ity, l, r),
                     (BinOp::Mod, true) => format!("{} = frem double {}, {}", tmp, l, r),
-                    (BinOp::Eq, false) => format!("{} = icmp eq i64 {}, {}", tmp, l, r),
+                    (BinOp::Eq, false) => format!("{} = icmp eq {} {}, {}", tmp, ity, l, r),
                     (BinOp::Eq, true) => format!("{} = fcmp oeq double {}, {}", tmp, l, r),
-                    (BinOp::NotEq, false) => format!("{} = icmp ne i64 {}, {}", tmp, l, r),
+                    (BinOp::NotEq, false) => format!("{} = icmp ne {} {}, {}", tmp, ity, l, r),
                     (BinOp::NotEq, true) => format!("{} = fcmp one double {}, {}", tmp, l, r),
-                    (BinOp::Lt, false) => format!("{} = icmp slt i64 {}, {}", tmp, l, r),
+                    (BinOp::Lt, false) => format!("{} = icmp slt {} {}, {}", tmp, ity, l, r),
                     (BinOp::Lt, true) => format!("{} = fcmp olt double {}, {}", tmp, l, r),
-                    (BinOp::Gt, false) => format!("{} = icmp sgt i64 {}, {}", tmp, l, r),
+                    (BinOp::Gt, false) => format!("{} = icmp sgt {} {}, {}", tmp, ity, l, r),
                     (BinOp::Gt, true) => format!("{} = fcmp ogt double {}, {}", tmp, l, r),
-                    (BinOp::LtEq, false) => format!("{} = icmp sle i64 {}, {}", tmp, l, r),
+                    (BinOp::LtEq, false) => format!("{} = icmp sle {} {}, {}", tmp, ity, l, r),
                     (BinOp::LtEq, true) => format!("{} = fcmp ole double {}, {}", tmp, l, r),
-                    (BinOp::GtEq, false) => format!("{} = icmp sge i64 {}, {}", tmp, l, r),
+                    (BinOp::GtEq, false) => format!("{} = icmp sge {} {}, {}", tmp, ity, l, r),
                     (BinOp::GtEq, true) => format!("{} = fcmp oge double {}, {}", tmp, l, r),
                     (BinOp::And, _) => format!("{} = and i1 {}, {}", tmp, l, r),
                     (BinOp::Or, _) => format!("{} = or i1 {}, {}", tmp, l, r),
@@ -1680,6 +1782,7 @@ impl Codegen {
             } else {
                 "false".to_string()
             }),
+            Literal::Char(c) => Ok((*c as u8).to_string()),
             Literal::String(s) => {
                 // Emit as a global constant
                 let id = self.string_counter;
@@ -2387,6 +2490,7 @@ impl Codegen {
             Type::Int => "i64".to_string(),
             Type::Float => "double".to_string(),
             Type::Bool => "i1".to_string(),
+            Type::Char => "i8".to_string(),
             Type::Str => "ptr".to_string(),
             Type::Unit => "void".to_string(),
             Type::Named(name) => {
@@ -2412,6 +2516,7 @@ impl Codegen {
             Type::Int => 8,
             Type::Float => 8,
             Type::Bool => 1,
+            Type::Char => 1,
             Type::Str => 8,
             Type::Unit => 0,
             Type::Named(name) => {
@@ -2433,6 +2538,7 @@ impl Codegen {
             ExprKind::Literal(Literal::Float(_)) => true,
             ExprKind::Literal(Literal::Int(_)) => false,
             ExprKind::Literal(Literal::Bool(_)) => false,
+            ExprKind::Literal(Literal::Char(_)) => false,
             ExprKind::Literal(Literal::String(_)) => false,
             ExprKind::Ident(name) => {
                 if let Some(slot) = self.lookup_var(name) {
@@ -2496,11 +2602,44 @@ impl Codegen {
         }
     }
 
+    /// Heuristic to determine if an expression produces a char (i8) value.
+    fn expr_is_char(&self, expr: &Expr) -> bool {
+        match &expr.kind {
+            ExprKind::Literal(Literal::Char(_)) => true,
+            ExprKind::Literal(_) => false,
+            ExprKind::Ident(name) => {
+                if let Some(slot) = self.lookup_var(name) {
+                    slot.llvm_ty == "i8"
+                } else {
+                    false
+                }
+            }
+            ExprKind::Call(callee, _) => {
+                if let ExprKind::Ident(name) = &callee.kind {
+                    if let Some(ret_ty) = self.fn_ret_types.get(name.as_str()) {
+                        return *ret_ty == Type::Char;
+                    }
+                }
+                false
+            }
+            ExprKind::Index(arr_expr, _) => {
+                if let ExprKind::Ident(name) = &arr_expr.kind {
+                    if let Some(elem_ty) = self.array_elem_types.get(name) {
+                        return elem_ty == "i8";
+                    }
+                }
+                false
+            }
+            _ => false,
+        }
+    }
+
     fn expr_llvm_type(&self, expr: &Expr) -> String {
         match &expr.kind {
             ExprKind::Literal(Literal::Int(_)) => "i64".to_string(),
             ExprKind::Literal(Literal::Float(_)) => "double".to_string(),
             ExprKind::Literal(Literal::Bool(_)) => "i1".to_string(),
+            ExprKind::Literal(Literal::Char(_)) => "i8".to_string(),
             ExprKind::Literal(Literal::String(_)) => "ptr".to_string(),
             ExprKind::Ident(name) => {
                 if let Some(slot) = self.lookup_var(name) {

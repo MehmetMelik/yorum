@@ -1,0 +1,48 @@
+// Char type and type casting examples
+
+fn main() -> int {
+    // Char literals and printing
+    let c: char = 'A';
+    print_char(c);
+
+    // Escape sequences
+    let nl: char = '\n';
+    print_char(nl);
+
+    // Char comparisons
+    let digit: char = '5';
+    if digit >= '0' {
+        if digit <= '9' {
+            print_str("It's a digit!");
+        }
+    }
+
+    // Char-to-int conversion (ASCII value)
+    let val: int = char_to_int(c);
+    print_int(val);
+
+    // Int-to-char conversion
+    let bang: char = int_to_char(33);
+    print_char(bang);
+    print_char(nl);
+
+    // Int-to-float conversion
+    let x: int = 42;
+    let f: float = int_to_float(x);
+    print_float(f);
+
+    // Float-to-int conversion (truncates)
+    let pi: float = 3.14;
+    let n: int = float_to_int(pi);
+    print_int(n);
+
+    // Int-to-string conversion
+    let s: string = int_to_str(123);
+    print_str(s);
+
+    // String-to-int conversion
+    let parsed: int = str_to_int("456");
+    print_int(parsed);
+
+    return 0;
+}

@@ -144,6 +144,35 @@ impl TypeChecker {
             "str_eq".to_string(),
             builtin(vec![Type::Str, Type::Str], Type::Bool, true),
         );
+        self.functions.insert(
+            "print_char".to_string(),
+            builtin(vec![Type::Char], Type::Unit, false),
+        );
+        // Type casting builtins
+        self.functions.insert(
+            "char_to_int".to_string(),
+            builtin(vec![Type::Char], Type::Int, true),
+        );
+        self.functions.insert(
+            "int_to_char".to_string(),
+            builtin(vec![Type::Int], Type::Char, true),
+        );
+        self.functions.insert(
+            "int_to_float".to_string(),
+            builtin(vec![Type::Int], Type::Float, true),
+        );
+        self.functions.insert(
+            "float_to_int".to_string(),
+            builtin(vec![Type::Float], Type::Int, true),
+        );
+        self.functions.insert(
+            "int_to_str".to_string(),
+            builtin(vec![Type::Int], Type::Str, true),
+        );
+        self.functions.insert(
+            "str_to_int".to_string(),
+            builtin(vec![Type::Str], Type::Int, true),
+        );
     }
 
     /// Type-check an entire program. Returns Ok(()) or collected errors.
@@ -622,6 +651,7 @@ impl TypeChecker {
                 Literal::Int(_) => Type::Int,
                 Literal::Float(_) => Type::Float,
                 Literal::Bool(_) => Type::Bool,
+                Literal::Char(_) => Type::Char,
                 Literal::String(_) => Type::Str,
             }),
 
@@ -1259,9 +1289,12 @@ impl TypeChecker {
                     });
                     return None;
                 }
-                if *lt != Type::Int && *lt != Type::Float {
+                if *lt != Type::Int && *lt != Type::Float && *lt != Type::Char {
                     self.errors.push(TypeError {
-                        message: format!("comparison requires 'int' or 'float', found '{}'", lt),
+                        message: format!(
+                            "comparison requires 'int', 'float', or 'char', found '{}'",
+                            lt
+                        ),
                         span,
                     });
                     return None;
@@ -1342,7 +1375,7 @@ impl TypeChecker {
 
     fn is_valid_type(&self, ty: &Type) -> bool {
         match ty {
-            Type::Int | Type::Float | Type::Bool | Type::Str | Type::Unit => true,
+            Type::Int | Type::Float | Type::Bool | Type::Char | Type::Str | Type::Unit => true,
             Type::Named(name) => {
                 self.structs.contains_key(name)
                     || self.enums.contains_key(name)
@@ -1380,6 +1413,7 @@ impl TypeChecker {
                 Literal::Int(_) => Type::Int,
                 Literal::Float(_) => Type::Float,
                 Literal::Bool(_) => Type::Bool,
+                Literal::Char(_) => Type::Char,
                 Literal::String(_) => Type::Str,
             }),
             ExprKind::Ident(name) => self.lookup(name).map(|info| info.ty.clone()),

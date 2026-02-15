@@ -150,6 +150,7 @@ pub enum Type {
     Int,
     Float,
     Bool,
+    Char,
     Str,
     Unit,
     Named(String),
@@ -171,6 +172,7 @@ impl std::fmt::Display for Type {
             Type::Int => write!(f, "int"),
             Type::Float => write!(f, "float"),
             Type::Bool => write!(f, "bool"),
+            Type::Char => write!(f, "char"),
             Type::Str => write!(f, "string"),
             Type::Unit => write!(f, "unit"),
             Type::Named(n) => write!(f, "{}", n),
@@ -353,6 +355,7 @@ pub enum Literal {
     Int(i64),
     Float(f64),
     Bool(bool),
+    Char(char),
     String(String),
 }
 

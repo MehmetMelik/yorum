@@ -551,7 +551,11 @@ cargo test test_fibonacci     # single test by name
 | **v0.2** | Generics, closures, `impl` blocks, trait system | Done |
 | **v0.3** | Arrays, string operations, `for` loops, nested pattern matching | Done |
 | **v0.4** | Structured concurrency, runtime contract verification, multi-file compilation | Done |
-| **v1.0** | Self-hosting compiler, standard library, LSP server | |
+| **v0.5** | Self-hosting compiler | |
+| **v0.6** | Standard library (io, collections, math, networking) | |
+| **v0.7** | LSP server for editor integration | |
+| **v0.8** | Formal verification of the ownership checker | |
+| **v1.0** | Stable language specification and ABI | |
 
 ## License
 

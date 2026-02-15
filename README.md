@@ -1,7 +1,23 @@
-# Yorum
+<p align="center">
+  <img src="assets/yorum-icon-256.png" alt="Yorum" width="128" height="128">
+</p>
 
-A statically typed, LLVM-compiled programming language designed for deterministic
+<h1 align="center">Yorum</h1>
+
+<p align="center">
+  <a href="https://github.com/kosem/yorum/actions/workflows/ci.yml"><img src="https://github.com/kosem/yorum/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/kosem/yorum/releases/latest"><img src="https://img.shields.io/github/v/release/kosem/yorum?label=release" alt="Release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
+  <img src="https://img.shields.io/badge/lang-Rust-orange.svg" alt="Rust">
+  <img src="https://img.shields.io/badge/LLVM-IR%20output-purple.svg" alt="LLVM IR">
+</p>
+
+<p align="center">
+A statically typed, LLVM-compiled programming language designed for deterministic<br>
 execution, structural clarity, and safe autonomous refactoring by AI agents.
+</p>
+
+---
 
 Every syntactic construct maps 1:1 to an AST node. The AST serializes losslessly
 to JSON. The compiler emits textual LLVM IR — no LLVM library dependency, just
@@ -349,4 +365,4 @@ cargo test test_fibonacci     # single test by name
 
 ## License
 
-MIT
+[MIT](LICENSE)

@@ -1,0 +1,21 @@
+// strings.yrm — String operations.
+//
+// Demonstrates: str_len, str_concat, str_eq built-in functions.
+
+module strings;
+
+fn main() -> int {
+    let n: int = str_len("hello");
+    print_int(n);
+
+    let s: string = str_concat("hello", " world");
+    print_str(s);
+
+    let eq: bool = str_eq("abc", "abc");
+    print_bool(eq);
+
+    let neq: bool = str_eq("abc", "def");
+    print_bool(neq);
+
+    return 0;
+}

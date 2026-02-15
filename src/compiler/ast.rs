@@ -219,6 +219,7 @@ pub enum Stmt {
     Return(ReturnStmt),
     If(IfStmt),
     While(WhileStmt),
+    For(ForStmt),
     Match(MatchStmt),
     Expr(ExprStmt),
 }
@@ -262,6 +263,14 @@ pub enum ElseBranch {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WhileStmt {
     pub condition: Expr,
+    pub body: Block,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ForStmt {
+    pub var_name: String,
+    pub iterable: Expr,
     pub body: Block,
     pub span: Span,
 }
@@ -316,6 +325,7 @@ pub enum ExprKind {
     Index(Box<Expr>, Box<Expr>),
     StructInit(String, Vec<FieldInit>),
     Closure(ClosureExpr),
+    ArrayLit(Vec<Expr>),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -173,6 +173,64 @@ impl TypeChecker {
             "str_to_int".to_string(),
             builtin(vec![Type::Str], Type::Int, true),
         );
+        // String/char operation builtins
+        self.functions.insert(
+            "str_charAt".to_string(),
+            builtin(vec![Type::Str, Type::Int], Type::Char, true),
+        );
+        self.functions.insert(
+            "str_sub".to_string(),
+            builtin(vec![Type::Str, Type::Int, Type::Int], Type::Str, false),
+        );
+        self.functions.insert(
+            "str_from_char".to_string(),
+            builtin(vec![Type::Char], Type::Str, false),
+        );
+        self.functions.insert(
+            "char_is_alpha".to_string(),
+            builtin(vec![Type::Char], Type::Bool, true),
+        );
+        self.functions.insert(
+            "char_is_digit".to_string(),
+            builtin(vec![Type::Char], Type::Bool, true),
+        );
+        self.functions.insert(
+            "char_is_whitespace".to_string(),
+            builtin(vec![Type::Char], Type::Bool, true),
+        );
+        // File I/O builtins
+        self.functions.insert(
+            "file_read".to_string(),
+            builtin(vec![Type::Str], Type::Str, false),
+        );
+        self.functions.insert(
+            "file_write".to_string(),
+            builtin(vec![Type::Str, Type::Str], Type::Bool, false),
+        );
+        self.functions.insert(
+            "print_err".to_string(),
+            builtin(vec![Type::Str], Type::Unit, false),
+        );
+        // Process interaction builtins
+        self.functions.insert(
+            "exit".to_string(),
+            builtin(vec![Type::Int], Type::Unit, false),
+        );
+        // HashMap builtins
+        self.functions
+            .insert("map_new".to_string(), builtin(vec![], Type::Map, false));
+        self.functions.insert(
+            "map_set".to_string(),
+            builtin(vec![Type::Map, Type::Str, Type::Int], Type::Unit, false),
+        );
+        self.functions.insert(
+            "map_get".to_string(),
+            builtin(vec![Type::Map, Type::Str], Type::Int, true),
+        );
+        self.functions.insert(
+            "map_has".to_string(),
+            builtin(vec![Type::Map, Type::Str], Type::Bool, true),
+        );
     }
 
     /// Type-check an entire program. Returns Ok(()) or collected errors.
@@ -800,6 +858,100 @@ impl TypeChecker {
                         return None;
                     }
 
+                    // Built-in args() — returns command-line arguments
+                    if name == "args" {
+                        if !args.is_empty() {
+                            self.errors.push(TypeError {
+                                message: "args() takes no arguments".to_string(),
+                                span: expr.span,
+                            });
+                        }
+                        if self.current_fn_is_pure {
+                            self.errors.push(TypeError {
+                                message: "pure function cannot call impure function 'args'"
+                                    .to_string(),
+                                span: expr.span,
+                            });
+                        }
+                        return Some(Type::Array(Box::new(Type::Str)));
+                    }
+
+                    // Built-in push() for dynamic arrays
+                    if name == "push" {
+                        if args.len() != 2 {
+                            self.errors.push(TypeError {
+                                message: format!(
+                                    "'push' expects 2 arguments, found {}",
+                                    args.len()
+                                ),
+                                span: expr.span,
+                            });
+                            return None;
+                        }
+                        if self.current_fn_is_pure {
+                            self.errors.push(TypeError {
+                                message: "pure function cannot call impure function 'push'"
+                                    .to_string(),
+                                span: expr.span,
+                            });
+                        }
+                        if let Some(arr_ty) = self.infer_expr(&args[0]) {
+                            if let Type::Array(inner) = &arr_ty {
+                                if let Some(val_ty) = self.infer_expr(&args[1]) {
+                                    if val_ty != **inner {
+                                        self.errors.push(TypeError {
+                                            message: format!(
+                                                "push: array expects '{}', found '{}'",
+                                                inner, val_ty
+                                            ),
+                                            span: args[1].span,
+                                        });
+                                    }
+                                }
+                            } else {
+                                self.errors.push(TypeError {
+                                    message: format!(
+                                        "push: first argument must be an array, found '{}'",
+                                        arr_ty
+                                    ),
+                                    span: args[0].span,
+                                });
+                            }
+                        }
+                        return Some(Type::Unit);
+                    }
+                    // Built-in pop() for dynamic arrays
+                    if name == "pop" {
+                        if args.len() != 1 {
+                            self.errors.push(TypeError {
+                                message: format!("'pop' expects 1 argument, found {}", args.len()),
+                                span: expr.span,
+                            });
+                            return None;
+                        }
+                        if self.current_fn_is_pure {
+                            self.errors.push(TypeError {
+                                message: "pure function cannot call impure function 'pop'"
+                                    .to_string(),
+                                span: expr.span,
+                            });
+                        }
+                        if let Some(arr_ty) = self.infer_expr(&args[0]) {
+                            if let Type::Array(inner) = arr_ty {
+                                return Some(*inner);
+                            } else {
+                                self.errors.push(TypeError {
+                                    message: format!(
+                                        "pop: argument must be an array, found '{}'",
+                                        arr_ty
+                                    ),
+                                    span: args[0].span,
+                                });
+                            }
+                        }
+                        return None;
+                    }
+
                     if let Some(sig) = self.functions.get(name).cloned() {
                         // Enforce purity: pure functions cannot call impure functions
                         if self.current_fn_is_pure && !sig.is_pure {
@@ -1375,7 +1527,13 @@ impl TypeChecker {
 
     fn is_valid_type(&self, ty: &Type) -> bool {
         match ty {
-            Type::Int | Type::Float | Type::Bool | Type::Char | Type::Str | Type::Unit => true,
+            Type::Int
+            | Type::Float
+            | Type::Bool
+            | Type::Char
+            | Type::Str
+            | Type::Unit
+            | Type::Map => true,
             Type::Named(name) => {
                 self.structs.contains_key(name)
                     || self.enums.contains_key(name)

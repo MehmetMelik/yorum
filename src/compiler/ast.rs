@@ -164,6 +164,7 @@ pub enum Type {
     Fn(Vec<Type>, Box<Type>),
     Task(Box<Type>),
     Chan(Box<Type>),
+    Map,
 }
 
 impl std::fmt::Display for Type {
@@ -204,6 +205,7 @@ impl std::fmt::Display for Type {
             }
             Type::Task(inner) => write!(f, "Task<{}>", inner),
             Type::Chan(inner) => write!(f, "Chan<{}>", inner),
+            Type::Map => write!(f, "Map"),
         }
     }
 }

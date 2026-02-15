@@ -510,6 +510,10 @@ impl Parser {
             }
             TokenKind::Ident(_) => {
                 let name = self.expect_ident()?;
+                // Built-in Map type
+                if name == "Map" {
+                    return Ok(Type::Map);
+                }
                 // Check for type args: Name<T, U>
                 if self.check(&TokenKind::Lt) {
                     self.advance();

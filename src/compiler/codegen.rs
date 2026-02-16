@@ -414,7 +414,11 @@ impl Codegen {
         self.globals.push_str("declare ptr @fgets(ptr, i32, ptr)\n");
         self.globals
             .push_str("declare i32 @gettimeofday(ptr, ptr)\n");
-        self.globals.push_str("@stdin = external global ptr\n");
+        if cfg!(target_os = "macos") {
+            self.globals.push_str("@__stdinp = external global ptr\n");
+        } else {
+            self.globals.push_str("@stdin = external global ptr\n");
+        }
         // Networking externals
         self.globals
             .push_str("declare i32 @socket(i32, i32, i32)\n");
@@ -432,7 +436,7 @@ impl Codegen {
             .push_str("declare i32 @getaddrinfo(ptr, ptr, ptr, ptr)\n");
         self.globals.push_str("declare void @freeaddrinfo(ptr)\n");
         self.globals
-            .push_str("declare i32 @inet_ntop(i32, ptr, ptr, i32)\n");
+            .push_str("declare ptr @inet_ntop(i32, ptr, ptr, i32)\n");
         self.globals
             .push_str("declare i64 @sendto(i32, ptr, i64, i32, ptr, i32)\n");
         self.globals
@@ -480,14 +484,13 @@ impl Codegen {
         self.globals
             .push_str("@.str.empty = private unnamed_addr constant [1 x i8] c\"\\00\"\n");
         self.globals.push_str(
-            "@.str.http_req_line = private unnamed_addr constant [14 x i8] c\"%s %s HTTP/1.0\\00\"\n",
+            "@.str.http_req_line = private unnamed_addr constant [15 x i8] c\"%s %s HTTP/1.0\\00\"\n",
         );
         self.globals.push_str(
-            "@.str.http_host_hdr = private unnamed_addr constant [24 x i8] c\"\\0D\\0AHost: %s\\0D\\0AConnection: close\\00\"\n",
+            "@.str.http_host_hdr = private unnamed_addr constant [30 x i8] c\"\\0D\\0AHost: %s\\0D\\0AConnection: close\\00\"\n",
         );
-        // "Content-Length: %lld" = 20 chars + null
         self.globals.push_str(
-            "@.str.http_cl_hdr = private unnamed_addr constant [21 x i8] c\"\\0D\\0AContent-Length: %lld\\00\"\n",
+            "@.str.http_cl_hdr = private unnamed_addr constant [23 x i8] c\"\\0D\\0AContent-Length: %lld\\00\"\n",
         );
         self.globals.push_str(
             "@.str.http_crlf2 = private unnamed_addr constant [5 x i8] c\"\\0D\\0A\\0D\\0A\\00\"\n",
@@ -1316,7 +1319,7 @@ impl Codegen {
              \x20 call ptr @strcpy(ptr %buf, ptr %s)\n\
              \x20 ret ptr %buf\n\
              loop:\n\
-             \x20 %cur = phi ptr [ %s, %entry ], [ %after, %replace ], [ %cur, %no_match ]\n\
+             \x20 %cur = phi ptr [ %s, %entry ], [ %after, %replace ]\n\
              \x20 %found = call ptr @strstr(ptr %cur, ptr %from)\n\
              \x20 %is_null = icmp eq ptr %found, null\n\
              \x20 br i1 %is_null, label %done, label %replace\n\
@@ -1334,12 +1337,9 @@ impl Codegen {
              \x20 call ptr @strcat(ptr %buf, ptr %to)\n\
              \x20 %after = getelementptr i8, ptr %found, i64 %flen\n\
              \x20 br label %loop\n\
-             no_match:\n\
-             \x20 br label %done\n\
              done:\n\
              \x20 ; append remaining string\n\
-             \x20 %final_cur = phi ptr [ %cur, %loop ]\n\
-             \x20 call ptr @strcat(ptr %buf, ptr %final_cur)\n\
+             \x20 call ptr @strcat(ptr %buf, ptr %cur)\n\
              \x20 ret ptr %buf\n\
              }\n\n",
         );
@@ -1370,7 +1370,7 @@ impl Codegen {
              \x20 store i64 1, ptr %l_gep\n\
              \x20 ret ptr %fat\n\
              split_loop:\n\
-             \x20 %cur = phi ptr [ %s, %entry ], [ %next, %add_part ]\n\
+             \x20 %cur = phi ptr [ %s, %entry ], [ %next, %store1 ]\n\
              \x20 %found = call ptr @strstr(ptr %cur, ptr %delim)\n\
              \x20 %is_null = icmp eq ptr %found, null\n\
              \x20 br i1 %is_null, label %last_part, label %add_part\n\
@@ -1454,6 +1454,7 @@ impl Codegen {
              \x20 %out = select i1 %is_lower, i8 %upper, i8 %c\n\
              \x20 %dp = getelementptr i8, ptr %buf, i64 %i\n\
              \x20 store i8 %out, ptr %dp\n\
+             \x20 br label %cont\n\
              cont:\n\
              \x20 %i_next = add i64 %i, 1\n\
              \x20 br label %loop\n\
@@ -1483,6 +1484,7 @@ impl Codegen {
              \x20 %out = select i1 %is_upper, i8 %lower, i8 %c\n\
              \x20 %dp = getelementptr i8, ptr %buf, i64 %i\n\
              \x20 store i8 %out, ptr %dp\n\
+             \x20 br label %cont\n\
              cont:\n\
              \x20 %i_next = add i64 %i, 1\n\
              \x20 br label %loop\n\
@@ -1501,7 +1503,7 @@ impl Codegen {
              \x20 store i8 0, ptr %buf\n\
              \x20 br label %loop\n\
              loop:\n\
-             \x20 %i = phi i64 [ 0, %entry ], [ %i_next, %loop ]\n\
+             \x20 %i = phi i64 [ 0, %entry ], [ %i_next, %cat ]\n\
              \x20 %done = icmp sge i64 %i, %n\n\
              \x20 br i1 %done, label %end, label %cat\n\
              cat:\n\
@@ -1860,11 +1862,16 @@ impl Codegen {
              }\n\n",
         );
         // read_line — read a line from stdin (up to 4096 chars)
-        self.body.push_str(
-            "define ptr @read_line() {\n\
+        let stdin_sym = if cfg!(target_os = "macos") {
+            "@__stdinp"
+        } else {
+            "@stdin"
+        };
+        self.body.push_str(&format!(
+            "define ptr @read_line() {{\n\
              entry:\n\
              \x20 %buf = call ptr @malloc(i64 4096)\n\
-             \x20 %sin = load ptr, ptr @stdin\n\
+             \x20 %sin = load ptr, ptr {stdin_sym}\n\
              \x20 %result = call ptr @fgets(ptr %buf, i32 4096, ptr %sin)\n\
              \x20 %is_null = icmp eq ptr %result, null\n\
              \x20 br i1 %is_null, label %eof, label %got_line\n\
@@ -1887,8 +1894,9 @@ impl Codegen {
              \x20 br label %done\n\
              done:\n\
              \x20 ret ptr %buf\n\
-             }\n\n",
-        );
+             }}\n\n",
+            stdin_sym = stdin_sym,
+        ));
         // print_flush — print string without newline and flush
         self.body.push_str(
             "define void @print_flush(ptr %s) {\n\
@@ -2021,7 +2029,7 @@ impl Codegen {
              \x20 call ptr @memset(ptr %addr, i32 0, i64 16)\n\
              {sockaddr_fill}\
              \x20 %port32 = trunc i64 %port to i32\n\
-             \x20 %port_n = call i32 @htons(i32 %port32)\n\
+             \x20 %port_n = call i32 @__yorum_htons(i32 %port32)\n\
              \x20 %port16 = trunc i32 %port_n to i16\n\
              \x20 %port_p = getelementptr i8, ptr %addr, i64 {port_offset}\n\
              \x20 store i16 %port16, ptr %port_p\n\
@@ -2125,7 +2133,7 @@ impl Codegen {
              \x20 call ptr @memset(ptr %addr, i32 0, i64 16)\n\
              {sockaddr_fill}\
              \x20 %port32 = trunc i64 %port to i32\n\
-             \x20 %port_n = call i32 @htons(i32 %port32)\n\
+             \x20 %port_n = call i32 @__yorum_htons(i32 %port32)\n\
              \x20 %port16 = trunc i32 %port_n to i16\n\
              \x20 %port_p = getelementptr i8, ptr %addr, i64 2\n\
              \x20 store i16 %port16, ptr %port_p\n\
@@ -2217,9 +2225,9 @@ impl Codegen {
              \x20 %ai_addr = load ptr, ptr %ai_addr_p\n\
              \x20 %sin_addr_p = getelementptr i8, ptr %ai_addr, i64 4\n\
              \x20 %buf = call ptr @malloc(i64 46)\n\
-             \x20 %r = call i32 @inet_ntop(i32 2, ptr %sin_addr_p, ptr %buf, i32 46)\n\
+             \x20 %r = call ptr @inet_ntop(i32 2, ptr %sin_addr_p, ptr %buf, i32 46)\n\
              \x20 call void @freeaddrinfo(ptr %res)\n\
-             \x20 %ntop_fail = icmp eq i32 %r, 0\n\
+             \x20 %ntop_fail = icmp eq ptr %r, null\n\
              \x20 br i1 %ntop_fail, label %fail_free, label %success\n\
              success:\n\
              \x20 ret ptr %buf\n\
@@ -2453,7 +2461,7 @@ impl Codegen {
 
         // htons helper — byte-swap for network byte order
         self.body.push_str(
-            "define i32 @htons(i32 %x) {\n\
+            "define i32 @__yorum_htons(i32 %x) {\n\
              entry:\n\
              \x20 %lo = and i32 %x, 255\n\
              \x20 %hi = lshr i32 %x, 8\n\

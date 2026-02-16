@@ -761,6 +761,44 @@ special-cased because it returns `[string]`.
 channel element type for `chan()` defaults to `int` when not otherwise
 constrained by the binding context.
 
+**Networking — TCP (v0.9):**
+
+| Function | Signature | Pure | Description |
+|---|---|---|---|
+| `tcp_connect(host, port)` | `(string, int) -> int` | no | Connect to host:port. Returns fd or -1 |
+| `tcp_listen(host, port)` | `(string, int) -> int` | no | Bind + listen on host:port. Returns fd or -1 |
+| `tcp_accept(fd)` | `(int) -> int` | no | Accept connection. Returns new fd or -1 |
+| `tcp_send(fd, data)` | `(int, string) -> int` | no | Send string data. Returns bytes sent or -1 |
+| `tcp_recv(fd, max_len)` | `(int, int) -> string` | no | Receive up to N bytes. Returns string |
+| `tcp_close(fd)` | `(int) -> unit` | no | Close socket fd |
+
+**Networking — UDP (v0.9):**
+
+| Function | Signature | Pure | Description |
+|---|---|---|---|
+| `udp_socket()` | `() -> int` | no | Create UDP socket. Returns fd or -1 |
+| `udp_bind(fd, host, port)` | `(int, string, int) -> int` | no | Bind UDP socket. Returns 0 or -1 |
+| `udp_send_to(fd, data, host, port)` | `(int, string, string, int) -> int` | no | Send datagram. Returns bytes sent or -1 |
+| `udp_recv_from(fd, max_len)` | `(int, int) -> string` | no | Receive datagram. Returns string |
+
+**Networking — DNS (v0.9):**
+
+| Function | Signature | Pure | Description |
+|---|---|---|---|
+| `dns_resolve(hostname)` | `(string) -> string` | no | Resolve hostname to IP string. Empty on failure |
+
+**Networking — HTTP (v0.9):**
+
+| Function | Signature | Pure | Description |
+|---|---|---|---|
+| `http_request(method, url, headers, body)` | `(string, string, string, string) -> string` | no | HTTP/1.0 request. Returns response body |
+| `http_get(url)` | `(string) -> string` | no | Convenience: `http_request("GET", url, "", "")` |
+| `http_post(url, body)` | `(string, string) -> string` | no | Convenience: `http_request("POST", url, "", body)` |
+
+Socket file descriptors are represented as `int` values. `-1` indicates error,
+matching POSIX convention. All networking builtins are impure. HTTP support is
+HTTP/1.0 only (no TLS/HTTPS).
+
 ## 14. Roadmap
 
 ### v0.2 (Done)
@@ -806,8 +844,13 @@ constrained by the binding context.
 - Loop move safety: prevents moving outer-scope variables inside while/for loops
 - Task must-join errors now report real source spans
 
-### v0.9
-- Networking (TCP/UDP sockets, HTTP client)
+### v0.9 (Done)
+- Networking builtins: TCP (6), UDP (4), DNS (1), HTTP (3) — 14 total
+- TCP client/server: `tcp_connect`, `tcp_listen`, `tcp_accept`, `tcp_send`, `tcp_recv`, `tcp_close`
+- UDP sockets: `udp_socket`, `udp_bind`, `udp_send_to`, `udp_recv_from`
+- DNS resolution: `dns_resolve`
+- HTTP client: `http_request`, `http_get`, `http_post` (HTTP/1.0, plain text)
+- Platform-specific sockaddr_in layout (macOS vs Linux)
 
 ### v1.0
 - Stable language specification and ABI

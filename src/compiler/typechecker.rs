@@ -471,6 +471,72 @@ impl TypeChecker {
         );
         self.functions
             .insert("time_ms".to_string(), builtin(vec![], Type::Int, false));
+        // Networking — TCP
+        self.functions.insert(
+            "tcp_connect".to_string(),
+            builtin(vec![Type::Str, Type::Int], Type::Int, false),
+        );
+        self.functions.insert(
+            "tcp_listen".to_string(),
+            builtin(vec![Type::Str, Type::Int], Type::Int, false),
+        );
+        self.functions.insert(
+            "tcp_accept".to_string(),
+            builtin(vec![Type::Int], Type::Int, false),
+        );
+        self.functions.insert(
+            "tcp_send".to_string(),
+            builtin(vec![Type::Int, Type::Str], Type::Int, false),
+        );
+        self.functions.insert(
+            "tcp_recv".to_string(),
+            builtin(vec![Type::Int, Type::Int], Type::Str, false),
+        );
+        self.functions.insert(
+            "tcp_close".to_string(),
+            builtin(vec![Type::Int], Type::Unit, false),
+        );
+        // Networking — UDP
+        self.functions
+            .insert("udp_socket".to_string(), builtin(vec![], Type::Int, false));
+        self.functions.insert(
+            "udp_bind".to_string(),
+            builtin(vec![Type::Int, Type::Str, Type::Int], Type::Int, false),
+        );
+        self.functions.insert(
+            "udp_send_to".to_string(),
+            builtin(
+                vec![Type::Int, Type::Str, Type::Str, Type::Int],
+                Type::Int,
+                false,
+            ),
+        );
+        self.functions.insert(
+            "udp_recv_from".to_string(),
+            builtin(vec![Type::Int, Type::Int], Type::Str, false),
+        );
+        // Networking — DNS
+        self.functions.insert(
+            "dns_resolve".to_string(),
+            builtin(vec![Type::Str], Type::Str, false),
+        );
+        // Networking — HTTP
+        self.functions.insert(
+            "http_request".to_string(),
+            builtin(
+                vec![Type::Str, Type::Str, Type::Str, Type::Str],
+                Type::Str,
+                false,
+            ),
+        );
+        self.functions.insert(
+            "http_get".to_string(),
+            builtin(vec![Type::Str], Type::Str, false),
+        );
+        self.functions.insert(
+            "http_post".to_string(),
+            builtin(vec![Type::Str, Type::Str], Type::Str, false),
+        );
     }
 
     /// Type-check an entire program. Returns Ok(()) or collected errors.

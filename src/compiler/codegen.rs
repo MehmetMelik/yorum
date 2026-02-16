@@ -249,6 +249,30 @@ impl Codegen {
             .insert("print_flush".to_string(), Type::Unit);
         self.fn_ret_types.insert("env_get".to_string(), Type::Str);
         self.fn_ret_types.insert("time_ms".to_string(), Type::Int);
+        // Networking builtins
+        self.fn_ret_types
+            .insert("tcp_connect".to_string(), Type::Int);
+        self.fn_ret_types
+            .insert("tcp_listen".to_string(), Type::Int);
+        self.fn_ret_types
+            .insert("tcp_accept".to_string(), Type::Int);
+        self.fn_ret_types.insert("tcp_send".to_string(), Type::Int);
+        self.fn_ret_types.insert("tcp_recv".to_string(), Type::Str);
+        self.fn_ret_types
+            .insert("tcp_close".to_string(), Type::Unit);
+        self.fn_ret_types
+            .insert("udp_socket".to_string(), Type::Int);
+        self.fn_ret_types.insert("udp_bind".to_string(), Type::Int);
+        self.fn_ret_types
+            .insert("udp_send_to".to_string(), Type::Int);
+        self.fn_ret_types
+            .insert("udp_recv_from".to_string(), Type::Str);
+        self.fn_ret_types
+            .insert("dns_resolve".to_string(), Type::Str);
+        self.fn_ret_types
+            .insert("http_request".to_string(), Type::Str);
+        self.fn_ret_types.insert("http_get".to_string(), Type::Str);
+        self.fn_ret_types.insert("http_post".to_string(), Type::Str);
 
         // Register function return types (including impl methods with mangled names)
         for decl in &program.declarations {
@@ -390,7 +414,29 @@ impl Codegen {
         self.globals.push_str("declare ptr @fgets(ptr, i32, ptr)\n");
         self.globals
             .push_str("declare i32 @gettimeofday(ptr, ptr)\n");
-        self.globals.push_str("@stdin = external global ptr\n\n");
+        self.globals.push_str("@stdin = external global ptr\n");
+        // Networking externals
+        self.globals
+            .push_str("declare i32 @socket(i32, i32, i32)\n");
+        self.globals
+            .push_str("declare i32 @connect(i32, ptr, i32)\n");
+        self.globals.push_str("declare i32 @bind(i32, ptr, i32)\n");
+        self.globals.push_str("declare i32 @listen(i32, i32)\n");
+        self.globals
+            .push_str("declare i32 @accept(i32, ptr, ptr)\n");
+        self.globals
+            .push_str("declare i32 @setsockopt(i32, i32, i32, ptr, i32)\n");
+        self.globals.push_str("declare i32 @close(i32)\n");
+        self.globals.push_str("declare i64 @read(i32, ptr, i64)\n");
+        self.globals
+            .push_str("declare i32 @getaddrinfo(ptr, ptr, ptr, ptr)\n");
+        self.globals.push_str("declare void @freeaddrinfo(ptr)\n");
+        self.globals
+            .push_str("declare i32 @inet_ntop(i32, ptr, ptr, i32)\n");
+        self.globals
+            .push_str("declare i64 @sendto(i32, ptr, i64, i32, ptr, i32)\n");
+        self.globals
+            .push_str("declare i64 @recvfrom(i32, ptr, i64, i32, ptr, ptr)\n\n");
         // Globals for command-line arguments (stored by main)
         self.globals
             .push_str("@__yorum_argc = internal global i32 0\n");
@@ -430,6 +476,34 @@ impl Codegen {
             .push_str("@.str.a = private unnamed_addr constant [2 x i8] c\"a\\00\"\n");
         self.globals
             .push_str("@.fmt.str = private unnamed_addr constant [3 x i8] c\"%s\\00\"\n");
+        // Networking constants
+        self.globals
+            .push_str("@.str.empty = private unnamed_addr constant [1 x i8] c\"\\00\"\n");
+        self.globals.push_str(
+            "@.str.http_req_line = private unnamed_addr constant [14 x i8] c\"%s %s HTTP/1.0\\00\"\n",
+        );
+        self.globals.push_str(
+            "@.str.http_host_hdr = private unnamed_addr constant [24 x i8] c\"\\0D\\0AHost: %s\\0D\\0AConnection: close\\00\"\n",
+        );
+        // "Content-Length: %lld" = 20 chars + null
+        self.globals.push_str(
+            "@.str.http_cl_hdr = private unnamed_addr constant [21 x i8] c\"\\0D\\0AContent-Length: %lld\\00\"\n",
+        );
+        self.globals.push_str(
+            "@.str.http_crlf2 = private unnamed_addr constant [5 x i8] c\"\\0D\\0A\\0D\\0A\\00\"\n",
+        );
+        self.globals.push_str(
+            "@.str.http_crlf = private unnamed_addr constant [3 x i8] c\"\\0D\\0A\\00\"\n",
+        );
+        self.globals.push_str(
+            "@.str.http_sep = private unnamed_addr constant [5 x i8] c\"\\0D\\0A\\0D\\0A\\00\"\n",
+        );
+        self.globals.push_str(
+            "@.str.http_get_method = private unnamed_addr constant [4 x i8] c\"GET\\00\"\n",
+        );
+        self.globals.push_str(
+            "@.str.http_post_method = private unnamed_addr constant [5 x i8] c\"POST\\00\"\n",
+        );
         self.globals.push('\n');
     }
 
@@ -1859,6 +1933,534 @@ impl Codegen {
              \x20 %ms_usec = sdiv i64 %usec, 1000\n\
              \x20 %ms = add i64 %ms_sec, %ms_usec\n\
              \x20 ret i64 %ms\n\
+             }\n\n",
+        );
+
+        self.emit_networking_helpers();
+    }
+
+    fn emit_networking_helpers(&mut self) {
+        // Platform-specific constants
+        let sol_socket = if cfg!(target_os = "macos") {
+            "65535"
+        } else {
+            "1"
+        };
+        let so_reuseaddr = if cfg!(target_os = "macos") { "4" } else { "2" };
+
+        // ── sockaddr_in filling ──
+        // macOS: { i8 len=16, i8 family=2, i16 port, i32 addr, [8 x i8] zero } = 16 bytes
+        // Linux: { i16 family=2, i16 port, i32 addr, [8 x i8] zero } = 16 bytes
+        //
+        // We use a flat [16 x i8] buffer and store bytes directly for portability.
+
+        // tcp_connect(host: string, port: int) -> int
+        // Uses getaddrinfo for host resolution, then socket + connect
+        self.body.push_str(
+            "define i64 @tcp_connect(ptr %host, i64 %port) {\n\
+             entry:\n\
+             \x20 %port_buf = alloca [16 x i8]\n\
+             \x20 call i32 (ptr, i64, ptr, ...) @snprintf(ptr %port_buf, i64 16, ptr @.fmt.lld, i64 %port)\n\
+             \x20 %hints = alloca [48 x i8]\n\
+             \x20 call ptr @memset(ptr %hints, i32 0, i64 48)\n\
+             \x20 %ai_family_p = getelementptr i8, ptr %hints, i64 4\n\
+             \x20 store i32 0, ptr %ai_family_p\n\
+             \x20 %ai_socktype_p = getelementptr i8, ptr %hints, i64 8\n\
+             \x20 store i32 1, ptr %ai_socktype_p\n\
+             \x20 %result_p = alloca ptr\n\
+             \x20 %gai = call i32 @getaddrinfo(ptr %host, ptr %port_buf, ptr %hints, ptr %result_p)\n\
+             \x20 %gai_fail = icmp ne i32 %gai, 0\n\
+             \x20 br i1 %gai_fail, label %fail, label %resolved\n\
+             resolved:\n\
+             \x20 %res = load ptr, ptr %result_p\n\
+             \x20 %ai_family_res_p = getelementptr i8, ptr %res, i64 4\n\
+             \x20 %ai_family_val = load i32, ptr %ai_family_res_p\n\
+             \x20 %ai_socktype_res_p = getelementptr i8, ptr %res, i64 8\n\
+             \x20 %ai_socktype_val = load i32, ptr %ai_socktype_res_p\n\
+             \x20 %ai_protocol_p = getelementptr i8, ptr %res, i64 12\n\
+             \x20 %ai_protocol_val = load i32, ptr %ai_protocol_p\n\
+             \x20 %fd = call i32 @socket(i32 %ai_family_val, i32 %ai_socktype_val, i32 %ai_protocol_val)\n\
+             \x20 %fd64 = sext i32 %fd to i64\n\
+             \x20 %fd_fail = icmp slt i32 %fd, 0\n\
+             \x20 br i1 %fd_fail, label %free_fail, label %do_connect\n\
+             do_connect:\n\
+             \x20 %ai_addrlen_p = getelementptr i8, ptr %res, i64 16\n\
+             \x20 %ai_addrlen = load i32, ptr %ai_addrlen_p\n\
+             \x20 %ai_addr_p = getelementptr i8, ptr %res, i64 32\n\
+             \x20 %ai_addr = load ptr, ptr %ai_addr_p\n\
+             \x20 %conn = call i32 @connect(i32 %fd, ptr %ai_addr, i32 %ai_addrlen)\n\
+             \x20 call void @freeaddrinfo(ptr %res)\n\
+             \x20 %conn_fail = icmp ne i32 %conn, 0\n\
+             \x20 br i1 %conn_fail, label %close_fail, label %success\n\
+             success:\n\
+             \x20 ret i64 %fd64\n\
+             close_fail:\n\
+             \x20 call i32 @close(i32 %fd)\n\
+             \x20 ret i64 -1\n\
+             free_fail:\n\
+             \x20 call void @freeaddrinfo(ptr %res)\n\
+             \x20 ret i64 -1\n\
+             fail:\n\
+             \x20 ret i64 -1\n\
+             }\n\n",
+        );
+
+        // tcp_listen(host: string, port: int) -> int
+        self.body.push_str(&format!(
+            "define i64 @tcp_listen(ptr %host, i64 %port) {{\n\
+             entry:\n\
+             \x20 %fd = call i32 @socket(i32 2, i32 1, i32 0)\n\
+             \x20 %fd64 = sext i32 %fd to i64\n\
+             \x20 %fd_fail = icmp slt i32 %fd, 0\n\
+             \x20 br i1 %fd_fail, label %fail, label %set_reuse\n\
+             set_reuse:\n\
+             \x20 %one = alloca i32\n\
+             \x20 store i32 1, ptr %one\n\
+             \x20 call i32 @setsockopt(i32 %fd, i32 {sol_socket}, i32 {so_reuseaddr}, ptr %one, i32 4)\n\
+             \x20 %addr = alloca [16 x i8]\n\
+             \x20 call ptr @memset(ptr %addr, i32 0, i64 16)\n\
+             {sockaddr_fill}\
+             \x20 %port32 = trunc i64 %port to i32\n\
+             \x20 %port_n = call i32 @htons(i32 %port32)\n\
+             \x20 %port16 = trunc i32 %port_n to i16\n\
+             \x20 %port_p = getelementptr i8, ptr %addr, i64 {port_offset}\n\
+             \x20 store i16 %port16, ptr %port_p\n\
+             \x20 %bind_r = call i32 @bind(i32 %fd, ptr %addr, i32 16)\n\
+             \x20 %bind_fail = icmp ne i32 %bind_r, 0\n\
+             \x20 br i1 %bind_fail, label %close_fail, label %do_listen\n\
+             do_listen:\n\
+             \x20 %listen_r = call i32 @listen(i32 %fd, i32 128)\n\
+             \x20 %listen_fail = icmp ne i32 %listen_r, 0\n\
+             \x20 br i1 %listen_fail, label %close_fail, label %success\n\
+             success:\n\
+             \x20 ret i64 %fd64\n\
+             close_fail:\n\
+             \x20 call i32 @close(i32 %fd)\n\
+             \x20 ret i64 -1\n\
+             fail:\n\
+             \x20 ret i64 -1\n\
+             }}\n\n",
+            sol_socket = sol_socket,
+            so_reuseaddr = so_reuseaddr,
+            sockaddr_fill = if cfg!(target_os = "macos") {
+                "\x20 %len_p = getelementptr i8, ptr %addr, i64 0\n\
+                 \x20 store i8 16, ptr %len_p\n\
+                 \x20 %fam_p = getelementptr i8, ptr %addr, i64 1\n\
+                 \x20 store i8 2, ptr %fam_p\n"
+            } else {
+                "\x20 %fam_p = getelementptr i8, ptr %addr, i64 0\n\
+                 \x20 store i16 2, ptr %fam_p\n"
+            },
+            port_offset = 2,
+        ));
+
+        // tcp_accept(fd: int) -> int
+        self.body.push_str(
+            "define i64 @tcp_accept(i64 %fd) {\n\
+             entry:\n\
+             \x20 %fd32 = trunc i64 %fd to i32\n\
+             \x20 %client = call i32 @accept(i32 %fd32, ptr null, ptr null)\n\
+             \x20 %client64 = sext i32 %client to i64\n\
+             \x20 ret i64 %client64\n\
+             }\n\n",
+        );
+
+        // tcp_send(fd: int, data: string) -> int
+        self.body.push_str(
+            "define i64 @tcp_send(i64 %fd, ptr %data) {\n\
+             entry:\n\
+             \x20 %fd32 = trunc i64 %fd to i32\n\
+             \x20 %len = call i64 @strlen(ptr %data)\n\
+             \x20 %sent = call i64 @write(i32 %fd32, ptr %data, i64 %len)\n\
+             \x20 ret i64 %sent\n\
+             }\n\n",
+        );
+
+        // tcp_recv(fd: int, max_len: int) -> string
+        self.body.push_str(
+            "define ptr @tcp_recv(i64 %fd, i64 %max_len) {\n\
+             entry:\n\
+             \x20 %fd32 = trunc i64 %fd to i32\n\
+             \x20 %buf_sz = add i64 %max_len, 1\n\
+             \x20 %buf = call ptr @malloc(i64 %buf_sz)\n\
+             \x20 %n = call i64 @read(i32 %fd32, ptr %buf, i64 %max_len)\n\
+             \x20 %fail = icmp sle i64 %n, 0\n\
+             \x20 br i1 %fail, label %empty, label %ok\n\
+             ok:\n\
+             \x20 %end_p = getelementptr i8, ptr %buf, i64 %n\n\
+             \x20 store i8 0, ptr %end_p\n\
+             \x20 ret ptr %buf\n\
+             empty:\n\
+             \x20 store i8 0, ptr %buf\n\
+             \x20 ret ptr %buf\n\
+             }\n\n",
+        );
+
+        // tcp_close(fd: int) -> unit
+        self.body.push_str(
+            "define void @tcp_close(i64 %fd) {\n\
+             entry:\n\
+             \x20 %fd32 = trunc i64 %fd to i32\n\
+             \x20 call i32 @close(i32 %fd32)\n\
+             \x20 ret void\n\
+             }\n\n",
+        );
+
+        // udp_socket() -> int
+        self.body.push_str(
+            "define i64 @udp_socket() {\n\
+             entry:\n\
+             \x20 %fd = call i32 @socket(i32 2, i32 2, i32 0)\n\
+             \x20 %fd64 = sext i32 %fd to i64\n\
+             \x20 ret i64 %fd64\n\
+             }\n\n",
+        );
+
+        // udp_bind(fd: int, host: string, port: int) -> int
+        self.body.push_str(&format!(
+            "define i64 @udp_bind(i64 %fd, ptr %host, i64 %port) {{\n\
+             entry:\n\
+             \x20 %fd32 = trunc i64 %fd to i32\n\
+             \x20 %addr = alloca [16 x i8]\n\
+             \x20 call ptr @memset(ptr %addr, i32 0, i64 16)\n\
+             {sockaddr_fill}\
+             \x20 %port32 = trunc i64 %port to i32\n\
+             \x20 %port_n = call i32 @htons(i32 %port32)\n\
+             \x20 %port16 = trunc i32 %port_n to i16\n\
+             \x20 %port_p = getelementptr i8, ptr %addr, i64 2\n\
+             \x20 store i16 %port16, ptr %port_p\n\
+             \x20 %r = call i32 @bind(i32 %fd32, ptr %addr, i32 16)\n\
+             \x20 %r64 = sext i32 %r to i64\n\
+             \x20 ret i64 %r64\n\
+             }}\n\n",
+            sockaddr_fill = if cfg!(target_os = "macos") {
+                "\x20 %len_p = getelementptr i8, ptr %addr, i64 0\n\
+                 \x20 store i8 16, ptr %len_p\n\
+                 \x20 %fam_p = getelementptr i8, ptr %addr, i64 1\n\
+                 \x20 store i8 2, ptr %fam_p\n"
+            } else {
+                "\x20 %fam_p = getelementptr i8, ptr %addr, i64 0\n\
+                 \x20 store i16 2, ptr %fam_p\n"
+            },
+        ));
+
+        // udp_send_to(fd: int, data: string, host: string, port: int) -> int
+        // Uses getaddrinfo for host resolution
+        self.body.push_str(
+            "define i64 @udp_send_to(i64 %fd, ptr %data, ptr %host, i64 %port) {\n\
+             entry:\n\
+             \x20 %fd32 = trunc i64 %fd to i32\n\
+             \x20 %port_buf = alloca [16 x i8]\n\
+             \x20 call i32 (ptr, i64, ptr, ...) @snprintf(ptr %port_buf, i64 16, ptr @.fmt.lld, i64 %port)\n\
+             \x20 %hints = alloca [48 x i8]\n\
+             \x20 call ptr @memset(ptr %hints, i32 0, i64 48)\n\
+             \x20 %ai_family_p = getelementptr i8, ptr %hints, i64 4\n\
+             \x20 store i32 0, ptr %ai_family_p\n\
+             \x20 %ai_socktype_p = getelementptr i8, ptr %hints, i64 8\n\
+             \x20 store i32 2, ptr %ai_socktype_p\n\
+             \x20 %result_p = alloca ptr\n\
+             \x20 %gai = call i32 @getaddrinfo(ptr %host, ptr %port_buf, ptr %hints, ptr %result_p)\n\
+             \x20 %gai_fail = icmp ne i32 %gai, 0\n\
+             \x20 br i1 %gai_fail, label %fail, label %resolved\n\
+             resolved:\n\
+             \x20 %res = load ptr, ptr %result_p\n\
+             \x20 %ai_addrlen_p = getelementptr i8, ptr %res, i64 16\n\
+             \x20 %ai_addrlen = load i32, ptr %ai_addrlen_p\n\
+             \x20 %ai_addr_p = getelementptr i8, ptr %res, i64 32\n\
+             \x20 %ai_addr = load ptr, ptr %ai_addr_p\n\
+             \x20 %len = call i64 @strlen(ptr %data)\n\
+             \x20 %sent = call i64 @sendto(i32 %fd32, ptr %data, i64 %len, i32 0, ptr %ai_addr, i32 %ai_addrlen)\n\
+             \x20 call void @freeaddrinfo(ptr %res)\n\
+             \x20 ret i64 %sent\n\
+             fail:\n\
+             \x20 ret i64 -1\n\
+             }\n\n",
+        );
+
+        // udp_recv_from(fd: int, max_len: int) -> string
+        self.body.push_str(
+            "define ptr @udp_recv_from(i64 %fd, i64 %max_len) {\n\
+             entry:\n\
+             \x20 %fd32 = trunc i64 %fd to i32\n\
+             \x20 %buf_sz = add i64 %max_len, 1\n\
+             \x20 %buf = call ptr @malloc(i64 %buf_sz)\n\
+             \x20 %n = call i64 @recvfrom(i32 %fd32, ptr %buf, i64 %max_len, i32 0, ptr null, ptr null)\n\
+             \x20 %fail = icmp sle i64 %n, 0\n\
+             \x20 br i1 %fail, label %empty, label %ok\n\
+             ok:\n\
+             \x20 %end_p = getelementptr i8, ptr %buf, i64 %n\n\
+             \x20 store i8 0, ptr %end_p\n\
+             \x20 ret ptr %buf\n\
+             empty:\n\
+             \x20 store i8 0, ptr %buf\n\
+             \x20 ret ptr %buf\n\
+             }\n\n",
+        );
+
+        // dns_resolve(hostname: string) -> string
+        self.body.push_str(
+            "define ptr @dns_resolve(ptr %hostname) {\n\
+             entry:\n\
+             \x20 %hints = alloca [48 x i8]\n\
+             \x20 call ptr @memset(ptr %hints, i32 0, i64 48)\n\
+             \x20 %ai_family_p = getelementptr i8, ptr %hints, i64 4\n\
+             \x20 store i32 2, ptr %ai_family_p\n\
+             \x20 %ai_socktype_p = getelementptr i8, ptr %hints, i64 8\n\
+             \x20 store i32 1, ptr %ai_socktype_p\n\
+             \x20 %result_p = alloca ptr\n\
+             \x20 %gai = call i32 @getaddrinfo(ptr %hostname, ptr null, ptr %hints, ptr %result_p)\n\
+             \x20 %gai_fail = icmp ne i32 %gai, 0\n\
+             \x20 br i1 %gai_fail, label %fail, label %resolved\n\
+             resolved:\n\
+             \x20 %res = load ptr, ptr %result_p\n\
+             \x20 %ai_addr_p = getelementptr i8, ptr %res, i64 32\n\
+             \x20 %ai_addr = load ptr, ptr %ai_addr_p\n\
+             \x20 %sin_addr_p = getelementptr i8, ptr %ai_addr, i64 4\n\
+             \x20 %buf = call ptr @malloc(i64 46)\n\
+             \x20 %r = call i32 @inet_ntop(i32 2, ptr %sin_addr_p, ptr %buf, i32 46)\n\
+             \x20 call void @freeaddrinfo(ptr %res)\n\
+             \x20 %ntop_fail = icmp eq i32 %r, 0\n\
+             \x20 br i1 %ntop_fail, label %fail_free, label %success\n\
+             success:\n\
+             \x20 ret ptr %buf\n\
+             fail_free:\n\
+             \x20 call void @free(ptr %buf)\n\
+             \x20 br label %fail\n\
+             fail:\n\
+             \x20 %empty = call ptr @malloc(i64 1)\n\
+             \x20 store i8 0, ptr %empty\n\
+             \x20 ret ptr %empty\n\
+             }\n\n",
+        );
+
+        // __yorum_parse_url — internal helper, not user-facing
+        // Parses "http://host:port/path" or "http://host/path"
+        // Stores host, port, path via pointer params
+        // Returns 0 on success, -1 on failure
+        self.body.push_str(
+            "define i32 @__yorum_parse_url(ptr %url, ptr %host_out, ptr %port_out, ptr %path_out) {\n\
+             entry:\n\
+             \x20 %url_len = call i64 @strlen(ptr %url)\n\
+             \x20 ; Skip past \"http://\" (7 chars) or \"https://\" (8 chars)\n\
+             \x20 %c0 = getelementptr i8, ptr %url, i64 4\n\
+             \x20 %c0v = load i8, ptr %c0\n\
+             \x20 %is_s = icmp eq i8 %c0v, 115\n\
+             \x20 %skip = select i1 %is_s, i64 8, i64 7\n\
+             \x20 %start = getelementptr i8, ptr %url, i64 %skip\n\
+             \x20 %rest_len = sub i64 %url_len, %skip\n\
+             \x20 ; Find '/' in rest to separate host:port from path\n\
+             \x20 %slash_idx = call i64 @__yorum_find_char(ptr %start, i64 %rest_len, i8 47)\n\
+             \x20 %no_slash = icmp slt i64 %slash_idx, 0\n\
+             \x20 %host_part_len = select i1 %no_slash, i64 %rest_len, i64 %slash_idx\n\
+             \x20 ; Extract path\n\
+             \x20 br i1 %no_slash, label %default_path, label %has_path\n\
+             has_path:\n\
+             \x20 %path_start = getelementptr i8, ptr %start, i64 %slash_idx\n\
+             \x20 %path_len = sub i64 %rest_len, %slash_idx\n\
+             \x20 %path_buf = call ptr @malloc(i64 %path_len)\n\
+             \x20 %path_len_plus1 = add i64 %path_len, 1\n\
+             \x20 call ptr @memcpy(ptr %path_buf, ptr %path_start, i64 %path_len_plus1)\n\
+             \x20 store ptr %path_buf, ptr %path_out\n\
+             \x20 br label %parse_host\n\
+             default_path:\n\
+             \x20 %def_path = call ptr @malloc(i64 2)\n\
+             \x20 store i8 47, ptr %def_path\n\
+             \x20 %dp1 = getelementptr i8, ptr %def_path, i64 1\n\
+             \x20 store i8 0, ptr %dp1\n\
+             \x20 store ptr %def_path, ptr %path_out\n\
+             \x20 br label %parse_host\n\
+             parse_host:\n\
+             \x20 ; Find ':' in host part to separate host from port\n\
+             \x20 %colon_idx = call i64 @__yorum_find_char(ptr %start, i64 %host_part_len, i8 58)\n\
+             \x20 %no_colon = icmp slt i64 %colon_idx, 0\n\
+             \x20 br i1 %no_colon, label %default_port, label %has_port\n\
+             has_port:\n\
+             \x20 ; Host is start[0..colon_idx]\n\
+             \x20 %h_len = add i64 %colon_idx, 1\n\
+             \x20 %h_buf = call ptr @malloc(i64 %h_len)\n\
+             \x20 call ptr @memcpy(ptr %h_buf, ptr %start, i64 %colon_idx)\n\
+             \x20 %h_end = getelementptr i8, ptr %h_buf, i64 %colon_idx\n\
+             \x20 store i8 0, ptr %h_end\n\
+             \x20 store ptr %h_buf, ptr %host_out\n\
+             \x20 ; Port is start[colon_idx+1..host_part_len]\n\
+             \x20 %port_off = add i64 %colon_idx, 1\n\
+             \x20 %port_start = getelementptr i8, ptr %start, i64 %port_off\n\
+             \x20 %port_val = call i64 @atol(ptr %port_start)\n\
+             \x20 store i64 %port_val, ptr %port_out\n\
+             \x20 ret i32 0\n\
+             default_port:\n\
+             \x20 ; Host is start[0..host_part_len]\n\
+             \x20 %h2_len = add i64 %host_part_len, 1\n\
+             \x20 %h2_buf = call ptr @malloc(i64 %h2_len)\n\
+             \x20 call ptr @memcpy(ptr %h2_buf, ptr %start, i64 %host_part_len)\n\
+             \x20 %h2_end = getelementptr i8, ptr %h2_buf, i64 %host_part_len\n\
+             \x20 store i8 0, ptr %h2_end\n\
+             \x20 store ptr %h2_buf, ptr %host_out\n\
+             \x20 store i64 80, ptr %port_out\n\
+             \x20 ret i32 0\n\
+             }\n\n",
+        );
+
+        // __yorum_find_char — internal helper: find first occurrence of char in buffer
+        // Returns index or -1
+        self.body.push_str(
+            "define i64 @__yorum_find_char(ptr %buf, i64 %len, i8 %ch) {\n\
+             entry:\n\
+             \x20 br label %loop\n\
+             loop:\n\
+             \x20 %i = phi i64 [0, %entry], [%i_next, %cont]\n\
+             \x20 %done = icmp sge i64 %i, %len\n\
+             \x20 br i1 %done, label %not_found, label %check\n\
+             check:\n\
+             \x20 %p = getelementptr i8, ptr %buf, i64 %i\n\
+             \x20 %v = load i8, ptr %p\n\
+             \x20 %eq = icmp eq i8 %v, %ch\n\
+             \x20 br i1 %eq, label %found, label %cont\n\
+             cont:\n\
+             \x20 %i_next = add i64 %i, 1\n\
+             \x20 br label %loop\n\
+             found:\n\
+             \x20 ret i64 %i\n\
+             not_found:\n\
+             \x20 ret i64 -1\n\
+             }\n\n",
+        );
+
+        // http_request(method: string, url: string, headers: string, body: string) -> string
+        self.body.push_str(
+            "define ptr @http_request(ptr %method, ptr %url, ptr %headers, ptr %body) {\n\
+             entry:\n\
+             \x20 %host_p = alloca ptr\n\
+             \x20 %port_p = alloca i64\n\
+             \x20 %path_p = alloca ptr\n\
+             \x20 %parse_r = call i32 @__yorum_parse_url(ptr %url, ptr %host_p, ptr %port_p, ptr %path_p)\n\
+             \x20 %host = load ptr, ptr %host_p\n\
+             \x20 %port = load i64, ptr %port_p\n\
+             \x20 %path = load ptr, ptr %path_p\n\
+             \x20 ; Connect\n\
+             \x20 %fd = call i64 @tcp_connect(ptr %host, i64 %port)\n\
+             \x20 %fd_fail = icmp slt i64 %fd, 0\n\
+             \x20 br i1 %fd_fail, label %fail, label %connected\n\
+             connected:\n\
+             \x20 ; Build request into a 4096-byte buffer\n\
+             \x20 %req = call ptr @malloc(i64 8192)\n\
+             \x20 ; \"METHOD /path HTTP/1.0\"\n\
+             \x20 call i32 (ptr, i64, ptr, ...) @snprintf(ptr %req, i64 8192, ptr @.str.http_req_line, ptr %method, ptr %path)\n\
+             \x20 ; \"\\r\\nHost: host\\r\\nConnection: close\"\n\
+             \x20 %hdr_buf = alloca [512 x i8]\n\
+             \x20 call i32 (ptr, i64, ptr, ...) @snprintf(ptr %hdr_buf, i64 512, ptr @.str.http_host_hdr, ptr %host)\n\
+             \x20 call ptr @strcat(ptr %req, ptr %hdr_buf)\n\
+             \x20 ; Append user headers if non-empty\n\
+             \x20 %hdr_len = call i64 @strlen(ptr %headers)\n\
+             \x20 %has_hdrs = icmp sgt i64 %hdr_len, 0\n\
+             \x20 br i1 %has_hdrs, label %add_hdrs, label %check_body\n\
+             add_hdrs:\n\
+             \x20 call ptr @strcat(ptr %req, ptr @.str.http_crlf)\n\
+             \x20 call ptr @strcat(ptr %req, ptr %headers)\n\
+             \x20 br label %check_body\n\
+             check_body:\n\
+             \x20 %body_len = call i64 @strlen(ptr %body)\n\
+             \x20 %has_body = icmp sgt i64 %body_len, 0\n\
+             \x20 br i1 %has_body, label %add_cl, label %finish_req\n\
+             add_cl:\n\
+             \x20 ; Content-Length header\n\
+             \x20 %cl_buf = alloca [64 x i8]\n\
+             \x20 call i32 (ptr, i64, ptr, ...) @snprintf(ptr %cl_buf, i64 64, ptr @.str.http_cl_hdr, i64 %body_len)\n\
+             \x20 call ptr @strcat(ptr %req, ptr %cl_buf)\n\
+             \x20 br label %finish_req\n\
+             finish_req:\n\
+             \x20 ; \\r\\n\\r\\n\n\
+             \x20 call ptr @strcat(ptr %req, ptr @.str.http_crlf2)\n\
+             \x20 ; Append body if present\n\
+             \x20 %has_body2 = icmp sgt i64 %body_len, 0\n\
+             \x20 br i1 %has_body2, label %add_body, label %send_req\n\
+             add_body:\n\
+             \x20 call ptr @strcat(ptr %req, ptr %body)\n\
+             \x20 br label %send_req\n\
+             send_req:\n\
+             \x20 %req_len = call i64 @strlen(ptr %req)\n\
+             \x20 %fd32 = trunc i64 %fd to i32\n\
+             \x20 call i64 @write(i32 %fd32, ptr %req, i64 %req_len)\n\
+             \x20 call void @free(ptr %req)\n\
+             \x20 ; Read response in a loop\n\
+             \x20 %resp_cap_init = add i64 0, 4096\n\
+             \x20 %resp_buf = call ptr @malloc(i64 %resp_cap_init)\n\
+             \x20 br label %read_loop\n\
+             read_loop:\n\
+             \x20 %resp_off = phi i64 [0, %send_req], [%new_off, %grow_done]\n\
+             \x20 %resp_ptr = phi ptr [%resp_buf, %send_req], [%new_ptr, %grow_done]\n\
+             \x20 %resp_cap = phi i64 [4096, %send_req], [%new_cap, %grow_done]\n\
+             \x20 %space = sub i64 %resp_cap, %resp_off\n\
+             \x20 %read_dst = getelementptr i8, ptr %resp_ptr, i64 %resp_off\n\
+             \x20 %n = call i64 @read(i32 %fd32, ptr %read_dst, i64 %space)\n\
+             \x20 %read_done = icmp sle i64 %n, 0\n\
+             \x20 br i1 %read_done, label %read_end, label %got_data\n\
+             got_data:\n\
+             \x20 %new_off = add i64 %resp_off, %n\n\
+             \x20 %need_grow = icmp sge i64 %new_off, %resp_cap\n\
+             \x20 br i1 %need_grow, label %grow, label %grow_done\n\
+             grow:\n\
+             \x20 %doubled = mul i64 %resp_cap, 2\n\
+             \x20 %grown = call ptr @realloc(ptr %resp_ptr, i64 %doubled)\n\
+             \x20 br label %grow_done\n\
+             grow_done:\n\
+             \x20 %new_ptr = phi ptr [%resp_ptr, %got_data], [%grown, %grow]\n\
+             \x20 %new_cap = phi i64 [%resp_cap, %got_data], [%doubled, %grow]\n\
+             \x20 br label %read_loop\n\
+             read_end:\n\
+             \x20 call i32 @close(i32 %fd32)\n\
+             \x20 ; Null-terminate\n\
+             \x20 %term_p = getelementptr i8, ptr %resp_ptr, i64 %resp_off\n\
+             \x20 store i8 0, ptr %term_p\n\
+             \x20 ; Find \\r\\n\\r\\n to strip headers\n\
+             \x20 %sep = call ptr @strstr(ptr %resp_ptr, ptr @.str.http_sep)\n\
+             \x20 %no_sep = icmp eq ptr %sep, null\n\
+             \x20 br i1 %no_sep, label %return_all, label %strip_headers\n\
+             strip_headers:\n\
+             \x20 %body_start = getelementptr i8, ptr %sep, i64 4\n\
+             \x20 %body_sz = call i64 @strlen(ptr %body_start)\n\
+             \x20 %body_buf_sz = add i64 %body_sz, 1\n\
+             \x20 %body_buf = call ptr @malloc(i64 %body_buf_sz)\n\
+             \x20 call ptr @memcpy(ptr %body_buf, ptr %body_start, i64 %body_buf_sz)\n\
+             \x20 call void @free(ptr %resp_ptr)\n\
+             \x20 ret ptr %body_buf\n\
+             return_all:\n\
+             \x20 ret ptr %resp_ptr\n\
+             fail:\n\
+             \x20 %empty = call ptr @malloc(i64 1)\n\
+             \x20 store i8 0, ptr %empty\n\
+             \x20 ret ptr %empty\n\
+             }\n\n",
+        );
+
+        // http_get(url: string) -> string
+        self.body.push_str(
+            "define ptr @http_get(ptr %url) {\n\
+             entry:\n\
+             \x20 %r = call ptr @http_request(ptr @.str.http_get_method, ptr %url, ptr @.str.empty, ptr @.str.empty)\n\
+             \x20 ret ptr %r\n\
+             }\n\n",
+        );
+
+        // http_post(url: string, body: string) -> string
+        self.body.push_str(
+            "define ptr @http_post(ptr %url, ptr %body) {\n\
+             entry:\n\
+             \x20 %r = call ptr @http_request(ptr @.str.http_post_method, ptr %url, ptr @.str.empty, ptr %body)\n\
+             \x20 ret ptr %r\n\
+             }\n\n",
+        );
+
+        // htons helper — byte-swap for network byte order
+        self.body.push_str(
+            "define i32 @htons(i32 %x) {\n\
+             entry:\n\
+             \x20 %lo = and i32 %x, 255\n\
+             \x20 %hi = lshr i32 %x, 8\n\
+             \x20 %hi_masked = and i32 %hi, 255\n\
+             \x20 %lo_shift = shl i32 %lo, 8\n\
+             \x20 %result = or i32 %lo_shift, %hi_masked\n\
+             \x20 ret i32 %result\n\
              }\n\n",
         );
     }

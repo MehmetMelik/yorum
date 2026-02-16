@@ -323,6 +323,41 @@ let home: string = env_get("HOME");
 let t: int = time_ms();
 ```
 
+### Networking (v0.9)
+
+**TCP sockets:**
+
+```
+fn main() -> int {
+    let fd: int = tcp_connect("example.com", 80);
+    if fd < 0 { return 1; }
+    let sent: int = tcp_send(fd, "GET / HTTP/1.0\r\nHost: example.com\r\n\r\n");
+    let resp: string = tcp_recv(fd, 4096);
+    tcp_close(fd);
+    print_str(resp);
+    return 0;
+}
+```
+
+`tcp_connect`, `tcp_listen`, `tcp_accept`, `tcp_send`, `tcp_recv`, `tcp_close` —
+full TCP client and server support. Socket fds are plain `int` values; `-1`
+indicates error.
+
+**UDP sockets:** `udp_socket`, `udp_bind`, `udp_send_to`, `udp_recv_from`.
+
+**DNS:** `dns_resolve("hostname")` returns an IP address string.
+
+**HTTP client:**
+
+```
+let body: string = http_get("http://example.com");
+let resp: string = http_post("http://api.example.com/data", "{\"key\": 42}");
+let custom: string = http_request("PUT", "http://api.example.com/item", "Content-Type: application/json", "{\"val\": 1}");
+```
+
+`http_get` and `http_post` are convenience wrappers around `http_request`. HTTP/1.0
+with `Connection: close`. Plain HTTP only (no TLS).
+
 ### File I/O and Process
 
 ```
@@ -670,7 +705,7 @@ diff gen1.ll gen2.ll    # identical — fixed-point achieved
 ## Testing
 
 ```bash
-cargo test                    # 242 tests (46 unit + 196 integration)
+cargo test                    # 270 tests (46 unit + 224 integration)
 cargo test compiler::lexer    # tests in one module
 cargo test test_fibonacci     # single test by name
 ```
@@ -692,7 +727,7 @@ cargo test test_fibonacci     # single test by name
 | **v0.6** | Standard library builtins: math, string utilities, collections, enhanced I/O | Done |
 | **v0.7** | LSP server for editor integration (diagnostics, hover, go-to-definition) | Done |
 | **v0.8** | Ownership checker: type-aware move tracking, branch merging, loop safety | Done |
-| **v0.9** | Networking (TCP/UDP sockets, HTTP client) | |
+| **v0.9** | Networking: TCP/UDP sockets, DNS resolution, HTTP client (14 builtins) | Done |
 | **v1.0** | Stable language specification and ABI | |
 
 ## License

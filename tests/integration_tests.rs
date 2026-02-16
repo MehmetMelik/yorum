@@ -2929,3 +2929,372 @@ fn test_multiple_moves_different_vars() {
          }\n",
     );
 }
+
+// ═══════════════════════════════════════════════════════════════
+//  Networking builtins — TCP
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn test_tcp_connect_typecheck() {
+    parse_and_check(
+        "fn main() -> int {\n\
+         \x20 let fd: int = tcp_connect(\"127.0.0.1\", 8080);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+}
+
+#[test]
+fn test_tcp_connect_wrong_args() {
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20 let fd: int = tcp_connect(8080, \"127.0.0.1\");\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_tcp_listen_typecheck() {
+    parse_and_check(
+        "fn main() -> int {\n\
+         \x20 let fd: int = tcp_listen(\"0.0.0.0\", 9090);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+}
+
+#[test]
+fn test_tcp_accept_typecheck() {
+    parse_and_check(
+        "fn main() -> int {\n\
+         \x20 let fd: int = tcp_listen(\"0.0.0.0\", 9090);\n\
+         \x20 let client: int = tcp_accept(fd);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+}
+
+#[test]
+fn test_tcp_send_typecheck() {
+    parse_and_check(
+        "fn main() -> int {\n\
+         \x20 let fd: int = tcp_connect(\"127.0.0.1\", 80);\n\
+         \x20 let sent: int = tcp_send(fd, \"hello\");\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+}
+
+#[test]
+fn test_tcp_recv_typecheck() {
+    parse_and_check(
+        "fn main() -> int {\n\
+         \x20 let fd: int = tcp_connect(\"127.0.0.1\", 80);\n\
+         \x20 let data: string = tcp_recv(fd, 1024);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+}
+
+#[test]
+fn test_tcp_close_typecheck() {
+    parse_and_check(
+        "fn main() -> int {\n\
+         \x20 let fd: int = tcp_connect(\"127.0.0.1\", 80);\n\
+         \x20 tcp_close(fd);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  Networking builtins — UDP
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn test_udp_socket_typecheck() {
+    parse_and_check(
+        "fn main() -> int {\n\
+         \x20 let fd: int = udp_socket();\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+}
+
+#[test]
+fn test_udp_bind_typecheck() {
+    parse_and_check(
+        "fn main() -> int {\n\
+         \x20 let fd: int = udp_socket();\n\
+         \x20 let r: int = udp_bind(fd, \"0.0.0.0\", 5000);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+}
+
+#[test]
+fn test_udp_send_to_typecheck() {
+    parse_and_check(
+        "fn main() -> int {\n\
+         \x20 let fd: int = udp_socket();\n\
+         \x20 let sent: int = udp_send_to(fd, \"hello\", \"127.0.0.1\", 5000);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+}
+
+#[test]
+fn test_udp_recv_from_typecheck() {
+    parse_and_check(
+        "fn main() -> int {\n\
+         \x20 let fd: int = udp_socket();\n\
+         \x20 let data: string = udp_recv_from(fd, 1024);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  Networking builtins — DNS + HTTP
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn test_dns_resolve_typecheck() {
+    parse_and_check(
+        "fn main() -> int {\n\
+         \x20 let ip: string = dns_resolve(\"localhost\");\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+}
+
+#[test]
+fn test_http_request_typecheck() {
+    parse_and_check(
+        "fn main() -> int {\n\
+         \x20 let resp: string = http_request(\"GET\", \"http://example.com\", \"\", \"\");\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+}
+
+#[test]
+fn test_http_get_typecheck() {
+    parse_and_check(
+        "fn main() -> int {\n\
+         \x20 let resp: string = http_get(\"http://example.com\");\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+}
+
+#[test]
+fn test_http_post_typecheck() {
+    parse_and_check(
+        "fn main() -> int {\n\
+         \x20 let resp: string = http_post(\"http://example.com/api\", \"{}\");\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+}
+
+#[test]
+fn test_networking_in_pure_fn_rejected() {
+    let result = yorum::typecheck("pure fn f() -> int { return tcp_connect(\"x\", 80); }");
+    assert!(result.is_err());
+    let result = yorum::typecheck("pure fn f() -> int { return udp_socket(); }");
+    assert!(result.is_err());
+    let result = yorum::typecheck("pure fn f() -> string { return dns_resolve(\"x\"); }");
+    assert!(result.is_err());
+    let result = yorum::typecheck("pure fn f() -> string { return http_get(\"http://x\"); }");
+    assert!(result.is_err());
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  Networking builtins — IR compilation
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn test_tcp_connect_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let fd: int = tcp_connect(\"127.0.0.1\", 8080);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call i64 @tcp_connect"));
+    assert!(ir.contains("define i64 @tcp_connect(ptr %host, i64 %port)"));
+}
+
+#[test]
+fn test_tcp_listen_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let fd: int = tcp_listen(\"0.0.0.0\", 9090);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call i64 @tcp_listen"));
+    assert!(ir.contains("define i64 @tcp_listen(ptr %host, i64 %port)"));
+}
+
+#[test]
+fn test_tcp_send_recv_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let fd: int = tcp_connect(\"127.0.0.1\", 80);\n\
+         \x20 let sent: int = tcp_send(fd, \"GET / HTTP/1.0\\r\\n\\r\\n\");\n\
+         \x20 let resp: string = tcp_recv(fd, 4096);\n\
+         \x20 tcp_close(fd);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call i64 @tcp_send"));
+    assert!(ir.contains("call ptr @tcp_recv"));
+    assert!(ir.contains("call void @tcp_close"));
+}
+
+#[test]
+fn test_udp_socket_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let fd: int = udp_socket();\n\
+         \x20 tcp_close(fd);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call i64 @udp_socket"));
+    assert!(ir.contains("define i64 @udp_socket()"));
+}
+
+#[test]
+fn test_udp_send_to_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let fd: int = udp_socket();\n\
+         \x20 let sent: int = udp_send_to(fd, \"hello\", \"127.0.0.1\", 5000);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call i64 @udp_send_to"));
+}
+
+#[test]
+fn test_dns_resolve_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let ip: string = dns_resolve(\"localhost\");\n\
+         \x20 print_str(ip);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call ptr @dns_resolve"));
+    assert!(ir.contains("define ptr @dns_resolve(ptr %hostname)"));
+}
+
+#[test]
+fn test_http_request_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let r: string = http_request(\"GET\", \"http://example.com\", \"\", \"\");\n\
+         \x20 print_str(r);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call ptr @http_request"));
+    assert!(ir.contains("define ptr @http_request(ptr %method, ptr %url, ptr %headers, ptr %body)"));
+}
+
+#[test]
+fn test_http_get_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let r: string = http_get(\"http://example.com\");\n\
+         \x20 print_str(r);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call ptr @http_get"));
+    assert!(ir.contains("define ptr @http_get(ptr %url)"));
+}
+
+#[test]
+fn test_http_post_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let r: string = http_post(\"http://example.com/api\", \"data\");\n\
+         \x20 print_str(r);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call ptr @http_post"));
+    assert!(ir.contains("define ptr @http_post(ptr %url, ptr %body)"));
+}
+
+#[test]
+fn test_networking_combined_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let server: int = tcp_listen(\"0.0.0.0\", 8080);\n\
+         \x20 if server < 0 { return 1; }\n\
+         \x20 let client: int = tcp_accept(server);\n\
+         \x20 if client < 0 {\n\
+         \x20   tcp_close(server);\n\
+         \x20   return 1;\n\
+         \x20 }\n\
+         \x20 let data: string = tcp_recv(client, 1024);\n\
+         \x20 let sent: int = tcp_send(client, \"HTTP/1.0 200 OK\\r\\n\\r\\nHello\");\n\
+         \x20 tcp_close(client);\n\
+         \x20 tcp_close(server);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call i64 @tcp_listen"));
+    assert!(ir.contains("call i64 @tcp_accept"));
+    assert!(ir.contains("call ptr @tcp_recv"));
+    assert!(ir.contains("call i64 @tcp_send"));
+    assert!(ir.contains("call void @tcp_close"));
+}
+
+#[test]
+fn test_networking_with_ownership() {
+    // Networking with struct ownership — fd is int (copy type), no move issues
+    compile(
+        "struct Server { fd: int }\n\
+         fn start() -> Server {\n\
+         \x20 let fd: int = tcp_listen(\"0.0.0.0\", 3000);\n\
+         \x20 return Server { fd: fd };\n\
+         }\n\
+         fn main() -> int {\n\
+         \x20 let s: Server = start();\n\
+         \x20 tcp_close(s.fd);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+}
+
+#[test]
+fn test_networking_ir_definitions() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let fd: int = tcp_connect(\"x\", 80);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("define i64 @tcp_connect"));
+    assert!(ir.contains("define i64 @tcp_listen"));
+    assert!(ir.contains("define i64 @tcp_accept"));
+    assert!(ir.contains("define i64 @tcp_send"));
+    assert!(ir.contains("define ptr @tcp_recv"));
+    assert!(ir.contains("define void @tcp_close"));
+    assert!(ir.contains("define i64 @udp_socket"));
+    assert!(ir.contains("define i64 @udp_bind"));
+    assert!(ir.contains("define i64 @udp_send_to"));
+    assert!(ir.contains("define ptr @udp_recv_from"));
+    assert!(ir.contains("define ptr @dns_resolve"));
+    assert!(ir.contains("define ptr @http_request"));
+    assert!(ir.contains("define ptr @http_get"));
+    assert!(ir.contains("define ptr @http_post"));
+}

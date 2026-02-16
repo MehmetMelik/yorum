@@ -1,0 +1,41 @@
+// tcp_echo_server.yrm — A simple TCP echo server.
+//
+// Listens on 127.0.0.1:9000, accepts one connection,
+// reads a message, echoes it back, then closes.
+//
+// Compile and run:
+//   yorum compile examples/tcp_echo_server.yrm -o echo_server.ll
+//   clang -x ir echo_server.ll -o echo_server -Wno-override-module
+//   ./echo_server
+
+module tcp_echo_server;
+
+fn main() -> int {
+    let fd: int = tcp_listen("127.0.0.1", 9000);
+    if fd < 0 {
+        print_err("error: failed to listen on port 9000");
+        return 1;
+    }
+    print_str("echo server listening on 127.0.0.1:9000");
+
+    let client: int = tcp_accept(fd);
+    if client < 0 {
+        print_err("error: failed to accept connection");
+        tcp_close(fd);
+        return 1;
+    }
+    print_str("client connected");
+
+    let data: string = tcp_recv(client, 4096);
+    let data_len: int = str_len(data);
+    if data_len > 0 {
+        print_str(str_concat("received: ", data));
+        tcp_send(client, data);
+        print_str("echoed back");
+    }
+
+    tcp_close(client);
+    tcp_close(fd);
+    print_str("server closed");
+    return 0;
+}

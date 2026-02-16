@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 cargo build                          # dev build
 cargo build --release                # release build
-cargo test                           # all tests (242: 46 unit + 196 integration)
+cargo test                           # all tests (270: 46 unit + 224 integration)
 cargo test compiler::lexer           # tests in one module
 cargo test test_fibonacci_compiles   # single test by name
 cargo test -- --nocapture            # see stdout from tests
@@ -54,7 +54,7 @@ Multi-file projects (`yorum build`) add a front-end step: `ModuleResolver` disco
 - **`lexer.rs`** — Hand-written char-by-char lexer. Supports nested `/* */` block comments. Returns `Vec<Token>`
 - **`ast.rs`** — Complete AST types. All nodes derive `Serialize`/`Deserialize` for JSON round-tripping. `Type` enum has `PartialEq`/`Eq` for type checking comparisons
 - **`parser.rs`** — Recursive descent parser with Pratt expression parsing (`parse_expr_bp`). Operator precedence is defined in `infix_binding_power()`. Struct init is disambiguated from blocks via 2-token lookahead in `is_struct_init_lookahead()`
-- **`typechecker.rs`** — Two-pass: first registers all function signatures, struct layouts, and enum definitions; then checks function bodies. Uses a scope stack (`Vec<HashMap<String, VarInfo>>`) for lexical scoping. Built-in functions registered in `register_builtins()`: print (`print_int`, `print_float`, `print_bool`, `print_str`, `print_char`, `print_err`), string ops (`str_len`, `str_concat`, `str_eq`, `str_charAt`, `str_sub`, `str_from_char`), char classification (`char_is_alpha`, `char_is_digit`, `char_is_whitespace`), type casting (`int_to_str`, `str_to_int`, `char_to_int`, `int_to_char`, `int_to_float`, `float_to_int`), file I/O (`file_read`, `file_write`, `file_exists`, `file_append`), HashMap (`map_new`, `map_set`, `map_get`, `map_has`, `map_size`, `map_remove`, `map_keys`, `map_values`), math (`abs_int`, `abs_float`, `min_int`, `max_int`, `min_float`, `max_float`, `sqrt`, `pow`, `sin`, `cos`, `tan`, `floor`, `ceil`, `round`, `log`, `log10`, `exp`), string utilities (`str_contains`, `str_index_of`, `str_starts_with`, `str_ends_with`, `str_trim`, `str_replace`, `str_to_upper`, `str_to_lower`, `str_repeat`), collections (`contains_int`, `contains_str`, `sort_int`, `sort_str`), enhanced I/O (`read_line`, `print_flush`, `env_get`, `time_ms`). `len()`, `push()`, `pop()`, `args()`, `exit()`, `chan()`, `send()`, `recv()`, `slice()`, `concat_arrays()`, `reverse()`, `str_split()` are special-cased in Call handling. `spawn` type inference and `.join()` method handling are in `infer_expr`. Contract expressions are type-checked (must be `bool`). Purity enforcement: pure functions cannot call impure functions or use `spawn`
+- **`typechecker.rs`** — Two-pass: first registers all function signatures, struct layouts, and enum definitions; then checks function bodies. Uses a scope stack (`Vec<HashMap<String, VarInfo>>`) for lexical scoping. Built-in functions registered in `register_builtins()`: print (`print_int`, `print_float`, `print_bool`, `print_str`, `print_char`, `print_err`), string ops (`str_len`, `str_concat`, `str_eq`, `str_charAt`, `str_sub`, `str_from_char`), char classification (`char_is_alpha`, `char_is_digit`, `char_is_whitespace`), type casting (`int_to_str`, `str_to_int`, `char_to_int`, `int_to_char`, `int_to_float`, `float_to_int`), file I/O (`file_read`, `file_write`, `file_exists`, `file_append`), HashMap (`map_new`, `map_set`, `map_get`, `map_has`, `map_size`, `map_remove`, `map_keys`, `map_values`), math (`abs_int`, `abs_float`, `min_int`, `max_int`, `min_float`, `max_float`, `sqrt`, `pow`, `sin`, `cos`, `tan`, `floor`, `ceil`, `round`, `log`, `log10`, `exp`), string utilities (`str_contains`, `str_index_of`, `str_starts_with`, `str_ends_with`, `str_trim`, `str_replace`, `str_to_upper`, `str_to_lower`, `str_repeat`), collections (`contains_int`, `contains_str`, `sort_int`, `sort_str`), enhanced I/O (`read_line`, `print_flush`, `env_get`, `time_ms`), networking — TCP (`tcp_connect`, `tcp_listen`, `tcp_accept`, `tcp_send`, `tcp_recv`, `tcp_close`), UDP (`udp_socket`, `udp_bind`, `udp_send_to`, `udp_recv_from`), DNS (`dns_resolve`), HTTP (`http_request`, `http_get`, `http_post`). `len()`, `push()`, `pop()`, `args()`, `exit()`, `chan()`, `send()`, `recv()`, `slice()`, `concat_arrays()`, `reverse()`, `str_split()` are special-cased in Call handling. `spawn` type inference and `.join()` method handling are in `infer_expr`. Contract expressions are type-checked (must be `bool`). Purity enforcement: pure functions cannot call impure functions or use `spawn`
 - **`ownership.rs`** — Type-aware move checker. Tracks `VarInfo { state, ty, def_span }` per variable with `is_copy_type()` distinguishing copy types (`int`, `float`, `bool`, `char`, `string`, `unit`) from move types (structs, enums, arrays, etc.). `check_expr_move()` marks non-copy identifiers as `Moved`; `check_expr_use()` checks read-only contexts. Branch merging (`snapshot_states`/`restore_states`/`apply_merged_states`) for if/else and match ensures moves in any branch propagate conservatively. `loop_depth` tracking prevents moving outer-scope variables inside while/for loops. Enforces must-join for `Task` variables via `task_vars: Vec<HashSet<String>>` with real `def_span` on errors
 - **`monomorphize.rs`** — Eliminates generics before codegen. Collects all concrete instantiations of generic functions/structs/enums, clones declarations with type variables substituted, and rewrites call sites to use mangled names (`identity__int`, `Pair__int__float`). Also substitutes type vars in contract expressions
 - **`codegen.rs`** — Emits textual LLVM IR. Uses alloca/load/store pattern (LLVM's mem2reg promotes to SSA). Each expression emitter returns the LLVM SSA value name (e.g., `%t3`). Struct-typed and enum-typed let bindings reuse the alloca directly instead of store/load. Closures compile to `{ ptr, ptr }` pairs (fn_ptr + env_ptr) with deferred function emission. Arrays are heap-allocated fat pointers `{ ptr, i64, i64 }` (data, length, capacity) with runtime bounds checking and `realloc`-based growth for `push`. Aggregate types (structs, enums) in arrays use `memcpy` for push/pop/index/array-lit operations. `requires`/`ensures` emit conditional branches to `@__yorum_contract_fail`. `spawn` compiles to `pthread_create` with env capture (same pattern as closures). Channel helpers are emitted as LLVM IR functions using mutex/condvar. HashMap uses FNV-1a hashing with linear probing, emitted as LLVM IR helper functions
@@ -215,6 +215,47 @@ Fixed and verified the ownership checker to properly enforce the spec (SPEC.md s
 2. **Function args are NOT moved** — `foo(x)` does not consume `x` (matches pass-by-pointer runtime)
 3. **Conservative branch merging** — moved in any branch = moved in outer scope
 4. **Loop moves of outer variables always error** — even if the loop runs exactly once
+
+## Completed: v0.9 — Networking (TCP/UDP Sockets, HTTP Client)
+
+14 networking builtins implemented as LLVM IR function bodies calling POSIX C library functions. Socket file descriptors represented as `int` values. All builtins are impure.
+
+### TCP (6 builtins)
+
+- `tcp_connect(host: string, port: int) -> int` — Connect to host:port via `getaddrinfo` + `socket` + `connect`. Returns fd or -1
+- `tcp_listen(host: string, port: int) -> int` — Bind + listen with `SO_REUSEADDR`. Returns fd or -1
+- `tcp_accept(fd: int) -> int` — Accept connection. Returns new fd or -1
+- `tcp_send(fd: int, data: string) -> int` — Send string data via `write`. Returns bytes sent or -1
+- `tcp_recv(fd: int, max_len: int) -> string` — Receive up to N bytes via `read`. Returns string (empty on error)
+- `tcp_close(fd: int) -> unit` — Close socket fd
+
+### UDP (4 builtins)
+
+- `udp_socket() -> int` — Create UDP socket (`SOCK_DGRAM`). Returns fd or -1
+- `udp_bind(fd: int, host: string, port: int) -> int` — Bind UDP socket. Returns 0 or -1
+- `udp_send_to(fd: int, data: string, host: string, port: int) -> int` — Send datagram via `sendto`. Returns bytes sent or -1
+- `udp_recv_from(fd: int, max_len: int) -> string` — Receive datagram via `recvfrom`. Returns string
+
+### DNS (1 builtin)
+
+- `dns_resolve(hostname: string) -> string` — Resolve hostname to IP string via `getaddrinfo` + `inet_ntop`. Returns empty on failure
+
+### HTTP (3 builtins)
+
+- `http_request(method: string, url: string, headers: string, body: string) -> string` — HTTP/1.0 request. Parses URL, connects, sends request, reads response, strips headers. Returns body or empty on failure
+- `http_get(url: string) -> string` — Convenience wrapper: `http_request("GET", url, "", "")`
+- `http_post(url: string, body: string) -> string` — Convenience wrapper: `http_request("POST", url, "", body)`
+
+### Key design decisions
+
+1. **Socket FDs as `int`** — No new types needed. `-1` indicates error (POSIX convention)
+2. **Prefix naming (`tcp_`, `udp_`, etc.)** — Avoids conflict with existing `send()`/`recv()` channel builtins
+3. **`getaddrinfo` for host resolution** — Handles both hostnames and IP addresses
+4. **Platform-specific `sockaddr_in`** — macOS has `sin_len` byte prefix; `cfg!(target_os = "macos")` in codegen
+5. **Platform-specific constants** — `SOL_SOCKET`: 1 (Linux) vs 65535 (macOS). `SO_REUSEADDR`: 2 (Linux) vs 4 (macOS)
+6. **HTTP/1.0 with `Connection: close`** — Simplifies response reading. No chunked transfer encoding
+7. **No TLS/HTTPS** — Plain HTTP only. TLS would require linking OpenSSL
+8. **`htons` implemented in LLVM IR** — Byte-swap helper emitted directly, no external dependency
 
 ## Git Workflow
 

@@ -1,0 +1,35 @@
+// tcp_echo_client.yrm — A simple TCP echo client.
+//
+// Connects to 127.0.0.1:9000, sends a message,
+// reads back the echo, then closes.
+//
+// Compile and run (start the server first):
+//   yorum compile examples/tcp_echo_client.yrm -o echo_client.ll
+//   clang -x ir echo_client.ll -o echo_client -Wno-override-module
+//   ./echo_client
+
+module tcp_echo_client;
+
+fn main() -> int {
+    let fd: int = tcp_connect("127.0.0.1", 9000);
+    if fd < 0 {
+        print_err("error: failed to connect to 127.0.0.1:9000");
+        return 1;
+    }
+    print_str("connected to server");
+
+    let msg: string = "Hello from Yorum!";
+    let sent: int = tcp_send(fd, msg);
+    if sent < 0 {
+        print_err("error: failed to send");
+        tcp_close(fd);
+        return 1;
+    }
+    print_str(str_concat("sent: ", msg));
+
+    let reply: string = tcp_recv(fd, 4096);
+    print_str(str_concat("received: ", reply));
+
+    tcp_close(fd);
+    return 0;
+}

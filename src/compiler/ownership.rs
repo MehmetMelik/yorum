@@ -1,11 +1,10 @@
 //! Ownership and move checker for the Yorum language.
 //!
 //! Enforces:
-//! - Move semantics: using a moved value is an error
-//! - Borrow safety: cannot move a value while it is borrowed
-//!
-//! This is a simplified linear-type check (not a full Rust borrow checker)
-//! but sufficient to prevent use-after-move and dangling references.
+//! - Move semantics: using a moved non-copy value is an error
+//! - Branch safety: moves in any branch propagate conservatively
+//! - Loop safety: cannot move outer-scope variables inside loops
+//! - Task must-join: Task variables must be `.join()`'d before scope exit
 
 use crate::compiler::ast::*;
 use crate::compiler::span::Span;
@@ -30,14 +29,30 @@ impl std::error::Error for OwnershipError {}
 enum VarState {
     Owned,
     Moved,
-    Borrowed,
+}
+
+#[derive(Debug, Clone)]
+struct VarInfo {
+    state: VarState,
+    ty: Type,
+    def_span: Span,
+}
+
+/// Copy types are freely duplicated — assigning or returning them does not move.
+fn is_copy_type(ty: &Type) -> bool {
+    matches!(
+        ty,
+        Type::Int | Type::Float | Type::Bool | Type::Char | Type::Str | Type::Unit
+    )
 }
 
 pub struct OwnershipChecker {
-    scopes: Vec<HashMap<String, VarState>>,
+    scopes: Vec<HashMap<String, VarInfo>>,
     /// Track Task variables that must be joined before scope exit
     task_vars: Vec<HashSet<String>>,
     errors: Vec<OwnershipError>,
+    /// Nesting depth inside while/for loops (> 0 means we're in a loop)
+    loop_depth: usize,
 }
 
 impl Default for OwnershipChecker {
@@ -52,6 +67,7 @@ impl OwnershipChecker {
             scopes: Vec::new(),
             task_vars: Vec::new(),
             errors: Vec::new(),
+            loop_depth: 0,
         }
     }
 
@@ -67,10 +83,9 @@ impl OwnershipChecker {
                 Declaration::Trait(t) => {
                     for method in &t.methods {
                         if let Some(body) = &method.default_body {
-                            // Check default method bodies (create a temporary FnDecl)
                             self.push_scope();
                             for param in &method.params {
-                                self.define(&param.name);
+                                self.define(&param.name, param.ty.clone(), param.span);
                             }
                             self.check_block(body);
                             self.pop_scope();
@@ -91,7 +106,7 @@ impl OwnershipChecker {
     fn check_function(&mut self, f: &FnDecl) {
         self.push_scope();
         for param in &f.params {
-            self.define(&param.name);
+            self.define(&param.name, param.ty.clone(), param.span);
         }
         self.check_block(&f.body);
         self.pop_scope();
@@ -106,8 +121,8 @@ impl OwnershipChecker {
     fn check_stmt(&mut self, stmt: &Stmt) {
         match stmt {
             Stmt::Let(s) => {
-                self.check_expr_use(&s.value);
-                self.define(&s.name);
+                self.check_expr_move(&s.value);
+                self.define(&s.name, s.ty.clone(), s.span);
                 // Track Task variables for must-consume enforcement
                 if matches!(s.value.kind, ExprKind::Spawn(_)) || matches!(s.ty, Type::Task(_)) {
                     if let Some(tasks) = self.task_vars.last_mut() {
@@ -118,8 +133,8 @@ impl OwnershipChecker {
                 self.track_join_calls(&s.value);
             }
             Stmt::Assign(s) => {
-                self.check_expr_use(&s.value);
-                // Re-own the target
+                self.check_expr_move(&s.value);
+                // Re-own the target (reassignment restores ownership)
                 if let ExprKind::Ident(name) = &s.target.kind {
                     self.set_state(name, VarState::Owned);
                 }
@@ -128,44 +143,47 @@ impl OwnershipChecker {
                 self.check_expr_move(&s.value);
             }
             Stmt::If(s) => {
-                self.check_expr_use(&s.condition);
-                self.push_scope();
-                self.check_block(&s.then_block);
-                self.pop_scope();
-                if let Some(else_branch) = &s.else_branch {
-                    match else_branch.as_ref() {
-                        ElseBranch::ElseIf(elif) => {
-                            self.check_stmt(&Stmt::If(elif.clone()));
-                        }
-                        ElseBranch::Else(block) => {
-                            self.push_scope();
-                            self.check_block(block);
-                            self.pop_scope();
-                        }
-                    }
-                }
+                self.check_if_stmt(s);
             }
             Stmt::While(s) => {
                 self.check_expr_use(&s.condition);
+                self.loop_depth += 1;
                 self.push_scope();
                 self.check_block(&s.body);
                 self.pop_scope();
+                self.loop_depth -= 1;
             }
             Stmt::For(s) => {
                 self.check_expr_use(&s.iterable);
+                let elem_ty = self.infer_iterable_elem_type(&s.iterable);
+                self.loop_depth += 1;
                 self.push_scope();
-                self.define(&s.var_name);
+                self.define(&s.var_name, elem_ty, s.span);
                 self.check_block(&s.body);
                 self.pop_scope();
+                self.loop_depth -= 1;
             }
             Stmt::Match(s) => {
                 self.check_expr_use(&s.subject);
+
+                if s.arms.is_empty() {
+                    return;
+                }
+
+                let snapshot = self.snapshot_states();
+                let mut arm_states = Vec::new();
+
                 for arm in &s.arms {
+                    self.restore_states(&snapshot);
                     self.push_scope();
                     self.bind_pattern(&arm.pattern);
                     self.check_block(&arm.body);
                     self.pop_scope();
+                    arm_states.push(self.snapshot_states());
                 }
+
+                self.restore_states(&snapshot);
+                self.apply_merged_states(&arm_states);
             }
             Stmt::Expr(s) => {
                 self.check_expr_use(&s.expr);
@@ -175,21 +193,65 @@ impl OwnershipChecker {
         }
     }
 
-    /// If the expression is a .join() call or uses .join(), mark the Task as consumed.
+    /// Handle if/else-if/else with conservative branch merging.
+    fn check_if_stmt(&mut self, s: &IfStmt) {
+        self.check_expr_use(&s.condition);
+
+        if let Some(else_branch) = &s.else_branch {
+            // Snapshot pre-if state for branch merging
+            let snapshot = self.snapshot_states();
+
+            // Check then-block
+            self.push_scope();
+            self.check_block(&s.then_block);
+            self.pop_scope();
+            let post_then = self.snapshot_states();
+
+            // Restore pre-if state and check else-block
+            self.restore_states(&snapshot);
+            self.check_else_branch(else_branch);
+            let post_else = self.snapshot_states();
+
+            // Merge: moved in either branch = moved in outer scope
+            self.restore_states(&snapshot);
+            self.apply_merged_states(&[post_then, post_else]);
+        } else {
+            // No else: then-block state applies (conservative — conditional move = moved)
+            self.push_scope();
+            self.check_block(&s.then_block);
+            self.pop_scope();
+        }
+    }
+
+    /// Check the else branch of an if statement (handles else-if chains recursively).
+    fn check_else_branch(&mut self, else_branch: &ElseBranch) {
+        match else_branch {
+            ElseBranch::ElseIf(elif) => {
+                self.check_if_stmt(elif);
+            }
+            ElseBranch::Else(block) => {
+                self.push_scope();
+                self.check_block(block);
+                self.pop_scope();
+            }
+        }
+    }
+
+    /// If the expression is a .join() call, mark the Task as consumed.
     fn track_join_calls(&mut self, expr: &Expr) {
-        match &expr.kind {
-            ExprKind::MethodCall(receiver, method, _) if method == "join" => {
+        if let ExprKind::MethodCall(receiver, method, _) = &expr.kind {
+            if method == "join" {
                 if let ExprKind::Ident(name) = &receiver.kind {
                     for tasks in self.task_vars.iter_mut().rev() {
                         tasks.remove(name);
                     }
                 }
             }
-            _ => {}
         }
     }
 
     /// Check that an expression's variables are readable (not moved).
+    /// Used for read-only contexts: conditions, operands, function args, field access.
     fn check_expr_use(&mut self, expr: &Expr) {
         match &expr.kind {
             ExprKind::Ident(name) => {
@@ -237,10 +299,9 @@ impl OwnershipChecker {
                 }
             }
             ExprKind::Closure(closure) => {
-                // Check the closure body in a new scope
                 self.push_scope();
                 for param in &closure.params {
-                    self.define(&param.name);
+                    self.define(&param.name, param.ty.clone(), param.span);
                 }
                 self.check_block(&closure.body);
                 self.pop_scope();
@@ -254,28 +315,44 @@ impl OwnershipChecker {
         }
     }
 
-    /// Check that an expression's variables can be moved.
+    /// Check that an expression can be moved out of.
+    /// Marks non-copy identifiers as Moved. Falls back to check_expr_use for compound exprs.
     fn check_expr_move(&mut self, expr: &Expr) {
-        match &expr.kind {
-            ExprKind::Ident(name) => {
-                if self.is_moved(name) {
+        if let ExprKind::Ident(name) = &expr.kind {
+            // Extract needed info before mutable borrow
+            let (is_already_moved, should_move) = match self.lookup(name) {
+                Some(info) => (info.state == VarState::Moved, !is_copy_type(&info.ty)),
+                None => return,
+            };
+
+            if is_already_moved {
+                self.errors.push(OwnershipError {
+                    message: format!("use of moved variable '{}'", name),
+                    span: expr.span,
+                });
+                return;
+            }
+
+            if should_move {
+                // Cannot move outer-scope variables inside a loop
+                if self.loop_depth > 0 && !self.is_in_current_scope(name) {
                     self.errors.push(OwnershipError {
-                        message: format!("use of moved variable '{}'", name),
+                        message: format!("cannot move '{}' inside a loop", name),
                         span: expr.span,
                     });
+                    return;
                 }
-                // Mark as moved (only for non-Copy types — for now all named types)
-                // Primitive types (int, float, bool) are implicitly Copy
-                // so we don't mark them as moved
+                self.set_state(name, VarState::Moved);
             }
-            _ => self.check_expr_use(expr),
+        } else {
+            self.check_expr_use(expr);
         }
     }
 
     fn bind_pattern(&mut self, pattern: &Pattern) {
         match pattern {
-            Pattern::Binding(name, _) => {
-                self.define(name);
+            Pattern::Binding(name, span) => {
+                self.define(name, Type::Unit, *span);
             }
             Pattern::Variant(_, sub_pats, _) => {
                 for sp in sub_pats {
@@ -284,6 +361,19 @@ impl OwnershipChecker {
             }
             _ => {}
         }
+    }
+
+    /// Try to infer the element type of a for-loop iterable.
+    /// Falls back to Unit (copy) if the type cannot be determined.
+    fn infer_iterable_elem_type(&self, iterable: &Expr) -> Type {
+        if let ExprKind::Ident(name) = &iterable.kind {
+            if let Some(info) = self.lookup(name) {
+                if let Type::Array(elem) = &info.ty {
+                    return *elem.clone();
+                }
+            }
+        }
+        Type::Unit
     }
 
     // ── Scope management ─────────────────────────────────────
@@ -297,50 +387,105 @@ impl OwnershipChecker {
         // Check for unconsumed Task variables
         if let Some(tasks) = self.task_vars.pop() {
             for name in &tasks {
+                let span = self
+                    .scopes
+                    .last()
+                    .and_then(|scope| scope.get(name))
+                    .map(|info| info.def_span)
+                    .unwrap_or(Span::synthetic());
                 self.errors.push(OwnershipError {
                     message: format!("Task '{}' must be joined before scope exit", name),
-                    span: crate::compiler::span::Span::synthetic(),
+                    span,
                 });
             }
         }
         self.scopes.pop();
     }
 
-    fn define(&mut self, name: &str) {
+    fn define(&mut self, name: &str, ty: Type, def_span: Span) {
         if let Some(scope) = self.scopes.last_mut() {
-            scope.insert(name.to_string(), VarState::Owned);
+            scope.insert(
+                name.to_string(),
+                VarInfo {
+                    state: VarState::Owned,
+                    ty,
+                    def_span,
+                },
+            );
         }
+    }
+
+    fn lookup(&self, name: &str) -> Option<&VarInfo> {
+        for scope in self.scopes.iter().rev() {
+            if let Some(info) = scope.get(name) {
+                return Some(info);
+            }
+        }
+        None
     }
 
     fn set_state(&mut self, name: &str, state: VarState) {
         for scope in self.scopes.iter_mut().rev() {
-            if scope.contains_key(name) {
-                scope.insert(name.to_string(), state);
+            if let Some(info) = scope.get_mut(name) {
+                info.state = state;
                 return;
             }
         }
     }
 
     fn is_moved(&self, name: &str) -> bool {
-        for scope in self.scopes.iter().rev() {
-            if let Some(state) = scope.get(name) {
-                return *state == VarState::Moved;
-            }
-        }
-        false
+        self.lookup(name)
+            .is_some_and(|info| info.state == VarState::Moved)
     }
 
-    #[allow(dead_code)]
-    fn active_borrows(&self) -> HashSet<String> {
-        let mut borrows = HashSet::new();
-        for scope in &self.scopes {
-            for (name, state) in scope {
-                if *state == VarState::Borrowed {
-                    borrows.insert(name.clone());
+    /// Returns true if the variable is defined in the innermost (current) scope.
+    fn is_in_current_scope(&self, name: &str) -> bool {
+        self.scopes
+            .last()
+            .is_some_and(|scope| scope.contains_key(name))
+    }
+
+    // ── State snapshot/restore/merge for branch analysis ─────
+
+    /// Capture the VarState of every variable across all scopes.
+    fn snapshot_states(&self) -> Vec<HashMap<String, VarState>> {
+        self.scopes
+            .iter()
+            .map(|scope| {
+                scope
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.state.clone()))
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// Restore variable states from a previous snapshot.
+    fn restore_states(&mut self, snapshot: &[HashMap<String, VarState>]) {
+        for (scope, snap) in self.scopes.iter_mut().zip(snapshot.iter()) {
+            for (name, info) in scope.iter_mut() {
+                if let Some(state) = snap.get(name) {
+                    info.state = state.clone();
                 }
             }
         }
-        borrows
+    }
+
+    /// Conservative merge: if a variable is Moved in ANY of the given state snapshots,
+    /// set it to Moved in the current scopes.
+    fn apply_merged_states(&mut self, states: &[Vec<HashMap<String, VarState>>]) {
+        for (i, scope) in self.scopes.iter_mut().enumerate() {
+            for (name, info) in scope.iter_mut() {
+                for state_snap in states {
+                    if let Some(s) = state_snap.get(i).and_then(|s| s.get(name)) {
+                        if *s == VarState::Moved {
+                            info.state = VarState::Moved;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

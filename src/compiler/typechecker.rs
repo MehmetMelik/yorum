@@ -1103,6 +1103,7 @@ impl TypeChecker {
                 Literal::Bool(_) => Type::Bool,
                 Literal::Char(_) => Type::Char,
                 Literal::String(_) => Type::Str,
+                Literal::Unit => Type::Unit,
             }),
 
             ExprKind::Ident(name) => {
@@ -1389,7 +1390,7 @@ impl TypeChecker {
                         return None;
                     }
 
-                    // Built-in slice(arr, start, end) — returns [T]
+                    // Built-in slice(arr, start, end) — returns [T] (pure)
                     if name == "slice" {
                         if args.len() != 3 {
                             self.errors.push(TypeError {
@@ -1400,13 +1401,6 @@ impl TypeChecker {
                                 span: expr.span,
                             });
                             return None;
-                        }
-                        if self.current_fn_is_pure {
-                            self.errors.push(TypeError {
-                                message: "pure function cannot call impure function 'slice'"
-                                    .to_string(),
-                                span: expr.span,
-                            });
                         }
                         if let Some(arr_ty) = self.infer_expr(&args[0]) {
                             if let Type::Array(inner) = &arr_ty {
@@ -1437,7 +1431,7 @@ impl TypeChecker {
                         return None;
                     }
 
-                    // Built-in concat_arrays(a, b) — returns [T]
+                    // Built-in concat_arrays(a, b) — returns [T] (pure)
                     if name == "concat_arrays" {
                         if args.len() != 2 {
                             self.errors.push(TypeError {
@@ -1448,14 +1442,6 @@ impl TypeChecker {
                                 span: expr.span,
                             });
                             return None;
-                        }
-                        if self.current_fn_is_pure {
-                            self.errors.push(TypeError {
-                                message:
-                                    "pure function cannot call impure function 'concat_arrays'"
-                                        .to_string(),
-                                span: expr.span,
-                            });
                         }
                         if let Some(a_ty) = self.infer_expr(&args[0]) {
                             if let Type::Array(inner_a) = &a_ty {
@@ -1494,7 +1480,7 @@ impl TypeChecker {
                         return None;
                     }
 
-                    // Built-in reverse(arr) — returns [T]
+                    // Built-in reverse(arr) — returns [T] (pure)
                     if name == "reverse" {
                         if args.len() != 1 {
                             self.errors.push(TypeError {
@@ -1505,13 +1491,6 @@ impl TypeChecker {
                                 span: expr.span,
                             });
                             return None;
-                        }
-                        if self.current_fn_is_pure {
-                            self.errors.push(TypeError {
-                                message: "pure function cannot call impure function 'reverse'"
-                                    .to_string(),
-                                span: expr.span,
-                            });
                         }
                         if let Some(arr_ty) = self.infer_expr(&args[0]) {
                             if let Type::Array(inner) = &arr_ty {
@@ -2183,6 +2162,7 @@ impl TypeChecker {
                 Literal::Bool(_) => Type::Bool,
                 Literal::Char(_) => Type::Char,
                 Literal::String(_) => Type::Str,
+                Literal::Unit => Type::Unit,
             }),
             ExprKind::Ident(name) => self.lookup(name).map(|info| info.ty.clone()),
             ExprKind::Binary(_, op, _) => match op {

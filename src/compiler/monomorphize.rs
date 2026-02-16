@@ -225,7 +225,15 @@ impl Monomorphizer {
         generic_fn
             .type_params
             .iter()
-            .map(|tp| bindings.get(&tp.name).cloned().unwrap_or(Type::Int))
+            .map(|tp| {
+                let resolved = bindings.get(&tp.name).cloned().unwrap_or(Type::Unit);
+                debug_assert!(
+                    bindings.contains_key(&tp.name),
+                    "unresolved type param '{}' during monomorphization",
+                    tp.name
+                );
+                resolved
+            })
             .collect()
     }
 
@@ -237,6 +245,7 @@ impl Monomorphizer {
             ExprKind::Literal(Literal::Bool(_)) => Some(Type::Bool),
             ExprKind::Literal(Literal::Char(_)) => Some(Type::Char),
             ExprKind::Literal(Literal::String(_)) => Some(Type::Str),
+            ExprKind::Literal(Literal::Unit) => Some(Type::Unit),
             _ => None,
         }
     }
@@ -637,36 +646,7 @@ fn rewrite_stmt(
             );
         }
         Stmt::If(s) => {
-            rewrite_expr(
-                &mut s.condition,
-                generic_fns,
-                generic_structs,
-                fn_insts,
-                struct_insts,
-            );
-            rewrite_block(
-                &mut s.then_block,
-                generic_fns,
-                generic_structs,
-                fn_insts,
-                struct_insts,
-            );
-            if let Some(else_branch) = &mut s.else_branch {
-                match else_branch.as_mut() {
-                    ElseBranch::ElseIf(elif) => {
-                        rewrite_stmt(
-                            &mut Stmt::If(elif.clone()),
-                            generic_fns,
-                            generic_structs,
-                            fn_insts,
-                            struct_insts,
-                        );
-                    }
-                    ElseBranch::Else(block) => {
-                        rewrite_block(block, generic_fns, generic_structs, fn_insts, struct_insts);
-                    }
-                }
-            }
+            rewrite_if_stmt(s, generic_fns, generic_structs, fn_insts, struct_insts);
         }
         Stmt::While(s) => {
             rewrite_expr(
@@ -726,6 +706,39 @@ fn rewrite_stmt(
                 fn_insts,
                 struct_insts,
             );
+        }
+    }
+}
+
+fn rewrite_if_stmt(
+    s: &mut IfStmt,
+    generic_fns: &HashMap<String, FnDecl>,
+    generic_structs: &HashMap<String, StructDecl>,
+    fn_insts: &HashSet<(String, Vec<Type>)>,
+    struct_insts: &HashSet<(String, Vec<Type>)>,
+) {
+    rewrite_expr(
+        &mut s.condition,
+        generic_fns,
+        generic_structs,
+        fn_insts,
+        struct_insts,
+    );
+    rewrite_block(
+        &mut s.then_block,
+        generic_fns,
+        generic_structs,
+        fn_insts,
+        struct_insts,
+    );
+    if let Some(else_branch) = &mut s.else_branch {
+        match else_branch.as_mut() {
+            ElseBranch::ElseIf(elif) => {
+                rewrite_if_stmt(elif, generic_fns, generic_structs, fn_insts, struct_insts);
+            }
+            ElseBranch::Else(block) => {
+                rewrite_block(block, generic_fns, generic_structs, fn_insts, struct_insts);
+            }
         }
     }
 }
@@ -877,7 +890,15 @@ fn infer_type_args_simple(generic_fn: &FnDecl, args: &[Expr]) -> Option<Vec<Type
             generic_fn
                 .type_params
                 .iter()
-                .map(|tp| bindings.get(&tp.name).cloned().unwrap_or(Type::Int))
+                .map(|tp| {
+                    let resolved = bindings.get(&tp.name).cloned().unwrap_or(Type::Unit);
+                    debug_assert!(
+                        bindings.contains_key(&tp.name),
+                        "unresolved type param '{}' during monomorphization",
+                        tp.name
+                    );
+                    resolved
+                })
                 .collect(),
         )
     } else {

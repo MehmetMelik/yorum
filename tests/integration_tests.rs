@@ -4000,3 +4000,183 @@ fn test_example_tcp_echo_client_compiles() {
     let source = include_str!("../examples/tcp_echo_client.yrm");
     yorum::compile_to_ir(source).expect("examples/tcp_echo_client.yrm should compile");
 }
+
+// ═══════════════════════════════════════════════════════════════
+//  Regression tests for codebase review bug fixes
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn test_generic_elseif_chain() {
+    let ir = compile(
+        "fn identity<T>(x: T) -> T { return x; }\n\
+         fn main() -> int {\n\
+         \x20   let a: int = identity(1);\n\
+         \x20   if a == 1 {\n\
+         \x20       print_int(1);\n\
+         \x20   } else if a == 2 {\n\
+         \x20       print_int(identity(2));\n\
+         \x20   } else {\n\
+         \x20       print_int(identity(3));\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("define i64 @identity__int"));
+}
+
+#[test]
+fn test_module_elseif_rewrite() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+
+    std::fs::write(
+        dir.path().join("yorum.toml"),
+        "[package]\nname = \"testproj\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+
+    std::fs::write(
+        src.join("helpers.yrm"),
+        "module helpers;\n\
+         pub fn classify(x: int) -> int {\n\
+         \x20   if x < 0 {\n\
+         \x20       return 0;\n\
+         \x20   } else if x == 0 {\n\
+         \x20       return 1;\n\
+         \x20   } else {\n\
+         \x20       return 2;\n\
+         \x20   }\n\
+         }\n",
+    )
+    .unwrap();
+
+    std::fs::write(
+        src.join("main.yrm"),
+        "module main;\n\
+         use helpers;\n\
+         fn main() -> int {\n\
+         \x20   let r: int = classify(5);\n\
+         \x20   print_int(r);\n\
+         \x20   return 0;\n\
+         }\n",
+    )
+    .unwrap();
+
+    let ir = yorum::compile_project(dir.path()).expect("module elseif should compile");
+    assert!(ir.contains("@helpers__classify"));
+}
+
+#[test]
+fn test_short_circuit_and() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let a: bool = true;\n\
+         \x20   let b: bool = false;\n\
+         \x20   if a and b {\n\
+         \x20       print_int(1);\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    // Short-circuit `and` should produce phi nodes and branch labels
+    assert!(ir.contains("and_rhs"));
+    assert!(ir.contains("and_merge"));
+    assert!(ir.contains("phi i1"));
+}
+
+#[test]
+fn test_short_circuit_or() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let a: bool = true;\n\
+         \x20   let b: bool = false;\n\
+         \x20   if a or b {\n\
+         \x20       print_int(1);\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    // Short-circuit `or` should produce phi nodes and branch labels
+    assert!(ir.contains("or_rhs"));
+    assert!(ir.contains("or_merge"));
+    assert!(ir.contains("phi i1"));
+}
+
+#[test]
+fn test_return_unit_bare() {
+    let ir = compile(
+        "fn do_nothing() -> unit {\n\
+         \x20   return;\n\
+         }\n\
+         fn main() -> int {\n\
+         \x20   do_nothing();\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("define void @do_nothing"));
+    assert!(ir.contains("ret void"));
+}
+
+#[test]
+fn test_slice_in_pure_fn() {
+    parse_and_check(
+        "pure fn first_two(arr: [int]) -> [int] {\n\
+         \x20   return slice(arr, 0, 2);\n\
+         }\n\
+         fn main() -> int { return 0; }\n",
+    );
+}
+
+#[test]
+fn test_reverse_in_pure_fn() {
+    parse_and_check(
+        "pure fn reversed(arr: [int]) -> [int] {\n\
+         \x20   return reverse(arr);\n\
+         }\n\
+         fn main() -> int { return 0; }\n",
+    );
+}
+
+#[test]
+fn test_concat_arrays_in_pure_fn() {
+    parse_and_check(
+        "pure fn joined(a: [int], b: [int]) -> [int] {\n\
+         \x20   return concat_arrays(a, b);\n\
+         }\n\
+         fn main() -> int { return 0; }\n",
+    );
+}
+
+#[test]
+fn test_map_remove_tombstone() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let m: Map = map_new();\n\
+         \x20   map_set(m, \"key1\", 10);\n\
+         \x20   map_set(m, \"key2\", 20);\n\
+         \x20   map_remove(m, \"key1\");\n\
+         \x20   let v: int = map_get(m, \"key2\");\n\
+         \x20   print_int(v);\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    // Verify tombstone-based removal is emitted (flag=2 instead of flag=0)
+    assert!(ir.contains("store i8 2"));
+}
+
+#[test]
+fn test_spawn_with_captures() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let x: int = 42;\n\
+         \x20   let t: Task<unit> = spawn {\n\
+         \x20       print_int(x);\n\
+         \x20   };\n\
+         \x20   t.join();\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("@__spawn_"));
+    assert!(ir.contains("call i32 @pthread_create"));
+}

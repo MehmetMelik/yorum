@@ -625,7 +625,7 @@ impl Parser {
         let value = if self.check(&TokenKind::Semicolon) {
             // return; → return unit
             Expr {
-                kind: ExprKind::Literal(Literal::Int(0)),
+                kind: ExprKind::Literal(Literal::Unit),
                 span: self.current_span(),
             }
         } else {

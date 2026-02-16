@@ -68,6 +68,8 @@ pub struct ServerCapabilities {
     pub hover_provider: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub definition_provider: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub position_encoding: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -88,6 +90,12 @@ pub struct DidOpenTextDocumentParams {
 pub struct TextDocumentItem {
     pub uri: String,
     pub text: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DidCloseTextDocumentParams {
+    pub text_document: TextDocumentIdentifier,
 }
 
 #[derive(Debug, Deserialize)]

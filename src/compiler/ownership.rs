@@ -134,7 +134,10 @@ impl OwnershipChecker {
             }
             Stmt::Assign(s) => {
                 self.check_expr_move(&s.value);
-                // Re-own the target (reassignment restores ownership)
+                // Re-own the target: assigning a new value to a moved variable is
+                // legitimate because it binds a fresh value, restoring ownership.
+                // This is intentional — it allows patterns like `x = new_value;`
+                // after `x` has been moved.
                 if let ExprKind::Ident(name) = &s.target.kind {
                     self.set_state(name, VarState::Owned);
                 }

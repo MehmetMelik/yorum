@@ -257,7 +257,7 @@ Arrays are heap-allocated fat pointers (`{ ptr, i64, i64 }` — data pointer +
 length + capacity). `len(arr)` returns the length. `push(arr, val)` appends an
 element (growing the buffer via `realloc` when needed). `pop(arr)` removes and
 returns the last element. Index access includes runtime bounds checking.
-`for x in arr { ... }` iterates over array elements.
+`for x in arr { ... }` iterates over array elements. `for i in 0..n { ... }` iterates with a counter from 0 to n-1.
 
 ### Char Type and String Operations
 
@@ -483,15 +483,25 @@ fn sum_to(n: int) -> int {
     let mut total: int = 0;
     let mut i: int = 1;
     while i <= n {
-        total = total + i;
-        i = i + 1;
+        total += i;
+        i += 1;
+    }
+    return total;
+}
+
+fn sum_range(n: int) -> int {
+    let mut total: int = 0;
+    for i in 0..n {
+        total += i;
     }
     return total;
 }
 ```
 
 All blocks are delimited with `{ }`. All statements end with `;`. Logical
-operators are keywords: `and`, `or`, `not`.
+operators are keywords: `and`, `or`, `not`. Compound assignment operators
+(`+=`, `-=`, `*=`, `/=`, `%=`) are supported. `break` and `continue` control
+loop flow. Bitwise operators: `&`, `|`, `^`, `<<`, `>>`.
 
 ### Error Handling
 
@@ -515,14 +525,19 @@ fn divide(a: int, b: int) -> Result {
 
 | Level | Operators | Associativity |
 |---|---|---|
-| 1 | `or` | left |
-| 2 | `and` | left |
-| 3 | `==` `!=` | left |
-| 4 | `<` `>` `<=` `>=` | left |
-| 5 | `+` `-` | left |
-| 6 | `*` `/` `%` | left |
-| 7 | `-` (unary), `not` | prefix |
-| 8 | `()` `.field` `.method()` `[i]` | postfix |
+| 1 | `..` (range) | non-chainable |
+| 2 | `or` | left |
+| 3 | `and` | left |
+| 4 | `\|` (bitwise OR) | left |
+| 5 | `^` (bitwise XOR) | left |
+| 6 | `&` (bitwise AND) | left |
+| 7 | `==` `!=` | left |
+| 8 | `<` `>` `<=` `>=` | left |
+| 9 | `<<` `>>` | left |
+| 10 | `+` `-` | left |
+| 11 | `*` `/` `%` | left |
+| 12 | `-` (unary), `not` | prefix |
+| 13 | `()` `.field` `.method()` `[i]` | postfix |
 
 ## LLVM IR Output
 
@@ -731,6 +746,7 @@ cargo test test_fibonacci     # single test by name
 | **v0.9** | Networking: TCP/UDP sockets, DNS resolution, HTTP client (14 builtins) | Done |
 | **v1.0** | Stable language specification and ABI, production-ready toolchain | Done |
 | **v1.0.2** | Codegen bug fixes: stale PHI labels, HashMap tombstone loop, spawn alignment, unit IR | Done |
+| **v1.1** | Ergonomics: compound assignment, bitwise operators, break/continue, range for-loops | Done |
 
 ## License
 

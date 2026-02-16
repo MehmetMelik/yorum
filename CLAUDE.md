@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 cargo build                          # dev build
 cargo build --release                # release build
-cargo test                           # all tests (340: 46 unit + 294 integration)
+cargo test                           # all tests (362: 46 unit + 316 integration)
 cargo test compiler::lexer           # tests in one module
 cargo test test_fibonacci_compiles   # single test by name
 cargo test -- --nocapture            # see stdout from tests
@@ -288,6 +288,52 @@ Four correctness bugs in `codegen.rs` identified by staff-engineer code review a
 ### Test coverage
 
 4 new integration tests — total 340 tests (46 unit + 294 integration).
+
+## Completed: v1.1 — Ergonomics & Missing Operators
+
+Four quality-of-life features that eliminate daily-use paper cuts. All are additive — no breaking changes.
+
+### Feature 1: Compound Assignment Operators
+
+`+=`, `-=`, `*=`, `/=`, `%=` — desugared in the parser to `x = x + e` form. No typechecker, ownership, or codegen changes needed.
+
+- **Tokens:** `PlusEq`, `MinusEq`, `StarEq`, `SlashEq`, `PercentEq`
+- **Lexer:** Each of `+`, `-`, `*`, `/`, `%` peeks for `=`
+- **Parser:** `try_compound_assign()` helper maps compound tokens to `BinOp`; `parse_assign_or_expr_stmt()` desugars after the existing `=` check
+- Works with array index (`arr[i] += 1;`) and field access (`p.x += 1;`)
+
+### Feature 2: Bitwise Operators
+
+`&` (BitAnd), `|` (BitOr), `^` (BitXor), `<<` (Shl), `>>` (Shr) — full pipeline support.
+
+- **Tokens:** `Caret` (^), `LShift` (<<). `Ampersand`/`Pipe` already existed. `>>` is NOT a single token — parsed as two `Gt` tokens to avoid conflict with generic closing `>>`
+- **AST:** `BinOp::BitAnd`, `BitOr`, `BitXor`, `Shl`, `Shr`
+- **Parser:** `try_binop()` returns `Option<(BinOp, usize)>` where `usize` is token width (2 for `>>`). `peek_kind_at(pos)` enables arbitrary lookahead. C-style precedence: `Or(3,4) And(5,6) BitOr(7,8) BitXor(9,10) BitAnd(11,12) Eq/NotEq(13,14) comparisons(15,16) shifts(17,18) add/sub(19,20) mul/div/mod(21,22)`
+- **Typechecker:** Both operands must be `int`, returns `int`
+- **Codegen:** `and i64`, `or i64`, `xor i64`, `shl i64`, `ashr i64` (arithmetic shift right, preserves sign)
+
+### Feature 3: `break` and `continue`
+
+Loop control flow statements for `while` and `for` loops.
+
+- **Tokens:** `Break`, `Continue` keywords
+- **AST:** `BreakStmt { span }`, `ContinueStmt { span }`, `Stmt::Break`, `Stmt::Continue`
+- **Typechecker:** `loop_depth: usize` field — incremented in while/for, decremented after. Error if break/continue when `loop_depth == 0`
+- **Codegen:** `loop_labels: Vec<(String, String)>` stack of `(continue_label, break_label)` pairs. `emit_break` → `br label %{break_label}`. `emit_continue` → `br label %{continue_label}`. For-loop increment extracted into `for.inc` label so `continue` increments the index before jumping to condition
+
+### Feature 4: Range Expressions (`for i in 0..n`)
+
+Counter-based for loops using range syntax.
+
+- **Token:** `DotDot` (..)
+- **AST:** `ExprKind::Range(Box<Expr>, Box<Expr>)`
+- **Parser:** `..` handled in `parse_expr_bp` before `try_binop` with binding power `(1, 2)` — lowest precedence. `0..n + 5` parses as `0..(n + 5)`
+- **Typechecker:** Both bounds must be `int`. Standalone range expressions error: "range expression is only valid in for loops"
+- **Codegen:** `emit_for_range()` — alloca for counter, `icmp slt` against end, `for.cond`/`for.body`/`for.inc`/`for.end` labels with `loop_labels` stack integration
+
+### Test coverage
+
+22 new integration tests — total 362 tests (46 unit + 316 integration).
 
 ## Git Workflow
 

@@ -119,6 +119,7 @@ pub struct TypeChecker {
     current_self_type: Option<Type>,
     current_fn_ret: Option<Type>,
     current_fn_is_pure: bool,
+    loop_depth: usize,
     errors: Vec<TypeError>,
     collect_symbols: bool,
     symbol_table: SymbolTable,
@@ -144,6 +145,7 @@ impl TypeChecker {
             current_self_type: None,
             current_fn_ret: None,
             current_fn_is_pure: false,
+            loop_depth: 0,
             errors: Vec::new(),
             collect_symbols: false,
             symbol_table: SymbolTable {
@@ -997,21 +999,52 @@ impl TypeChecker {
                         });
                     }
                 }
+                self.loop_depth += 1;
                 self.push_scope();
                 self.check_block(&s.body);
                 self.pop_scope();
+                self.loop_depth -= 1;
             }
 
             Stmt::For(s) => {
-                if let Some(iter_ty) = self.infer_expr(&s.iterable) {
+                if let ExprKind::Range(ref start, ref end) = s.iterable.kind {
+                    // Range-based for: check bounds are int, loop var is int
+                    if let Some(start_ty) = self.infer_expr(start) {
+                        if start_ty != Type::Int {
+                            self.errors.push(TypeError {
+                                message: format!("range start must be 'int', found '{}'", start_ty),
+                                span: start.span,
+                            });
+                        }
+                    }
+                    if let Some(end_ty) = self.infer_expr(end) {
+                        if end_ty != Type::Int {
+                            self.errors.push(TypeError {
+                                message: format!("range end must be 'int', found '{}'", end_ty),
+                                span: end.span,
+                            });
+                        }
+                    }
+                    self.loop_depth += 1;
+                    self.push_scope();
+                    self.define_with_span(&s.var_name, Type::Int, false, s.span);
+                    self.check_block(&s.body);
+                    self.pop_scope();
+                    self.loop_depth -= 1;
+                } else if let Some(iter_ty) = self.infer_expr(&s.iterable) {
                     if let Type::Array(inner) = iter_ty {
+                        self.loop_depth += 1;
                         self.push_scope();
                         self.define_with_span(&s.var_name, *inner, false, s.span);
                         self.check_block(&s.body);
                         self.pop_scope();
+                        self.loop_depth -= 1;
                     } else {
                         self.errors.push(TypeError {
-                            message: format!("for loop requires an array, found '{}'", iter_ty),
+                            message: format!(
+                                "for loop requires an array or range, found '{}'",
+                                iter_ty
+                            ),
                             span: s.iterable.span,
                         });
                     }
@@ -1030,6 +1063,24 @@ impl TypeChecker {
 
             Stmt::Expr(s) => {
                 self.infer_expr(&s.expr);
+            }
+
+            Stmt::Break(s) => {
+                if self.loop_depth == 0 {
+                    self.errors.push(TypeError {
+                        message: "'break' can only be used inside a loop".to_string(),
+                        span: s.span,
+                    });
+                }
+            }
+
+            Stmt::Continue(s) => {
+                if self.loop_depth == 0 {
+                    self.errors.push(TypeError {
+                        message: "'continue' can only be used inside a loop".to_string(),
+                        span: s.span,
+                    });
+                }
             }
         }
     }
@@ -1911,6 +1962,31 @@ impl TypeChecker {
                 Some(Type::Task(Box::new(inner_ty)))
             }
 
+            ExprKind::Range(start, end) => {
+                if let Some(start_ty) = self.infer_expr(start) {
+                    if start_ty != Type::Int {
+                        self.errors.push(TypeError {
+                            message: format!("range start must be 'int', found '{}'", start_ty),
+                            span: start.span,
+                        });
+                    }
+                }
+                if let Some(end_ty) = self.infer_expr(end) {
+                    if end_ty != Type::Int {
+                        self.errors.push(TypeError {
+                            message: format!("range end must be 'int', found '{}'", end_ty),
+                            span: end.span,
+                        });
+                    }
+                }
+                // Range is not a standalone value — only valid in for loops
+                self.errors.push(TypeError {
+                    message: "range expression is only valid in for loops".to_string(),
+                    span: expr.span,
+                });
+                None
+            }
+
             ExprKind::StructInit(name, fields) => {
                 if let Some(info) = self.structs.get(name).cloned() {
                     // Check that all fields are provided
@@ -2034,6 +2110,19 @@ impl TypeChecker {
                     return None;
                 }
                 Some(Type::Bool)
+            }
+            BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::Shr => {
+                if *lt != Type::Int || *rt != Type::Int {
+                    self.errors.push(TypeError {
+                        message: format!(
+                            "bitwise operator '{}' requires 'int' operands, found '{}' and '{}'",
+                            op, lt, rt
+                        ),
+                        span,
+                    });
+                    return None;
+                }
+                Some(Type::Int)
             }
         }
     }
@@ -2181,6 +2270,9 @@ impl TypeChecker {
                     } else {
                         Some(Type::Int)
                     }
+                }
+                BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::Shr => {
+                    Some(Type::Int)
                 }
             },
             _ => None,

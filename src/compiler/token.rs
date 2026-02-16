@@ -47,6 +47,8 @@ pub enum TokenKind {
     Trait,
     SelfType,
     Spawn,
+    Break,
+    Continue,
 
     // Logical operators (keyword-based, no &&/||/! ambiguity)
     And,
@@ -83,6 +85,7 @@ pub enum TokenKind {
     Colon,     // :
     Semicolon, // ;
     Dot,       // .
+    DotDot,    // ..
     Arrow,     // ->
     FatArrow,  // =>
 
@@ -101,7 +104,16 @@ pub enum TokenKind {
     Percent,   // %
     Ampersand, // &
 
-    Pipe, // |
+    Pipe,   // |
+    Caret,  // ^
+    LShift, // <<
+
+    // ── Compound assignment ─────────────────────────────────
+    PlusEq,    // +=
+    MinusEq,   // -=
+    StarEq,    // *=
+    SlashEq,   // /=
+    PercentEq, // %=
 
     // ── Special ──────────────────────────────────────────────
     Underscore, // _
@@ -134,6 +146,8 @@ impl TokenKind {
             "trait" => Some(TokenKind::Trait),
             "Self" => Some(TokenKind::SelfType),
             "spawn" => Some(TokenKind::Spawn),
+            "break" => Some(TokenKind::Break),
+            "continue" => Some(TokenKind::Continue),
             "and" => Some(TokenKind::And),
             "or" => Some(TokenKind::Or),
             "not" => Some(TokenKind::Not),
@@ -187,6 +201,8 @@ impl fmt::Display for TokenKind {
             TokenKind::Trait => write!(f, "trait"),
             TokenKind::SelfType => write!(f, "Self"),
             TokenKind::Spawn => write!(f, "spawn"),
+            TokenKind::Break => write!(f, "break"),
+            TokenKind::Continue => write!(f, "continue"),
             TokenKind::And => write!(f, "and"),
             TokenKind::Or => write!(f, "or"),
             TokenKind::Not => write!(f, "not"),
@@ -211,6 +227,7 @@ impl fmt::Display for TokenKind {
             TokenKind::Colon => write!(f, ":"),
             TokenKind::Semicolon => write!(f, ";"),
             TokenKind::Dot => write!(f, "."),
+            TokenKind::DotDot => write!(f, ".."),
             TokenKind::Arrow => write!(f, "->"),
             TokenKind::FatArrow => write!(f, "=>"),
             TokenKind::Eq => write!(f, "="),
@@ -227,6 +244,13 @@ impl fmt::Display for TokenKind {
             TokenKind::Percent => write!(f, "%"),
             TokenKind::Ampersand => write!(f, "&"),
             TokenKind::Pipe => write!(f, "|"),
+            TokenKind::Caret => write!(f, "^"),
+            TokenKind::LShift => write!(f, "<<"),
+            TokenKind::PlusEq => write!(f, "+="),
+            TokenKind::MinusEq => write!(f, "-="),
+            TokenKind::StarEq => write!(f, "*="),
+            TokenKind::SlashEq => write!(f, "/="),
+            TokenKind::PercentEq => write!(f, "%="),
             TokenKind::Underscore => write!(f, "_"),
             TokenKind::EOF => write!(f, "<EOF>"),
         }

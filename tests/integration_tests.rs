@@ -4298,3 +4298,351 @@ fn test_unit_let_binding_no_invalid_ir() {
     // The void call should still be emitted for side effects
     assert!(ir.contains("call void @do_nothing()"));
 }
+
+// ═══════════════════════════════════════════════════════════════
+//  v1.1 — Compound assignment operators
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn test_compound_add() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let mut x: int = 10;\n\
+         \x20   x += 5;\n\
+         \x20   return x;\n\
+         }\n",
+    );
+    // Desugared to x = x + 5, so we expect an add instruction
+    assert!(ir.contains("add i64"));
+}
+
+#[test]
+fn test_compound_all_ops() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let mut a: int = 10;\n\
+         \x20   a += 1;\n\
+         \x20   a -= 2;\n\
+         \x20   a *= 3;\n\
+         \x20   a /= 4;\n\
+         \x20   a %= 5;\n\
+         \x20   return a;\n\
+         }\n",
+    );
+    assert!(ir.contains("add i64"));
+    assert!(ir.contains("sub i64"));
+    assert!(ir.contains("mul i64"));
+    assert!(ir.contains("sdiv i64"));
+    assert!(ir.contains("srem i64"));
+}
+
+#[test]
+fn test_compound_array_index() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let mut arr: [int] = [1, 2, 3];\n\
+         \x20   arr[0] += 10;\n\
+         \x20   return arr[0];\n\
+         }\n",
+    );
+    assert!(ir.contains("add i64"));
+}
+
+#[test]
+fn test_compound_field() {
+    let ir = compile(
+        "struct Point { x: int, y: int }\n\
+         fn main() -> int {\n\
+         \x20   let mut p: Point = Point { x: 1, y: 2 };\n\
+         \x20   p.x += 10;\n\
+         \x20   return p.x;\n\
+         }\n",
+    );
+    assert!(ir.contains("add i64"));
+}
+
+#[test]
+fn test_compound_type_error() {
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20   let mut x: int = 5;\n\
+         \x20   x += true;\n\
+         \x20   return x;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  v1.1 — Bitwise operators
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn test_bitwise_and_or_xor() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let a: int = 5 & 3;\n\
+         \x20   let b: int = 5 | 3;\n\
+         \x20   let c: int = 5 ^ 3;\n\
+         \x20   return a;\n\
+         }\n",
+    );
+    assert!(ir.contains("and i64"));
+    assert!(ir.contains("or i64"));
+    assert!(ir.contains("xor i64"));
+}
+
+#[test]
+fn test_bitwise_shift() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let a: int = 1 << 3;\n\
+         \x20   let b: int = 16 >> 2;\n\
+         \x20   return a;\n\
+         }\n",
+    );
+    assert!(ir.contains("shl i64"));
+    assert!(ir.contains("ashr i64"));
+}
+
+#[test]
+fn test_bitwise_precedence() {
+    // a + b & c should parse as (a + b) & c since + binds tighter than &
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let a: int = 1;\n\
+         \x20   let b: int = 2;\n\
+         \x20   let c: int = 3;\n\
+         \x20   let r: int = a + b & c;\n\
+         \x20   return r;\n\
+         }\n",
+    );
+    // The add should appear before the and in the IR
+    let add_pos = ir.find("add i64").unwrap();
+    let and_pos = ir.rfind("and i64").unwrap();
+    assert!(add_pos < and_pos, "add should appear before bitwise and");
+}
+
+#[test]
+fn test_bitwise_type_error() {
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20   let x: int = 1.0 & 2;\n\
+         \x20   return x;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_shift_not_confused_with_generics() {
+    // Ensure >> in expression context is parsed as shift, not two Gt tokens
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let x: int = 16;\n\
+         \x20   let y: int = x >> 2;\n\
+         \x20   return y;\n\
+         }\n",
+    );
+    assert!(ir.contains("ashr i64"));
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  v1.1 — break and continue
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn test_break_in_while() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let mut x: int = 0;\n\
+         \x20   while true {\n\
+         \x20       x += 1;\n\
+         \x20       if x == 5 { break; }\n\
+         \x20   }\n\
+         \x20   return x;\n\
+         }\n",
+    );
+    assert!(ir.contains("br label %while.end"));
+}
+
+#[test]
+fn test_continue_in_while() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let mut x: int = 0;\n\
+         \x20   let mut i: int = 0;\n\
+         \x20   while i < 10 {\n\
+         \x20       i += 1;\n\
+         \x20       if i == 5 { continue; }\n\
+         \x20       x += 1;\n\
+         \x20   }\n\
+         \x20   return x;\n\
+         }\n",
+    );
+    assert!(ir.contains("br label %while.cond"));
+}
+
+#[test]
+fn test_break_in_for() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3, 4, 5];\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for x in arr {\n\
+         \x20       if x == 4 { break; }\n\
+         \x20       sum += x;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    assert!(ir.contains("br label %for.end"));
+}
+
+#[test]
+fn test_continue_in_for() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3, 4, 5];\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for x in arr {\n\
+         \x20       if x == 3 { continue; }\n\
+         \x20       sum += x;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    // continue jumps to for.inc (the increment block)
+    assert!(ir.contains("br label %for.inc"));
+}
+
+#[test]
+fn test_break_outside_loop_error() {
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20   break;\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_continue_outside_loop_error() {
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20   continue;\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_nested_break() {
+    // Inner break should not exit outer loop
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let mut count: int = 0;\n\
+         \x20   let mut i: int = 0;\n\
+         \x20   while i < 3 {\n\
+         \x20       let mut j: int = 0;\n\
+         \x20       while j < 3 {\n\
+         \x20           if j == 1 { break; }\n\
+         \x20           count += 1;\n\
+         \x20           j += 1;\n\
+         \x20       }\n\
+         \x20       i += 1;\n\
+         \x20   }\n\
+         \x20   return count;\n\
+         }\n",
+    );
+    // Should have two while.end labels (one for inner, one for outer)
+    let count = ir.matches("while.end").count();
+    assert!(
+        count >= 2,
+        "expected at least 2 while.end labels for nested loops"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  v1.1 — Range expressions (for i in 0..n)
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn test_for_range_basic() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for i in 0..10 {\n\
+         \x20       sum += i;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    // Should have for.cond, for.body, for.inc, for.end labels
+    assert!(ir.contains("for.cond"));
+    assert!(ir.contains("for.body"));
+    assert!(ir.contains("for.inc"));
+    assert!(ir.contains("for.end"));
+    // Should compare with icmp slt
+    assert!(ir.contains("icmp slt i64"));
+}
+
+#[test]
+fn test_for_range_variables() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let n: int = 5;\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for i in 0..n {\n\
+         \x20       sum += i;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    assert!(ir.contains("for.cond"));
+    assert!(ir.contains("icmp slt i64"));
+}
+
+#[test]
+fn test_for_range_expression_bounds() {
+    // 0..n + 1 should parse as 0..(n + 1) since + binds tighter than ..
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let n: int = 5;\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for i in 0..n + 1 {\n\
+         \x20       sum += i;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    // The add for n+1 should happen before the loop comparison
+    assert!(ir.contains("for.cond"));
+}
+
+#[test]
+fn test_for_range_type_error() {
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20   for i in 0..true {\n\
+         \x20       print_int(i);\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_range_outside_for_error() {
+    // Range is not a standalone expression — using it as a value should fail
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20   let x: int = 0..10;\n\
+         \x20   return x;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+}

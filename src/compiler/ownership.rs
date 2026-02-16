@@ -193,6 +193,7 @@ impl OwnershipChecker {
                 // Track .join() calls to remove from must-consume
                 self.track_join_calls(&s.expr);
             }
+            Stmt::Break(_) | Stmt::Continue(_) => {}
         }
     }
 
@@ -314,6 +315,10 @@ impl OwnershipChecker {
                 self.check_block(block);
                 self.pop_scope();
             }
+            ExprKind::Range(start, end) => {
+                self.check_expr_use(start);
+                self.check_expr_use(end);
+            }
             ExprKind::Literal(_) => {}
         }
     }
@@ -369,6 +374,9 @@ impl OwnershipChecker {
     /// Try to infer the element type of a for-loop iterable.
     /// Falls back to Unit (copy) if the type cannot be determined.
     fn infer_iterable_elem_type(&self, iterable: &Expr) -> Type {
+        if let ExprKind::Range(_, _) = &iterable.kind {
+            return Type::Int;
+        }
         if let ExprKind::Ident(name) = &iterable.kind {
             if let Some(info) = self.lookup(name) {
                 if let Type::Array(elem) = &info.ty {

@@ -1,6 +1,6 @@
 # Yorum Language Specification
 
-**Version:** 1.0.0
+**Version:** 1.1.0
 
 ## 1. Overview
 
@@ -39,6 +39,7 @@ Source files are UTF-8.  Only ASCII characters appear in keywords and operators.
 fn  let  mut  return  if  else  while  for  in  match  spawn
 struct  enum  module  use  const  pub  pure  own  impl  trait  Self
 and  or  not  true  false
+break  continue
 requires  ensures  effects
 int  float  bool  char  string  unit
 ```
@@ -46,9 +47,11 @@ int  float  bool  char  string  unit
 ### 3.4 Operators and Punctuation
 ```
 +  -  *  /  %
++=  -=  *=  /=  %=
+&  |  ^  <<  >>
 ==  !=  <  >  <=  >=
 and  or  not
-=  ->  =>
+=  ->  =>  ..
 (  )  {  }  [  ]  <  >
 ,  :  ;  .  &  _  |
 ```
@@ -189,11 +192,14 @@ Dispatch is always static — no vtables, no runtime cost.
 |---|---|
 | Let binding | `let [mut] name: Type = expr;` |
 | Assignment | `target = expr;` |
+| Compound assignment | `target += expr;` (also `-=`, `*=`, `/=`, `%=`) |
 | Return | `return expr;` |
 | If | `if expr { ... } [else { ... }]` |
 | While | `while expr { ... }` |
 | For | `for name in expr { ... }` |
 | Match | `match expr { pattern => { ... }, ... }` |
+| Break | `break;` |
+| Continue | `continue;` |
 | Expression | `expr;` |
 
 All statements are semicolon-terminated (except block-bearing statements like
@@ -205,19 +211,53 @@ All statements are semicolon-terminated (except block-bearing statements like
 
 | Level | Operators | Associativity |
 |---|---|---|
+| 0 | `..` (range) | non-associative |
 | 1 | `or` | left |
 | 2 | `and` | left |
-| 3 | `==` `!=` | left |
-| 4 | `<` `>` `<=` `>=` | left |
-| 5 | `+` `-` | left |
-| 6 | `*` `/` `%` | left |
-| 7 | `-` (unary) `not` | prefix |
-| 8 | `()` `.field` `.method()` `[]` | postfix |
+| 3 | `\|` (bitwise OR) | left |
+| 4 | `^` (bitwise XOR) | left |
+| 5 | `&` (bitwise AND) | left |
+| 6 | `==` `!=` | left |
+| 7 | `<` `>` `<=` `>=` | left |
+| 8 | `<<` `>>` | left |
+| 9 | `+` `-` | left |
+| 10 | `*` `/` `%` | left |
+| 11 | `-` (unary) `not` | prefix |
+| 12 | `()` `.field` `.method()` `[]` | postfix |
 
 ### 7.2 Logical Operators
 Yorum uses **keyword-based** logical operators (`and`, `or`, `not`) rather than
 symbolic ones (`&&`, `||`, `!`).  This eliminates ambiguity with bitwise
 operators and makes code more LLM-readable.
+
+### 7.2.1 Bitwise Operators
+Bitwise operators operate on `int` values only and return `int`:
+
+| Operator | Description | LLVM IR |
+|---|---|---|
+| `&` | Bitwise AND | `and i64` |
+| `\|` | Bitwise OR | `or i64` |
+| `^` | Bitwise XOR | `xor i64` |
+| `<<` | Left shift | `shl i64` |
+| `>>` | Arithmetic right shift | `ashr i64` |
+
+Precedence follows the C convention.  `>>` is not a single token — it is parsed
+as two `>` tokens to avoid ambiguity with generic type syntax (e.g.,
+`Task<Map<string, int>>`).
+
+### 7.2.2 Compound Assignment
+Compound assignment operators desugar to read-modify-write in the parser:
+
+```
+x += 1;    // desugars to: x = x + 1;
+x -= 1;    // desugars to: x = x - 1;
+x *= 2;    // desugars to: x = x * 2;
+x /= 2;    // desugars to: x = x / 2;
+x %= 3;    // desugars to: x = x % 3;
+```
+
+Works with any assignable target: variables, array indices (`arr[i] += 1;`),
+and struct fields (`p.x += 1;`).
 
 ### 7.3 Method Calls
 When `.IDENT` is followed by `(`, it is parsed as a method call rather than a
@@ -285,16 +325,47 @@ Arrays are represented internally as `{ ptr, i64, i64 }` fat pointers (data
 pointer + length + capacity).
 
 ### 7.6 For Loops
-For loops iterate over arrays:
+For loops iterate over arrays or ranges:
 ```
 for x in nums {
-    total = total + x;
+    total += x;
+}
+
+for i in 0..n {
+    print_int(i);
 }
 ```
 
 The loop variable is bound to each element in order.  Its type is the array's
-element type.  The loop variable is scoped to the loop body.  Only array types
-are iterable — there is no general iterator protocol.
+element type (or `int` for ranges).  The loop variable is scoped to the loop body.
+
+**Range expressions** (`start..end`) create a half-open integer range `[start, end)`.
+Both bounds must be `int`.  Range expressions are only valid as the iterable in
+a `for` loop — they cannot be used as standalone expressions.  The `..` operator
+has the lowest precedence, so `0..n + 1` parses as `0..(n + 1)`.
+
+### 7.6.1 Break and Continue
+`break` exits the innermost enclosing loop immediately.  `continue` skips the
+rest of the current iteration and jumps to the next iteration (for `while`, this
+is the condition check; for `for`, this is the index increment then condition
+check).
+
+```
+let mut i: int = 0;
+while i < 100 {
+    i += 1;
+    if i % 2 == 0 {
+        continue;
+    }
+    if i > 10 {
+        break;
+    }
+    print_int(i);
+}
+```
+
+Using `break` or `continue` outside of a loop is a compile-time error.  In
+nested loops, `break` and `continue` apply to the innermost loop only.
 
 ### 7.7 String and Character Operations
 
@@ -518,7 +589,11 @@ The compiler emits textual LLVM IR.  Key mappings:
 | Method calls | `call @Type_method(ptr %self, ...)` |
 | If/else | Conditional `br` with labeled basic blocks |
 | While loops | Loop header + conditional `br` + back-edge |
-| For loops | Index counter + conditional `br` + element load + back-edge |
+| For loops (array) | Index counter + conditional `br` + element load + back-edge |
+| For loops (range) | Counter alloca + `icmp slt` + increment + back-edge |
+| `break` | `br label %loop.end` |
+| `continue` | `br label %loop.cond` (while) or `br label %for.inc` (for) |
+| Bitwise ops | `and i64`, `or i64`, `xor i64`, `shl i64`, `ashr i64` |
 | Match | Cascading `icmp`/`br` chains; variant tag extraction for enums |
 | Structs | LLVM struct types with `getelementptr` |
 | Enums | Tagged union: `{ i32, [N x i8] }` |
@@ -860,6 +935,13 @@ HTTP/1.0 only (no TLS/HTTPS).
 - Production-ready toolchain: no compiler panics on any input
 - Comprehensive test suite (~330 tests)
 - Dynamic versioning via Cargo.toml
+
+### v1.1 (Done)
+- Compound assignment operators (`+=`, `-=`, `*=`, `/=`, `%=`) — parser desugaring
+- Bitwise operators (`&`, `|`, `^`, `<<`, `>>`) — full pipeline with C-style precedence
+- `break` and `continue` for `while` and `for` loops
+- Range expressions (`for i in 0..n`) — counter-based for loops
+- 22 new integration tests (362 total)
 
 ## Appendix A: Application Binary Interface (ABI)
 

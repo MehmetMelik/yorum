@@ -3,3 +3,5 @@ yorum-in-yorum/out.ll
 yorum-in-yorum/test.ll
 yorum-in-yorum/test_bin
 yorum-in-yorum/yorumc
+editors/vscode/node_modules/
+editors/vscode/out/

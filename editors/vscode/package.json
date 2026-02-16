@@ -1,0 +1,52 @@
+{
+  "name": "yorum",
+  "displayName": "Yorum",
+  "description": "Yorum language support — syntax highlighting, diagnostics, hover, and go-to-definition",
+  "version": "0.7.0",
+  "publisher": "yorum",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onLanguage:yorum"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "yorum",
+        "aliases": [
+          "Yorum",
+          "yorum"
+        ],
+        "extensions": [
+          ".yrm"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "yorum",
+        "scopeName": "source.yorum",
+        "path": "./syntaxes/yorum.tmLanguage.json"
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1",
+    "vscode-languageserver-protocol": "^3.17.5"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.75.0",
+    "typescript": "^5.0.0"
+  }
+}

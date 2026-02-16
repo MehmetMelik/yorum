@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 cargo build                          # dev build
 cargo build --release                # release build
-cargo test                           # all tests (200: 37 unit + 163 integration)
+cargo test                           # all tests (217: 46 unit + 171 integration)
 cargo test compiler::lexer           # tests in one module
 cargo test test_fibonacci_compiles   # single test by name
 cargo test -- --nocapture            # see stdout from tests
@@ -23,6 +23,7 @@ cargo run -- ast file.yrm                  # dump AST as JSON
 cargo run -- build                         # build multi-file project (needs yorum.toml)
 cargo run -- build -o out.ll               # build project to file
 cargo run -- init myproject                # scaffold new project
+cargo run -- lsp                          # start LSP server (stdin/stdout)
 ```
 
 ### Producing native binaries (requires clang)
@@ -150,6 +151,51 @@ All standard library functions are implemented as compiler builtins (no Yorum so
 - **String utilities (10 builtins):** `str_contains`, `str_index_of`, `str_starts_with`, `str_ends_with`, `str_trim`, `str_replace`, `str_split`, `str_to_upper`, `str_to_lower`, `str_repeat`. `str_split` returns `[string]` and is special-cased in the typechecker
 - **Collection operations (11 builtins):** `slice`, `concat_arrays`, `reverse` (special-cased for generic element types), `contains_int`, `contains_str`, `sort_int`, `sort_str` (insertion sort), `map_keys`, `map_values`, `map_size`, `map_remove`
 - **Enhanced I/O (6 builtins):** `file_exists` (access), `file_append` (fopen "a"), `read_line` (fgets from stdin), `print_flush` (printf + fflush), `env_get` (getenv), `time_ms` (gettimeofday)
+
+## Completed: v0.7 — LSP Server for Editor Integration
+
+Built-in LSP server (`yorum lsp`) implementing JSON-RPC 2.0 over stdin/stdout. No new dependencies — uses `serde_json` for JSON-RPC framing.
+
+### LSP architecture
+
+- **`src/lsp/transport.rs`** — JSON-RPC 2.0 read/write over stdin/stdout with `Content-Length` framing
+- **`src/lsp/types.rs`** — Minimal serde structs for LSP protocol (positions, ranges, diagnostics, hover, locations)
+- **`src/lsp/server.rs`** — Synchronous blocking server loop with document store. Handles `initialize`, `textDocument/didOpen`, `textDocument/didChange`, `textDocument/hover`, `textDocument/definition`, `shutdown`, `exit`
+
+### LSP features
+
+- **Diagnostics:** On every document open/change, runs lex → parse → typecheck → ownership check and publishes errors with precise spans
+- **Hover:** Shows type information for variables, parameters, functions, structs, enums at cursor position
+- **Go-to-definition:** Jumps to definition site for variables and function calls (skips builtins which have no source location)
+
+### Key design decisions
+
+- **No new dependencies.** JSON-RPC transport is ~50 lines, LSP types are ~160 lines of serde structs
+- **Synchronous blocking I/O.** Simple read-process-respond loop, no async/threads
+- **Full document sync (mode 1).** Editor sends complete text on every change
+- **Symbol collection via opt-in flag.** `TypeChecker::new_with_symbols()` enables collection; normal compilation has zero overhead
+- **`def_span` on `VarInfo`/`FnSig`.** Tracks where each variable/function was defined for go-to-definition
+
+### Public API additions
+
+- `check_diagnostics(source) -> Vec<CompilerDiagnostic>` — structured error reporting with spans
+- `check_with_symbols(source) -> (Vec<CompilerDiagnostic>, Option<SymbolTable>)` — diagnostics + symbol table for hover/go-to-def
+- `TypeChecker::new_with_symbols()` — opt-in symbol collection mode
+- `SymbolTable`, `SymbolDef`, `SymbolRef`, `SymbolKind` — symbol table types (public in `compiler::typechecker`)
+
+### VS Code extension
+
+`editors/vscode/` contains a minimal VS Code extension:
+- TextMate grammar for syntax highlighting (keywords, types, strings, comments, numbers)
+- Language client that launches `yorum lsp` as a subprocess
+
+Setup:
+```bash
+cd editors/vscode
+npm install
+npm run compile
+# Then: VS Code → Extensions → Install from VSIX, or symlink to ~/.vscode/extensions/
+```
 
 ## Git Workflow
 

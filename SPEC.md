@@ -783,8 +783,10 @@ constrained by the binding context.
 ### v0.6 (Done)
 - Standard library builtins: math (17 functions), string utilities (10), collection operations (11), enhanced I/O (6)
 
-### v0.7
-- LSP server for editor integration
+### v0.7 (Done)
+- LSP server for editor integration (diagnostics, hover, go-to-definition)
+- JSON-RPC 2.0 over stdin/stdout, no new dependencies
+- VS Code extension with syntax highlighting
 
 ### v0.8
 - Formal verification of the ownership checker

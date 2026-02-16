@@ -2367,3 +2367,166 @@ fn test_io_ir_definitions() {
     assert!(ir.contains("define ptr @env_get"));
     assert!(ir.contains("define i64 @time_ms"));
 }
+
+// ═══════════════════════════════════════════════════════════════
+//  LSP diagnostics API tests
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn test_check_diagnostics_valid_program() {
+    let diags = yorum::check_diagnostics(
+        "module test;\n\
+         fn main() -> int {\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(
+        diags.is_empty(),
+        "expected no diagnostics for valid program"
+    );
+}
+
+#[test]
+fn test_check_diagnostics_type_error() {
+    let diags = yorum::check_diagnostics(
+        "module test;\n\
+         fn main() -> int {\n\
+         \x20   let x: int = true;\n\
+         \x20   return x;\n\
+         }\n",
+    );
+    assert!(!diags.is_empty(), "expected diagnostics for type error");
+    assert!(diags[0].message.contains("cannot assign"));
+    assert!(matches!(
+        diags[0].severity,
+        yorum::DiagnosticSeverity::Error
+    ));
+}
+
+#[test]
+fn test_check_diagnostics_parse_error() {
+    let diags = yorum::check_diagnostics("fn {{{");
+    assert!(!diags.is_empty(), "expected diagnostics for parse error");
+}
+
+#[test]
+fn test_check_with_symbols_returns_symbol_table() {
+    let (diags, symbols) = yorum::check_with_symbols(
+        "module test;\n\
+         fn add(a: int, b: int) -> int {\n\
+         \x20   return a + b;\n\
+         }\n\
+         fn main() -> int {\n\
+         \x20   let x: int = add(1, 2);\n\
+         \x20   return x;\n\
+         }\n",
+    );
+    assert!(diags.is_empty());
+    let sym = symbols.expect("should have symbol table");
+
+    // Should have function definitions
+    let fn_defs: Vec<_> = sym
+        .definitions
+        .iter()
+        .filter(|d| matches!(d.kind, yorum::compiler::typechecker::SymbolKind::Function))
+        .collect();
+    assert!(fn_defs.len() >= 2, "should have at least 2 function defs");
+
+    // Should have parameter definitions
+    let param_defs: Vec<_> = sym
+        .definitions
+        .iter()
+        .filter(|d| matches!(d.kind, yorum::compiler::typechecker::SymbolKind::Parameter))
+        .collect();
+    assert!(
+        param_defs.len() >= 2,
+        "should have at least 2 param defs (a, b)"
+    );
+
+    // Should have variable definitions
+    let var_defs: Vec<_> = sym
+        .definitions
+        .iter()
+        .filter(|d| matches!(d.kind, yorum::compiler::typechecker::SymbolKind::Variable))
+        .collect();
+    assert!(!var_defs.is_empty(), "should have at least 1 var def (x)");
+
+    // Should have references
+    assert!(!sym.references.is_empty(), "should have symbol references");
+
+    // Check that add() call has a reference with def_span pointing to the function
+    let add_refs: Vec<_> = sym
+        .references
+        .iter()
+        .filter(|r| r.def_name == "add")
+        .collect();
+    assert!(!add_refs.is_empty(), "should have reference to 'add'");
+    assert!(
+        add_refs.iter().any(|r| r.def_span.is_some()),
+        "add ref should have def_span"
+    );
+}
+
+#[test]
+fn test_check_with_symbols_parse_error_returns_none() {
+    let (diags, symbols) = yorum::check_with_symbols("fn {{{");
+    assert!(!diags.is_empty());
+    assert!(
+        symbols.is_none(),
+        "symbol table should be None on parse error"
+    );
+}
+
+#[test]
+fn test_check_with_symbols_struct_def() {
+    let (diags, symbols) = yorum::check_with_symbols(
+        "module test;\n\
+         struct Point {\n\
+         \x20   x: int,\n\
+         \x20   y: int,\n\
+         }\n\
+         fn main() -> int { return 0; }\n",
+    );
+    assert!(diags.is_empty());
+    let sym = symbols.unwrap();
+    let struct_defs: Vec<_> = sym
+        .definitions
+        .iter()
+        .filter(|d| matches!(d.kind, yorum::compiler::typechecker::SymbolKind::Struct))
+        .collect();
+    assert!(!struct_defs.is_empty());
+    assert!(struct_defs[0].type_desc.contains("Point"));
+}
+
+#[test]
+fn test_check_with_symbols_enum_def() {
+    let (diags, symbols) = yorum::check_with_symbols(
+        "module test;\n\
+         enum Color { Red, Green, Blue }\n\
+         fn main() -> int { return 0; }\n",
+    );
+    assert!(diags.is_empty());
+    let sym = symbols.unwrap();
+    let enum_defs: Vec<_> = sym
+        .definitions
+        .iter()
+        .filter(|d| matches!(d.kind, yorum::compiler::typechecker::SymbolKind::Enum))
+        .collect();
+    assert!(!enum_defs.is_empty());
+    assert!(enum_defs[0].type_desc.contains("Color"));
+}
+
+#[test]
+fn test_check_diagnostics_with_type_errors_still_returns_symbols() {
+    let (diags, symbols) = yorum::check_with_symbols(
+        "module test;\n\
+         fn main() -> int {\n\
+         \x20   let x: int = true;\n\
+         \x20   return x;\n\
+         }\n",
+    );
+    assert!(!diags.is_empty(), "should have type error");
+    // Symbol table should still be present even with errors
+    let sym = symbols.expect("should have symbol table even with errors");
+    assert!(!sym.definitions.is_empty());
+}

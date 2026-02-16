@@ -476,6 +476,10 @@ impl Parser {
                 self.advance();
                 Ok(Type::Str)
             }
+            TokenKind::CharType => {
+                self.advance();
+                Ok(Type::Char)
+            }
             TokenKind::UnitType => {
                 self.advance();
                 Ok(Type::Unit)
@@ -506,6 +510,10 @@ impl Parser {
             }
             TokenKind::Ident(_) => {
                 let name = self.expect_ident()?;
+                // Built-in Map type
+                if name == "Map" {
+                    return Ok(Type::Map);
+                }
                 // Check for type args: Name<T, U>
                 if self.check(&TokenKind::Lt) {
                     self.advance();
@@ -753,6 +761,11 @@ impl Parser {
                 self.advance();
                 Ok(Pattern::Literal(Literal::String(s), span))
             }
+            TokenKind::CharLit(c) => {
+                let span = self.current_span();
+                self.advance();
+                Ok(Pattern::Literal(Literal::Char(c), span))
+            }
             TokenKind::Ident(_) => {
                 let span = self.current_span();
                 let name = self.expect_ident()?;
@@ -965,6 +978,13 @@ impl Parser {
                 self.advance();
                 Ok(Expr {
                     kind: ExprKind::Literal(Literal::String(s)),
+                    span: start,
+                })
+            }
+            TokenKind::CharLit(c) => {
+                self.advance();
+                Ok(Expr {
+                    kind: ExprKind::Literal(Literal::Char(c)),
                     span: start,
                 })
             }

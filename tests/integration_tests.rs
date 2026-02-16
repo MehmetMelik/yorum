@@ -27,7 +27,7 @@ fn test_hello_world_compiles() {
          \x20   return 0;\n\
          }\n",
     );
-    assert!(ir.contains("define i64 @main()"));
+    assert!(ir.contains("define i64 @main(i32 %__argc, ptr %__argv)"));
     assert!(ir.contains("call void @print_int"));
 }
 
@@ -420,7 +420,7 @@ fn test_closure_basic() {
          }\n",
     );
     assert!(ir.contains("define i64 @__closure_0"));
-    assert!(ir.contains("define i64 @main()"));
+    assert!(ir.contains("define i64 @main(i32 %__argc, ptr %__argv)"));
 }
 
 #[test]
@@ -878,7 +878,7 @@ fn test_multi_file_compilation() {
     .unwrap();
 
     let ir = yorum::compile_project(dir.path()).expect("multi-file compilation failed");
-    assert!(ir.contains("define i64 @main()"));
+    assert!(ir.contains("define i64 @main(i32 %__argc, ptr %__argv)"));
     assert!(ir.contains("define i64 @math__add(i64 %a, i64 %b)"));
     // Internal helper should NOT be in the output
     assert!(!ir.contains("internal_helper"));
@@ -971,7 +971,7 @@ fn test_yorum_init_creates_scaffold() {
     assert!(project_dir.join("yorum.toml").exists());
     assert!(project_dir.join("src/main.yrm").exists());
     let ir = yorum::compile_project(&project_dir).expect("scaffold project should compile");
-    assert!(ir.contains("define i64 @main()"));
+    assert!(ir.contains("define i64 @main(i32 %__argc, ptr %__argv)"));
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1067,4 +1067,705 @@ fn test_pure_cannot_spawn() {
     assert!(result.is_err());
     let msg = result.unwrap_err();
     assert!(msg.contains("pure function cannot use spawn"));
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  Char type tests
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn test_char_literal_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let c: char = 'a';\n\
+         \x20   print_char(c);\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("@print_char"));
+    assert!(ir.contains("i8"));
+}
+
+#[test]
+fn test_char_comparison_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let c: char = 'x';\n\
+         \x20   if c == 'x' { return 1; }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("icmp eq i8"));
+}
+
+#[test]
+fn test_char_ordering_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let c: char = 'b';\n\
+         \x20   if c >= 'a' { return 1; }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("icmp sge i8"));
+}
+
+#[test]
+fn test_char_to_int_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let c: char = 'A';\n\
+         \x20   let n: int = char_to_int(c);\n\
+         \x20   return n;\n\
+         }\n",
+    );
+    assert!(ir.contains("@char_to_int"));
+    assert!(ir.contains("zext i8"));
+}
+
+#[test]
+fn test_int_to_char_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let c: char = int_to_char(65);\n\
+         \x20   print_char(c);\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("@int_to_char"));
+    assert!(ir.contains("trunc i64"));
+}
+
+#[test]
+fn test_int_to_float_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let f: float = int_to_float(42);\n\
+         \x20   print_float(f);\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("@int_to_float"));
+    assert!(ir.contains("sitofp i64"));
+}
+
+#[test]
+fn test_float_to_int_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let n: int = float_to_int(3.14);\n\
+         \x20   return n;\n\
+         }\n",
+    );
+    assert!(ir.contains("@float_to_int"));
+    assert!(ir.contains("fptosi double"));
+}
+
+#[test]
+fn test_int_to_str_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let s: string = int_to_str(42);\n\
+         \x20   print_str(s);\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("@int_to_str"));
+    assert!(ir.contains("@snprintf"));
+}
+
+#[test]
+fn test_str_to_int_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let n: int = str_to_int(\"42\");\n\
+         \x20   return n;\n\
+         }\n",
+    );
+    assert!(ir.contains("@str_to_int"));
+    assert!(ir.contains("@atol"));
+}
+
+#[test]
+fn test_char_typecheck_errors() {
+    // Cannot add chars
+    let result = yorum::typecheck(
+        "fn f() -> char {\n\
+         \x20   let a: char = 'a';\n\
+         \x20   let b: char = 'b';\n\
+         \x20   return a + b;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+
+    // Cannot assign int to char
+    let result = yorum::typecheck(
+        "fn f() -> int {\n\
+         \x20   let c: char = 42;\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_char_escape_in_literal() {
+    parse_and_check(
+        "fn main() -> int {\n\
+         \x20   let nl: char = '\\n';\n\
+         \x20   let tab: char = '\\t';\n\
+         \x20   let nul: char = '\\0';\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+}
+
+#[test]
+fn test_casting_type_errors() {
+    // char_to_int expects char, not int
+    let result = yorum::typecheck("fn f() -> int { return char_to_int(42); }");
+    assert!(result.is_err());
+
+    // int_to_char expects int, not string
+    let result = yorum::typecheck("fn f() -> char { return int_to_char(\"hello\"); }");
+    assert!(result.is_err());
+
+    // float_to_int expects float, not int
+    let result = yorum::typecheck("fn f() -> int { return float_to_int(42); }");
+    assert!(result.is_err());
+}
+
+// ── Phase 1b: String/char operations ─────────────────────
+
+#[test]
+fn test_str_char_at_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let s: string = \"hello\";\n\
+         \x20   let c: char = str_charAt(s, 0);\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call i8 @str_charAt"));
+    assert!(ir.contains("@strlen"));
+}
+
+#[test]
+fn test_str_sub_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let s: string = \"hello world\";\n\
+         \x20   let sub: string = str_sub(s, 0, 5);\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call ptr @str_sub"));
+    assert!(ir.contains("@memcpy"));
+}
+
+#[test]
+fn test_str_from_char_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let c: char = 'x';\n\
+         \x20   let s: string = str_from_char(c);\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call ptr @str_from_char"));
+}
+
+#[test]
+fn test_char_is_alpha_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let c: char = 'a';\n\
+         \x20   let result: bool = char_is_alpha(c);\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call i1 @char_is_alpha"));
+}
+
+#[test]
+fn test_char_is_digit_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let c: char = '5';\n\
+         \x20   let result: bool = char_is_digit(c);\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call i1 @char_is_digit"));
+}
+
+#[test]
+fn test_char_is_whitespace_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let c: char = ' ';\n\
+         \x20   let result: bool = char_is_whitespace(c);\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call i1 @char_is_whitespace"));
+}
+
+#[test]
+fn test_str_char_ops_typecheck() {
+    parse_and_check(
+        "fn main() -> int {\n\
+         \x20   let s: string = \"hello\";\n\
+         \x20   let c: char = str_charAt(s, 0);\n\
+         \x20   let sub: string = str_sub(s, 1, 3);\n\
+         \x20   let s2: string = str_from_char(c);\n\
+         \x20   let a: bool = char_is_alpha(c);\n\
+         \x20   let d: bool = char_is_digit(c);\n\
+         \x20   let w: bool = char_is_whitespace(c);\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+}
+
+#[test]
+fn test_str_char_ops_type_errors() {
+    // str_charAt expects (string, int), not (int, int)
+    let result = yorum::typecheck("fn f() -> char { return str_charAt(42, 0); }");
+    assert!(result.is_err());
+
+    // str_sub expects (string, int, int), not (string, string, int)
+    let result = yorum::typecheck("fn f() -> string { return str_sub(\"hi\", \"a\", 1); }");
+    assert!(result.is_err());
+
+    // str_from_char expects char, not string
+    let result = yorum::typecheck("fn f() -> string { return str_from_char(\"x\"); }");
+    assert!(result.is_err());
+
+    // char_is_alpha expects char, not int
+    let result = yorum::typecheck("fn f() -> bool { return char_is_alpha(42); }");
+    assert!(result.is_err());
+
+    // char_is_digit expects char, not string
+    let result = yorum::typecheck("fn f() -> bool { return char_is_digit(\"5\"); }");
+    assert!(result.is_err());
+
+    // char_is_whitespace expects char, not bool
+    let result = yorum::typecheck("fn f() -> bool { return char_is_whitespace(true); }");
+    assert!(result.is_err());
+}
+
+// ── Phase 1c: Dynamic arrays (push/pop) ─────────────────
+
+#[test]
+fn test_push_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let mut arr: [int] = [1, 2, 3];\n\
+         \x20   push(arr, 4);\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("@realloc"));
+    assert!(ir.contains("push.grow"));
+    assert!(ir.contains("push.store"));
+}
+
+#[test]
+fn test_pop_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let mut arr: [int] = [1, 2, 3];\n\
+         \x20   let val: int = pop(arr);\n\
+         \x20   return val;\n\
+         }\n",
+    );
+    assert!(ir.contains("pop.fail"));
+    assert!(ir.contains("pop.ok"));
+    assert!(ir.contains("@.fmt.pop_empty"));
+}
+
+#[test]
+fn test_push_pop_typecheck() {
+    parse_and_check(
+        "fn main() -> int {\n\
+         \x20   let mut arr: [int] = [10, 20];\n\
+         \x20   push(arr, 30);\n\
+         \x20   let v: int = pop(arr);\n\
+         \x20   return v;\n\
+         }\n",
+    );
+}
+
+#[test]
+fn test_push_type_mismatch() {
+    // push: array expects int, got string
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20   let mut arr: [int] = [1, 2];\n\
+         \x20   push(arr, \"hello\");\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_push_non_array() {
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20   let x: int = 5;\n\
+         \x20   push(x, 10);\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_pop_non_array() {
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20   let x: int = 5;\n\
+         \x20   let v: int = pop(x);\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_push_wrong_arg_count() {
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20   let mut arr: [int] = [1];\n\
+         \x20   push(arr);\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_array_capacity_field_in_ir() {
+    // Verify the new { ptr, i64, i64 } layout is used
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   return len(arr);\n\
+         }\n",
+    );
+    assert!(ir.contains("{ ptr, i64, i64 }"));
+}
+
+#[test]
+fn test_push_growth() {
+    // Multiple pushes should trigger growth (capacity starts at element count)
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let mut arr: [int] = [1];\n\
+         \x20   push(arr, 2);\n\
+         \x20   push(arr, 3);\n\
+         \x20   push(arr, 4);\n\
+         \x20   push(arr, 5);\n\
+         \x20   return len(arr);\n\
+         }\n",
+    );
+    assert!(ir.contains("@realloc"));
+    assert!(ir.contains("select"));
+}
+
+// ── Phase 1d: File I/O ──────────────────────────────────
+
+#[test]
+fn test_file_read_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let content: string = file_read(\"test.txt\");\n\
+         \x20   print_str(content);\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call ptr @file_read"));
+    assert!(ir.contains("@fopen"));
+    assert!(ir.contains("@fread"));
+}
+
+#[test]
+fn test_file_write_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let ok: bool = file_write(\"out.txt\", \"hello\");\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call i1 @file_write"));
+    assert!(ir.contains("@fwrite"));
+}
+
+#[test]
+fn test_print_err_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   print_err(\"error message\");\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call void @print_err"));
+    assert!(ir.contains("@write"));
+}
+
+#[test]
+fn test_file_io_typecheck() {
+    parse_and_check(
+        "fn main() -> int {\n\
+         \x20   let content: string = file_read(\"input.txt\");\n\
+         \x20   let ok: bool = file_write(\"output.txt\", content);\n\
+         \x20   print_err(\"done\");\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+}
+
+#[test]
+fn test_file_io_type_errors() {
+    // file_read expects string, not int
+    let result = yorum::typecheck("fn f() -> string { return file_read(42); }");
+    assert!(result.is_err());
+
+    // file_write expects (string, string), not (string, int)
+    let result = yorum::typecheck("fn f() -> bool { return file_write(\"a.txt\", 42); }");
+    assert!(result.is_err());
+
+    // print_err expects string, not bool
+    let result = yorum::typecheck("fn f() { print_err(true); }");
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_file_io_pure_rejected() {
+    // file_read is impure
+    let result = yorum::typecheck("pure fn f() -> string { return file_read(\"x\"); }");
+    assert!(result.is_err());
+
+    // file_write is impure
+    let result = yorum::typecheck("pure fn f() -> bool { return file_write(\"x\", \"y\"); }");
+    assert!(result.is_err());
+}
+
+// ── Phase 1e: Process interaction ───────────────────────
+
+#[test]
+fn test_exit_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   exit(1);\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("trunc i64"));
+    assert!(ir.contains("call void @exit(i32"));
+}
+
+#[test]
+fn test_args_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let a: [string] = args();\n\
+         \x20   let n: int = len(a);\n\
+         \x20   return n;\n\
+         }\n",
+    );
+    assert!(ir.contains("@__yorum_argc"));
+    assert!(ir.contains("@__yorum_argv"));
+    assert!(ir.contains("@memcpy"));
+}
+
+#[test]
+fn test_main_has_argc_argv() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("define i64 @main(i32 %__argc, ptr %__argv)"));
+}
+
+#[test]
+fn test_args_typecheck() {
+    parse_and_check(
+        "fn main() -> int {\n\
+         \x20   let a: [string] = args();\n\
+         \x20   let first: string = a[0];\n\
+         \x20   print_str(first);\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+}
+
+#[test]
+fn test_exit_typecheck() {
+    parse_and_check(
+        "fn main() -> int {\n\
+         \x20   exit(0);\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+}
+
+#[test]
+fn test_process_type_errors() {
+    // exit expects int, not string
+    let result = yorum::typecheck("fn f() { exit(\"bad\"); }");
+    assert!(result.is_err());
+
+    // args takes no arguments
+    let result = yorum::typecheck("fn f() -> int { let a: [string] = args(42); return 0; }");
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_process_pure_rejected() {
+    let result = yorum::typecheck("pure fn f() { exit(0); }");
+    assert!(result.is_err());
+
+    let result = yorum::typecheck("pure fn f() -> int { let a: [string] = args(); return 0; }");
+    assert!(result.is_err());
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  P1f: HashMap tests
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn test_map_new_compiles() {
+    let ir = compile(
+        "fn main() -> int {\
+           let m: Map = map_new();\
+           return 0;\
+         }",
+    );
+    assert!(ir.contains("@map_new"));
+}
+
+#[test]
+fn test_map_set_compiles() {
+    let ir = compile(
+        "fn main() -> int {\
+           let m: Map = map_new();\
+           map_set(m, \"hello\", 42);\
+           return 0;\
+         }",
+    );
+    assert!(ir.contains("@map_set"));
+}
+
+#[test]
+fn test_map_get_compiles() {
+    let ir = compile(
+        "fn main() -> int {\
+           let m: Map = map_new();\
+           map_set(m, \"x\", 10);\
+           let v: int = map_get(m, \"x\");\
+           print_int(v);\
+           return 0;\
+         }",
+    );
+    assert!(ir.contains("@map_get"));
+}
+
+#[test]
+fn test_map_has_compiles() {
+    let ir = compile(
+        "fn main() -> int {\
+           let m: Map = map_new();\
+           map_set(m, \"key\", 1);\
+           let found: bool = map_has(m, \"key\");\
+           print_bool(found);\
+           return 0;\
+         }",
+    );
+    assert!(ir.contains("@map_has"));
+}
+
+#[test]
+fn test_map_typecheck() {
+    parse_and_check(
+        "fn main() -> int {\
+           let m: Map = map_new();\
+           map_set(m, \"a\", 1);\
+           let v: int = map_get(m, \"a\");\
+           let b: bool = map_has(m, \"a\");\
+           return 0;\
+         }",
+    );
+}
+
+#[test]
+fn test_map_type_errors() {
+    // map_set with wrong key type
+    let result = yorum::typecheck(
+        "fn main() -> int {\
+           let m: Map = map_new();\
+           map_set(m, 42, 1);\
+           return 0;\
+         }",
+    );
+    assert!(result.is_err());
+
+    // map_get with wrong key type
+    let result = yorum::typecheck(
+        "fn main() -> int {\
+           let m: Map = map_new();\
+           let v: int = map_get(m, 42);\
+           return 0;\
+         }",
+    );
+    assert!(result.is_err());
+
+    // map_get returns int, not string
+    let result = yorum::typecheck(
+        "fn main() -> int {\
+           let m: Map = map_new();\
+           let v: string = map_get(m, \"x\");\
+           return 0;\
+         }",
+    );
+    assert!(result.is_err());
+
+    // map_new takes no arguments
+    let result = yorum::typecheck(
+        "fn main() -> int {\
+           let m: Map = map_new(10);\
+           return 0;\
+         }",
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_map_pure_rejected() {
+    // map_new is impure (allocates)
+    let result = yorum::typecheck("pure fn f() -> Map { return map_new(); }");
+    assert!(result.is_err());
+
+    // map_set is impure
+    let result = yorum::typecheck("pure fn f(m: Map) { map_set(m, \"k\", 1); }");
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_map_ir_contains_helpers() {
+    let ir = compile(
+        "fn main() -> int {\
+           let m: Map = map_new();\
+           return 0;\
+         }",
+    );
+    assert!(ir.contains("@__yorum_hash_string"));
+    assert!(ir.contains("@__yorum_map_find_slot"));
+    assert!(ir.contains("@__yorum_map_grow"));
+    assert!(ir.contains("define ptr @map_new"));
+    assert!(ir.contains("define void @map_set"));
+    assert!(ir.contains("define i64 @map_get"));
+    assert!(ir.contains("define i1 @map_has"));
 }

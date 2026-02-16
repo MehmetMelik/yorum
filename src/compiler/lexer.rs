@@ -145,6 +145,7 @@ impl Lexer {
             }
 
             '"' => return self.lex_string(start, start_line, start_col),
+            '\'' => return self.lex_char(start, start_line, start_col),
 
             c if c.is_ascii_digit() => {
                 return self.lex_number(start, start_line, start_col);
@@ -293,6 +294,59 @@ impl Lexer {
 
         Ok(Token::new(
             TokenKind::StringLit(value),
+            Span::new(start, self.pos, start_line, start_col),
+        ))
+    }
+
+    fn lex_char(
+        &mut self,
+        start: usize,
+        start_line: u32,
+        start_col: u32,
+    ) -> Result<Token, LexError> {
+        if self.is_at_end() {
+            return Err(LexError {
+                message: "unterminated character literal".to_string(),
+                span: Span::new(start, self.pos, start_line, start_col),
+            });
+        }
+
+        let c = self.advance();
+        let value = if c == '\\' {
+            if self.is_at_end() {
+                return Err(LexError {
+                    message: "unterminated escape sequence in character literal".to_string(),
+                    span: Span::new(start, self.pos, start_line, start_col),
+                });
+            }
+            let escaped = self.advance();
+            match escaped {
+                'n' => '\n',
+                't' => '\t',
+                'r' => '\r',
+                '\\' => '\\',
+                '\'' => '\'',
+                '0' => '\0',
+                other => {
+                    return Err(LexError {
+                        message: format!("unknown escape sequence '\\{}'", other),
+                        span: Span::new(start, self.pos, start_line, start_col),
+                    });
+                }
+            }
+        } else {
+            c
+        };
+
+        if self.is_at_end() || self.advance() != '\'' {
+            return Err(LexError {
+                message: "unterminated character literal, expected closing '".to_string(),
+                span: Span::new(start, self.pos, start_line, start_col),
+            });
+        }
+
+        Ok(Token::new(
+            TokenKind::CharLit(value),
             Span::new(start, self.pos, start_line, start_col),
         ))
     }
@@ -497,6 +551,44 @@ mod tests {
                 TokenKind::Ensures,
                 TokenKind::Effects,
                 TokenKind::Pure,
+                TokenKind::EOF,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_char_literal() {
+        let tokens = lex("'a'");
+        assert_eq!(tokens, vec![TokenKind::CharLit('a'), TokenKind::EOF]);
+    }
+
+    #[test]
+    fn test_char_escape_sequences() {
+        let tokens = lex(r"'\n' '\t' '\\'");
+        assert_eq!(
+            tokens,
+            vec![
+                TokenKind::CharLit('\n'),
+                TokenKind::CharLit('\t'),
+                TokenKind::CharLit('\\'),
+                TokenKind::EOF,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_char_type_keyword() {
+        let tokens = lex("let c: char = 'x';");
+        assert_eq!(
+            tokens,
+            vec![
+                TokenKind::Let,
+                TokenKind::Ident("c".into()),
+                TokenKind::Colon,
+                TokenKind::CharType,
+                TokenKind::Eq,
+                TokenKind::CharLit('x'),
+                TokenKind::Semicolon,
                 TokenKind::EOF,
             ]
         );

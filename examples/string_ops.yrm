@@ -1,0 +1,63 @@
+// String/char operation builtins (Phase 1b)
+
+fn main() -> int {
+    let s: string = "Hello, World!";
+
+    // str_charAt — index into string
+    let first: char = str_charAt(s, 0);
+    print_char(first);
+    let nl: char = '\n';
+    print_char(nl);
+
+    // str_sub — substring extraction
+    let hello: string = str_sub(s, 0, 5);
+    print_str(hello);
+
+    let world: string = str_sub(s, 7, 5);
+    print_str(world);
+
+    // str_from_char — char to single-char string
+    let bang: string = str_from_char('!');
+    let greeting: string = str_concat(hello, bang);
+    print_str(greeting);
+
+    // char_is_alpha — check if alphabetic
+    let letter: char = 'Z';
+    if char_is_alpha(letter) {
+        print_str("Z is alpha");
+    }
+
+    // char_is_digit — check if numeric
+    let digit: char = '7';
+    if char_is_digit(digit) {
+        print_str("7 is a digit");
+    }
+
+    // char_is_whitespace — check whitespace
+    let space: char = ' ';
+    if char_is_whitespace(space) {
+        print_str("space is whitespace");
+    }
+
+    // Combining: classify each char in "aB3 "
+    let test: string = "aB3 ";
+    let c0: char = str_charAt(test, 0);
+    let c1: char = str_charAt(test, 1);
+    let c2: char = str_charAt(test, 2);
+    let c3: char = str_charAt(test, 3);
+
+    if char_is_alpha(c0) {
+        print_str("'a' is alpha");
+    }
+    if char_is_alpha(c1) {
+        print_str("'B' is alpha");
+    }
+    if char_is_digit(c2) {
+        print_str("'3' is digit");
+    }
+    if char_is_whitespace(c3) {
+        print_str("' ' is whitespace");
+    }
+
+    return 0;
+}

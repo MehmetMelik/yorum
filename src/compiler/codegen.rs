@@ -147,6 +147,40 @@ impl Codegen {
         self.fn_ret_types
             .insert("str_concat".to_string(), Type::Str);
         self.fn_ret_types.insert("str_eq".to_string(), Type::Bool);
+        self.fn_ret_types
+            .insert("print_char".to_string(), Type::Unit);
+        self.fn_ret_types
+            .insert("char_to_int".to_string(), Type::Int);
+        self.fn_ret_types
+            .insert("int_to_char".to_string(), Type::Char);
+        self.fn_ret_types
+            .insert("int_to_float".to_string(), Type::Float);
+        self.fn_ret_types
+            .insert("float_to_int".to_string(), Type::Int);
+        self.fn_ret_types
+            .insert("int_to_str".to_string(), Type::Str);
+        self.fn_ret_types
+            .insert("str_to_int".to_string(), Type::Int);
+        self.fn_ret_types
+            .insert("str_charAt".to_string(), Type::Char);
+        self.fn_ret_types.insert("str_sub".to_string(), Type::Str);
+        self.fn_ret_types
+            .insert("str_from_char".to_string(), Type::Str);
+        self.fn_ret_types
+            .insert("char_is_alpha".to_string(), Type::Bool);
+        self.fn_ret_types
+            .insert("char_is_digit".to_string(), Type::Bool);
+        self.fn_ret_types
+            .insert("char_is_whitespace".to_string(), Type::Bool);
+        self.fn_ret_types.insert("file_read".to_string(), Type::Str);
+        self.fn_ret_types
+            .insert("file_write".to_string(), Type::Bool);
+        self.fn_ret_types
+            .insert("print_err".to_string(), Type::Unit);
+        self.fn_ret_types.insert("map_new".to_string(), Type::Map);
+        self.fn_ret_types.insert("map_set".to_string(), Type::Unit);
+        self.fn_ret_types.insert("map_get".to_string(), Type::Int);
+        self.fn_ret_types.insert("map_has".to_string(), Type::Bool);
 
         // Register function return types (including impl methods with mangled names)
         for decl in &program.declarations {
@@ -236,7 +270,29 @@ impl Codegen {
         self.globals
             .push_str("declare i32 @pthread_cond_destroy(ptr)\n");
         self.globals
-            .push_str("declare ptr @memcpy(ptr, ptr, i64)\n\n");
+            .push_str("declare ptr @memcpy(ptr, ptr, i64)\n");
+        self.globals
+            .push_str("declare i32 @snprintf(ptr, i64, ptr, ...)\n");
+        self.globals.push_str("declare i64 @atol(ptr)\n");
+        self.globals.push_str("declare i32 @putchar(i32)\n");
+        self.globals.push_str("declare ptr @realloc(ptr, i64)\n");
+        self.globals.push_str("declare ptr @fopen(ptr, ptr)\n");
+        self.globals.push_str("declare i32 @fclose(ptr)\n");
+        self.globals.push_str("declare i32 @fseek(ptr, i64, i32)\n");
+        self.globals.push_str("declare i64 @ftell(ptr)\n");
+        self.globals
+            .push_str("declare i64 @fread(ptr, i64, i64, ptr)\n");
+        self.globals
+            .push_str("declare i64 @fwrite(ptr, i64, i64, ptr)\n");
+        self.globals.push_str("declare i64 @write(i32, ptr, i64)\n");
+        self.globals.push_str("declare void @exit(i32)\n");
+        self.globals
+            .push_str("declare ptr @memset(ptr, i32, i64)\n\n");
+        // Globals for command-line arguments (stored by main)
+        self.globals
+            .push_str("@__yorum_argc = internal global i32 0\n");
+        self.globals
+            .push_str("@__yorum_argv = internal global ptr null\n\n");
 
         // Format strings (%lld\n\0 = 6 bytes, %f\n\0 = 4 bytes)
         self.globals
@@ -251,8 +307,22 @@ impl Codegen {
             "@.fmt.bounds = private unnamed_addr constant [40 x i8] c\"array index out of bounds: %lld >= %lld\\00\"\n",
         );
         self.globals.push_str(
-            "@.fmt.contract = private unnamed_addr constant [27 x i8] c\"contract violation: %s\\0A\\00\"\n",
+            "@.fmt.contract = private unnamed_addr constant [24 x i8] c\"contract violation: %s\\0A\\00\"\n",
         );
+        self.globals
+            .push_str("@.fmt.lld = private unnamed_addr constant [5 x i8] c\"%lld\\00\"\n");
+        self.globals.push_str(
+            "@.fmt.pop_empty = private unnamed_addr constant [22 x i8] c\"pop from empty array\\0A\\00\"\n",
+        );
+        self.globals.push_str(
+            "@.fmt.map_key = private unnamed_addr constant [25 x i8] c\"map key not found: '%s'\\0A\\00\"\n",
+        );
+        self.globals
+            .push_str("@.str.r = private unnamed_addr constant [2 x i8] c\"r\\00\"\n");
+        self.globals
+            .push_str("@.str.w = private unnamed_addr constant [2 x i8] c\"w\\00\"\n");
+        self.globals
+            .push_str("@.str.newline = private unnamed_addr constant [1 x i8] c\"\\0A\"\n");
         self.globals.push('\n');
     }
 
@@ -405,6 +475,428 @@ impl Codegen {
              \x20 ret i64 %val\n\
              }\n\n",
         );
+
+        // print_char — prints a single character
+        self.body.push_str(
+            "define void @print_char(i8 %c) {\n\
+             entry:\n\
+             \x20 %ext = zext i8 %c to i32\n\
+             \x20 call i32 @putchar(i32 %ext)\n\
+             \x20 ret void\n\
+             }\n\n",
+        );
+        // char_to_int — zero-extends i8 to i64
+        self.body.push_str(
+            "define i64 @char_to_int(i8 %c) {\n\
+             entry:\n\
+             \x20 %ext = zext i8 %c to i64\n\
+             \x20 ret i64 %ext\n\
+             }\n\n",
+        );
+        // int_to_char — truncates i64 to i8
+        self.body.push_str(
+            "define i8 @int_to_char(i64 %n) {\n\
+             entry:\n\
+             \x20 %trunc = trunc i64 %n to i8\n\
+             \x20 ret i8 %trunc\n\
+             }\n\n",
+        );
+        // int_to_float — converts i64 to double
+        self.body.push_str(
+            "define double @int_to_float(i64 %n) {\n\
+             entry:\n\
+             \x20 %f = sitofp i64 %n to double\n\
+             \x20 ret double %f\n\
+             }\n\n",
+        );
+        // float_to_int — converts double to i64
+        self.body.push_str(
+            "define i64 @float_to_int(double %f) {\n\
+             entry:\n\
+             \x20 %n = fptosi double %f to i64\n\
+             \x20 ret i64 %n\n\
+             }\n\n",
+        );
+        // int_to_str — converts i64 to heap-allocated decimal string
+        self.body.push_str(
+            "define ptr @int_to_str(i64 %n) {\n\
+             entry:\n\
+             \x20 %buf = call ptr @malloc(i64 24)\n\
+             \x20 call i32 (ptr, i64, ptr, ...) @snprintf(ptr %buf, i64 24, ptr @.fmt.lld, i64 %n)\n\
+             \x20 ret ptr %buf\n\
+             }\n\n",
+        );
+        // str_to_int — parses string to i64
+        self.body.push_str(
+            "define i64 @str_to_int(ptr %s) {\n\
+             entry:\n\
+             \x20 %n = call i64 @atol(ptr %s)\n\
+             \x20 ret i64 %n\n\
+             }\n\n",
+        );
+        // str_charAt — index into string with bounds check, returns i8
+        self.body.push_str(
+            "define i8 @str_charAt(ptr %s, i64 %i) {\n\
+             entry:\n\
+             \x20 %len = call i64 @strlen(ptr %s)\n\
+             \x20 call void @__yorum_bounds_check(i64 %i, i64 %len)\n\
+             \x20 %ptr = getelementptr i8, ptr %s, i64 %i\n\
+             \x20 %c = load i8, ptr %ptr\n\
+             \x20 ret i8 %c\n\
+             }\n\n",
+        );
+        // str_sub — extract substring: str_sub(s, start, len) -> string
+        self.body.push_str(
+            "define ptr @str_sub(ptr %s, i64 %start, i64 %len) {\n\
+             entry:\n\
+             \x20 %total = add i64 %len, 1\n\
+             \x20 %buf = call ptr @malloc(i64 %total)\n\
+             \x20 %src = getelementptr i8, ptr %s, i64 %start\n\
+             \x20 call ptr @memcpy(ptr %buf, ptr %src, i64 %len)\n\
+             \x20 %end = getelementptr i8, ptr %buf, i64 %len\n\
+             \x20 store i8 0, ptr %end\n\
+             \x20 ret ptr %buf\n\
+             }\n\n",
+        );
+        // str_from_char — convert a char to a single-character string
+        self.body.push_str(
+            "define ptr @str_from_char(i8 %c) {\n\
+             entry:\n\
+             \x20 %buf = call ptr @malloc(i64 2)\n\
+             \x20 store i8 %c, ptr %buf\n\
+             \x20 %end = getelementptr i8, ptr %buf, i64 1\n\
+             \x20 store i8 0, ptr %end\n\
+             \x20 ret ptr %buf\n\
+             }\n\n",
+        );
+        // char_is_alpha — returns true if c is a-z or A-Z
+        self.body.push_str(
+            "define i1 @char_is_alpha(i8 %c) {\n\
+             entry:\n\
+             \x20 %ge_a = icmp sge i8 %c, 97\n\
+             \x20 %le_z = icmp sle i8 %c, 122\n\
+             \x20 %lower = and i1 %ge_a, %le_z\n\
+             \x20 %ge_A = icmp sge i8 %c, 65\n\
+             \x20 %le_Z = icmp sle i8 %c, 90\n\
+             \x20 %upper = and i1 %ge_A, %le_Z\n\
+             \x20 %result = or i1 %lower, %upper\n\
+             \x20 ret i1 %result\n\
+             }\n\n",
+        );
+        // char_is_digit — returns true if c is 0-9
+        self.body.push_str(
+            "define i1 @char_is_digit(i8 %c) {\n\
+             entry:\n\
+             \x20 %ge_0 = icmp sge i8 %c, 48\n\
+             \x20 %le_9 = icmp sle i8 %c, 57\n\
+             \x20 %result = and i1 %ge_0, %le_9\n\
+             \x20 ret i1 %result\n\
+             }\n\n",
+        );
+        // char_is_whitespace — returns true if c is space, tab, newline, or carriage return
+        self.body.push_str(
+            "define i1 @char_is_whitespace(i8 %c) {\n\
+             entry:\n\
+             \x20 %is_space = icmp eq i8 %c, 32\n\
+             \x20 %is_tab = icmp eq i8 %c, 9\n\
+             \x20 %is_nl = icmp eq i8 %c, 10\n\
+             \x20 %is_cr = icmp eq i8 %c, 13\n\
+             \x20 %or1 = or i1 %is_space, %is_tab\n\
+             \x20 %or2 = or i1 %or1, %is_nl\n\
+             \x20 %result = or i1 %or2, %is_cr\n\
+             \x20 ret i1 %result\n\
+             }\n\n",
+        );
+        // file_read — reads entire file into a heap-allocated string
+        self.body.push_str(
+            "define ptr @file_read(ptr %path) {\n\
+             entry:\n\
+             \x20 %f = call ptr @fopen(ptr %path, ptr @.str.r)\n\
+             \x20 %is_null = icmp eq ptr %f, null\n\
+             \x20 br i1 %is_null, label %fail, label %opened\n\
+             fail:\n\
+             \x20 %empty = call ptr @malloc(i64 1)\n\
+             \x20 store i8 0, ptr %empty\n\
+             \x20 ret ptr %empty\n\
+             opened:\n\
+             \x20 call i32 @fseek(ptr %f, i64 0, i32 2)\n\
+             \x20 %size = call i64 @ftell(ptr %f)\n\
+             \x20 call i32 @fseek(ptr %f, i64 0, i32 0)\n\
+             \x20 %buf_size = add i64 %size, 1\n\
+             \x20 %buf = call ptr @malloc(i64 %buf_size)\n\
+             \x20 call i64 @fread(ptr %buf, i64 1, i64 %size, ptr %f)\n\
+             \x20 %end = getelementptr i8, ptr %buf, i64 %size\n\
+             \x20 store i8 0, ptr %end\n\
+             \x20 call i32 @fclose(ptr %f)\n\
+             \x20 ret ptr %buf\n\
+             }\n\n",
+        );
+        // file_write — writes string to file, returns true on success
+        self.body.push_str(
+            "define i1 @file_write(ptr %path, ptr %content) {\n\
+             entry:\n\
+             \x20 %f = call ptr @fopen(ptr %path, ptr @.str.w)\n\
+             \x20 %is_null = icmp eq ptr %f, null\n\
+             \x20 br i1 %is_null, label %fail, label %opened\n\
+             fail:\n\
+             \x20 ret i1 0\n\
+             opened:\n\
+             \x20 %len = call i64 @strlen(ptr %content)\n\
+             \x20 %written = call i64 @fwrite(ptr %content, i64 1, i64 %len, ptr %f)\n\
+             \x20 call i32 @fclose(ptr %f)\n\
+             \x20 %ok = icmp eq i64 %written, %len\n\
+             \x20 ret i1 %ok\n\
+             }\n\n",
+        );
+        // print_err — writes string to stderr (fd 2) with newline
+        self.body.push_str(
+            "define void @print_err(ptr %s) {\n\
+             entry:\n\
+             \x20 %len = call i64 @strlen(ptr %s)\n\
+             \x20 call i64 @write(i32 2, ptr %s, i64 %len)\n\
+             \x20 call i64 @write(i32 2, ptr @.str.newline, i64 1)\n\
+             \x20 ret void\n\
+             }\n\n",
+        );
+
+        // ── HashMap helpers ──
+        // Map struct layout (40 bytes):
+        //   offset 0:  ptr keys     (array of ptr to C strings)
+        //   offset 8:  ptr values   (array of i64)
+        //   offset 16: ptr flags    (array of i8: 0=empty, 1=occupied)
+        //   offset 24: i64 capacity
+        //   offset 32: i64 size
+
+        // __yorum_hash_string — FNV-1a hash
+        self.body.push_str(
+            "define i64 @__yorum_hash_string(ptr %s) {\n\
+             entry:\n\
+             \x20 br label %loop\n\
+             loop:\n\
+             \x20 %i = phi i64 [ 0, %entry ], [ %i_next, %cont ]\n\
+             \x20 %h = phi i64 [ -3750763034362895579, %entry ], [ %h3, %cont ]\n\
+             \x20 %cp = getelementptr i8, ptr %s, i64 %i\n\
+             \x20 %c = load i8, ptr %cp\n\
+             \x20 %done = icmp eq i8 %c, 0\n\
+             \x20 br i1 %done, label %end, label %cont\n\
+             cont:\n\
+             \x20 %cv = zext i8 %c to i64\n\
+             \x20 %h2 = xor i64 %h, %cv\n\
+             \x20 %h3 = mul i64 %h2, 1099511628211\n\
+             \x20 %i_next = add i64 %i, 1\n\
+             \x20 br label %loop\n\
+             end:\n\
+             \x20 ret i64 %h\n\
+             }\n\n",
+        );
+
+        // __yorum_map_find_slot — find slot for key (used by set/get/has)
+        // Returns index of matching slot or first empty slot.
+        // %map = ptr to map struct, %key = ptr to C string
+        // Also takes %cap = capacity for convenience.
+        self.body.push_str(
+            "define i64 @__yorum_map_find_slot(ptr %map, ptr %key, i64 %cap) {\n\
+             entry:\n\
+             \x20 %hash = call i64 @__yorum_hash_string(ptr %key)\n\
+             \x20 %mask = sub i64 %cap, 1\n\
+             \x20 %start = and i64 %hash, %mask\n\
+             \x20 %keys_p = load ptr, ptr %map\n\
+             \x20 %flags_pp = getelementptr i8, ptr %map, i64 16\n\
+             \x20 %flags_p = load ptr, ptr %flags_pp\n\
+             \x20 br label %probe\n\
+             probe:\n\
+             \x20 %idx = phi i64 [ %start, %entry ], [ %next, %advance ]\n\
+             \x20 %fp = getelementptr i8, ptr %flags_p, i64 %idx\n\
+             \x20 %flag = load i8, ptr %fp\n\
+             \x20 %is_empty = icmp eq i8 %flag, 0\n\
+             \x20 br i1 %is_empty, label %done, label %check_key\n\
+             check_key:\n\
+             \x20 %kp = getelementptr ptr, ptr %keys_p, i64 %idx\n\
+             \x20 %k = load ptr, ptr %kp\n\
+             \x20 %cmp = call i32 @strcmp(ptr %k, ptr %key)\n\
+             \x20 %eq = icmp eq i32 %cmp, 0\n\
+             \x20 br i1 %eq, label %done, label %advance\n\
+             advance:\n\
+             \x20 %next_raw = add i64 %idx, 1\n\
+             \x20 %next = and i64 %next_raw, %mask\n\
+             \x20 br label %probe\n\
+             done:\n\
+             \x20 ret i64 %idx\n\
+             }\n\n",
+        );
+
+        // __yorum_map_grow — double capacity and rehash
+        self.body.push_str(
+            "define void @__yorum_map_grow(ptr %map) {\n\
+             entry:\n\
+             \x20 %cap_p = getelementptr i8, ptr %map, i64 24\n\
+             \x20 %old_cap = load i64, ptr %cap_p\n\
+             \x20 %new_cap = mul i64 %old_cap, 2\n\
+             \x20 ; allocate new arrays\n\
+             \x20 %kb = mul i64 %new_cap, 8\n\
+             \x20 %vb = mul i64 %new_cap, 8\n\
+             \x20 %new_keys = call ptr @malloc(i64 %kb)\n\
+             \x20 %new_vals = call ptr @malloc(i64 %vb)\n\
+             \x20 %new_flags = call ptr @malloc(i64 %new_cap)\n\
+             \x20 call ptr @memset(ptr %new_flags, i32 0, i64 %new_cap)\n\
+             \x20 ; load old arrays\n\
+             \x20 %old_keys = load ptr, ptr %map\n\
+             \x20 %vals_p = getelementptr i8, ptr %map, i64 8\n\
+             \x20 %old_vals = load ptr, ptr %vals_p\n\
+             \x20 %flags_p = getelementptr i8, ptr %map, i64 16\n\
+             \x20 %old_flags = load ptr, ptr %flags_p\n\
+             \x20 ; store new arrays and capacity\n\
+             \x20 store ptr %new_keys, ptr %map\n\
+             \x20 store ptr %new_vals, ptr %vals_p\n\
+             \x20 store ptr %new_flags, ptr %flags_p\n\
+             \x20 store i64 %new_cap, ptr %cap_p\n\
+             \x20 br label %rehash_loop\n\
+             rehash_loop:\n\
+             \x20 %i = phi i64 [ 0, %entry ], [ %i_next, %rehash_cont ]\n\
+             \x20 %cmp = icmp slt i64 %i, %old_cap\n\
+             \x20 br i1 %cmp, label %rehash_body, label %rehash_done\n\
+             rehash_body:\n\
+             \x20 %ofp = getelementptr i8, ptr %old_flags, i64 %i\n\
+             \x20 %of = load i8, ptr %ofp\n\
+             \x20 %occ = icmp eq i8 %of, 1\n\
+             \x20 br i1 %occ, label %rehash_insert, label %rehash_cont\n\
+             rehash_insert:\n\
+             \x20 %okp = getelementptr ptr, ptr %old_keys, i64 %i\n\
+             \x20 %ok = load ptr, ptr %okp\n\
+             \x20 %ovp = getelementptr i64, ptr %old_vals, i64 %i\n\
+             \x20 %ov = load i64, ptr %ovp\n\
+             \x20 %slot = call i64 @__yorum_map_find_slot(ptr %map, ptr %ok, i64 %new_cap)\n\
+             \x20 %nkp = getelementptr ptr, ptr %new_keys, i64 %slot\n\
+             \x20 store ptr %ok, ptr %nkp\n\
+             \x20 %nvp = getelementptr i64, ptr %new_vals, i64 %slot\n\
+             \x20 store i64 %ov, ptr %nvp\n\
+             \x20 %nfp = getelementptr i8, ptr %new_flags, i64 %slot\n\
+             \x20 store i8 1, ptr %nfp\n\
+             \x20 br label %rehash_cont\n\
+             rehash_cont:\n\
+             \x20 %i_next = add i64 %i, 1\n\
+             \x20 br label %rehash_loop\n\
+             rehash_done:\n\
+             \x20 call void @free(ptr %old_keys)\n\
+             \x20 call void @free(ptr %old_vals)\n\
+             \x20 call void @free(ptr %old_flags)\n\
+             \x20 ret void\n\
+             }\n\n",
+        );
+
+        // map_new — allocate and initialize a new hash map (capacity 16)
+        self.body.push_str(
+            "define ptr @map_new() {\n\
+             entry:\n\
+             \x20 %map = call ptr @malloc(i64 40)\n\
+             \x20 %keys = call ptr @malloc(i64 128)\n\
+             \x20 %vals = call ptr @malloc(i64 128)\n\
+             \x20 %flags = call ptr @malloc(i64 16)\n\
+             \x20 call ptr @memset(ptr %flags, i32 0, i64 16)\n\
+             \x20 store ptr %keys, ptr %map\n\
+             \x20 %vp = getelementptr i8, ptr %map, i64 8\n\
+             \x20 store ptr %vals, ptr %vp\n\
+             \x20 %fp = getelementptr i8, ptr %map, i64 16\n\
+             \x20 store ptr %flags, ptr %fp\n\
+             \x20 %cp = getelementptr i8, ptr %map, i64 24\n\
+             \x20 store i64 16, ptr %cp\n\
+             \x20 %sp = getelementptr i8, ptr %map, i64 32\n\
+             \x20 store i64 0, ptr %sp\n\
+             \x20 ret ptr %map\n\
+             }\n\n",
+        );
+
+        // map_set — insert or update key-value pair
+        self.body.push_str(
+            "define void @map_set(ptr %map, ptr %key, i64 %val) {\n\
+             entry:\n\
+             \x20 ; check load factor: size*4 >= cap*3 → grow\n\
+             \x20 %sp = getelementptr i8, ptr %map, i64 32\n\
+             \x20 %size = load i64, ptr %sp\n\
+             \x20 %cap_p = getelementptr i8, ptr %map, i64 24\n\
+             \x20 %cap = load i64, ptr %cap_p\n\
+             \x20 %s4 = mul i64 %size, 4\n\
+             \x20 %c3 = mul i64 %cap, 3\n\
+             \x20 %need_grow = icmp sge i64 %s4, %c3\n\
+             \x20 br i1 %need_grow, label %grow, label %find\n\
+             grow:\n\
+             \x20 call void @__yorum_map_grow(ptr %map)\n\
+             \x20 br label %find\n\
+             find:\n\
+             \x20 %cap2 = load i64, ptr %cap_p\n\
+             \x20 %slot = call i64 @__yorum_map_find_slot(ptr %map, ptr %key, i64 %cap2)\n\
+             \x20 ; check if slot is occupied (update) or empty (insert)\n\
+             \x20 %flags_pp = getelementptr i8, ptr %map, i64 16\n\
+             \x20 %flags_p = load ptr, ptr %flags_pp\n\
+             \x20 %fslot = getelementptr i8, ptr %flags_p, i64 %slot\n\
+             \x20 %flag = load i8, ptr %fslot\n\
+             \x20 %is_new = icmp eq i8 %flag, 0\n\
+             \x20 br i1 %is_new, label %insert, label %update\n\
+             insert:\n\
+             \x20 ; copy key string\n\
+             \x20 %klen = call i64 @strlen(ptr %key)\n\
+             \x20 %kbuf_sz = add i64 %klen, 1\n\
+             \x20 %kbuf = call ptr @malloc(i64 %kbuf_sz)\n\
+             \x20 call ptr @strcpy(ptr %kbuf, ptr %key)\n\
+             \x20 %keys_p = load ptr, ptr %map\n\
+             \x20 %kslot = getelementptr ptr, ptr %keys_p, i64 %slot\n\
+             \x20 store ptr %kbuf, ptr %kslot\n\
+             \x20 store i8 1, ptr %fslot\n\
+             \x20 %new_size = add i64 %size, 1\n\
+             \x20 store i64 %new_size, ptr %sp\n\
+             \x20 br label %store_val\n\
+             update:\n\
+             \x20 br label %store_val\n\
+             store_val:\n\
+             \x20 %vals_pp = getelementptr i8, ptr %map, i64 8\n\
+             \x20 %vals_p = load ptr, ptr %vals_pp\n\
+             \x20 %vslot = getelementptr i64, ptr %vals_p, i64 %slot\n\
+             \x20 store i64 %val, ptr %vslot\n\
+             \x20 ret void\n\
+             }\n\n",
+        );
+
+        // map_get — look up value by key (aborts if not found)
+        self.body.push_str(
+            "define i64 @map_get(ptr %map, ptr %key) {\n\
+             entry:\n\
+             \x20 %cap_p = getelementptr i8, ptr %map, i64 24\n\
+             \x20 %cap = load i64, ptr %cap_p\n\
+             \x20 %slot = call i64 @__yorum_map_find_slot(ptr %map, ptr %key, i64 %cap)\n\
+             \x20 %flags_pp = getelementptr i8, ptr %map, i64 16\n\
+             \x20 %flags_p = load ptr, ptr %flags_pp\n\
+             \x20 %fp = getelementptr i8, ptr %flags_p, i64 %slot\n\
+             \x20 %flag = load i8, ptr %fp\n\
+             \x20 %found = icmp eq i8 %flag, 1\n\
+             \x20 br i1 %found, label %ok, label %fail\n\
+             fail:\n\
+             \x20 call i32 (ptr, ...) @printf(ptr @.fmt.map_key, ptr %key)\n\
+             \x20 call void @abort()\n\
+             \x20 unreachable\n\
+             ok:\n\
+             \x20 %vals_pp = getelementptr i8, ptr %map, i64 8\n\
+             \x20 %vals_p = load ptr, ptr %vals_pp\n\
+             \x20 %vp = getelementptr i64, ptr %vals_p, i64 %slot\n\
+             \x20 %v = load i64, ptr %vp\n\
+             \x20 ret i64 %v\n\
+             }\n\n",
+        );
+
+        // map_has — check if key exists
+        self.body.push_str(
+            "define i1 @map_has(ptr %map, ptr %key) {\n\
+             entry:\n\
+             \x20 %cap_p = getelementptr i8, ptr %map, i64 24\n\
+             \x20 %cap = load i64, ptr %cap_p\n\
+             \x20 %slot = call i64 @__yorum_map_find_slot(ptr %map, ptr %key, i64 %cap)\n\
+             \x20 %flags_pp = getelementptr i8, ptr %map, i64 16\n\
+             \x20 %flags_p = load ptr, ptr %flags_pp\n\
+             \x20 %fp = getelementptr i8, ptr %flags_p, i64 %slot\n\
+             \x20 %flag = load i8, ptr %fp\n\
+             \x20 %found = icmp eq i8 %flag, 1\n\
+             \x20 ret i1 %found\n\
+             }\n\n",
+        );
     }
 
     // ── Type registration ────────────────────────────────────
@@ -491,11 +983,17 @@ impl Codegen {
         let ret_ty = self.llvm_type(&f.return_type);
         self.current_fn_ret_ty = Some(ret_ty.clone());
 
-        let params: Vec<String> = f
+        let mut params: Vec<String> = f
             .params
             .iter()
             .map(|p| format!("{} %{}", self.llvm_type(&p.ty), p.name))
             .collect();
+
+        // main() gets argc/argv parameters to capture command-line args
+        if f.name == "main" {
+            params.push("i32 %__argc".to_string());
+            params.push("ptr %__argv".to_string());
+        }
 
         self.body.push_str(&format!(
             "define {} @{}({}) {{\n",
@@ -505,14 +1003,24 @@ impl Codegen {
         ));
         self.body.push_str("entry:\n");
 
+        // Store argc/argv to globals at the start of main
+        if f.name == "main" {
+            self.emit_line("store i32 %__argc, ptr @__yorum_argc");
+            self.emit_line("store ptr %__argv, ptr @__yorum_argv");
+        }
+
         self.push_scope();
 
         // Alloca for each parameter
         for param in &f.params {
-            // Array params are passed as ptr to { ptr, i64 } — use directly
+            // Array params are passed as ptr to { ptr, i64, i64 } — use directly
             if let Type::Array(ref inner) = param.ty {
                 let elem_llvm_ty = self.llvm_type(inner);
-                self.define_var(&param.name, &format!("%{}", param.name), "{ ptr, i64 }");
+                self.define_var(
+                    &param.name,
+                    &format!("%{}", param.name),
+                    "{ ptr, i64, i64 }",
+                );
                 self.array_elem_types
                     .insert(param.name.clone(), elem_llvm_ty);
                 continue;
@@ -695,12 +1203,12 @@ impl Codegen {
             }
         }
 
-        // For array-typed variables, ArrayLit creates a { ptr, i64 } alloca.
+        // For array-typed variables, ArrayLit creates a { ptr, i64, i64 } alloca.
         // Reuse that alloca directly.
         if let Type::Array(ref inner) = s.ty {
             let elem_llvm_ty = self.llvm_type(inner);
             let val_ptr = self.emit_expr(&s.value)?;
-            self.define_var(&s.name, &val_ptr, "{ ptr, i64 }");
+            self.define_var(&s.name, &val_ptr, "{ ptr, i64, i64 }");
             self.array_elem_types.insert(s.name.clone(), elem_llvm_ty);
             return Ok(());
         }
@@ -763,10 +1271,10 @@ impl Codegen {
                     .unwrap_or_else(|| "i64".to_string());
                 let arr_ptr = self.emit_expr_ptr(arr_expr)?;
 
-                // Load data pointer from { ptr, i64 }
+                // Load data pointer from { ptr, i64, i64 }
                 let data_gep = self.fresh_temp();
                 self.emit_line(&format!(
-                    "{} = getelementptr {{ ptr, i64 }}, ptr {}, i32 0, i32 0",
+                    "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 0",
                     data_gep, arr_ptr
                 ));
                 let data_ptr = self.fresh_temp();
@@ -775,7 +1283,7 @@ impl Codegen {
                 // Load length for bounds check
                 let len_gep = self.fresh_temp();
                 self.emit_line(&format!(
-                    "{} = getelementptr {{ ptr, i64 }}, ptr {}, i32 0, i32 1",
+                    "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 1",
                     len_gep, arr_ptr
                 ));
                 let len_val = self.fresh_temp();
@@ -929,10 +1437,10 @@ impl Codegen {
             "i64".to_string()
         };
 
-        // Load data ptr and length from { ptr, i64 }
+        // Load data ptr and length from { ptr, i64, i64 }
         let data_gep = self.fresh_temp();
         self.emit_line(&format!(
-            "{} = getelementptr {{ ptr, i64 }}, ptr {}, i32 0, i32 0",
+            "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 0",
             data_gep, arr_val
         ));
         let data_ptr = self.fresh_temp();
@@ -940,7 +1448,7 @@ impl Codegen {
 
         let len_gep = self.fresh_temp();
         self.emit_line(&format!(
-            "{} = getelementptr {{ ptr, i64 }}, ptr {}, i32 0, i32 1",
+            "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 1",
             len_gep, arr_val
         ));
         let len_val = self.fresh_temp();
@@ -1054,6 +1562,26 @@ impl Codegen {
                 Pattern::Literal(Literal::Int(n), _) => {
                     let cmp = self.fresh_temp();
                     self.emit_line(&format!("{} = icmp eq i64 {}, {}", cmp, compare_val, n));
+                    let next = if i + 1 < s.arms.len() {
+                        format!("match.check.{}", i + 1)
+                    } else {
+                        default_label.clone()
+                    };
+                    self.emit_line(&format!(
+                        "br i1 {}, label %{}, label %{}",
+                        cmp, arm_labels[i], next
+                    ));
+                    if i + 1 < s.arms.len() {
+                        self.emit_label(&next);
+                        self.block_terminated = false;
+                    }
+                }
+                Pattern::Literal(Literal::Char(c), _) => {
+                    let cmp = self.fresh_temp();
+                    self.emit_line(&format!(
+                        "{} = icmp eq i8 {}, {}",
+                        cmp, compare_val, *c as u8
+                    ));
                     let next = if i + 1 < s.arms.len() {
                         format!("match.check.{}", i + 1)
                     } else {
@@ -1228,10 +1756,23 @@ impl Codegen {
             "i64" => 8,
             "double" => 8,
             "i1" => 1,
+            "i8" => 1,
             "ptr" => 8,
             "i32" => 4,
-            _ => 8,
+            _ => {
+                // Handle struct types like %Token
+                if let Some(name) = llvm_ty.strip_prefix('%') {
+                    if let Some(layout) = self.struct_layouts.get(name) {
+                        return layout.fields.iter().map(|(_, t)| self.type_size(t)).sum();
+                    }
+                }
+                8
+            }
         }
+    }
+
+    fn is_aggregate_type(llvm_ty: &str) -> bool {
+        llvm_ty.starts_with('%')
     }
 
     // ── Expression emission ──────────────────────────────────
@@ -1249,7 +1790,7 @@ impl Codegen {
                     })?
                     .clone();
                 // Array variables: return the pointer directly (arrays are reference types)
-                if slot.llvm_ty == "{ ptr, i64 }" {
+                if slot.llvm_ty == "{ ptr, i64, i64 }" {
                     return Ok(slot.ptr.clone());
                 }
                 let tmp = self.fresh_temp();
@@ -1267,29 +1808,32 @@ impl Codegen {
 
                 // Determine the operand type from the LHS
                 let is_float = self.expr_is_float(lhs);
+                let is_char = !is_float && self.expr_is_char(lhs);
+                // Integer type string: "i8" for char, "i64" for int
+                let ity = if is_char { "i8" } else { "i64" };
 
                 let instr = match (op, is_float) {
-                    (BinOp::Add, false) => format!("{} = add i64 {}, {}", tmp, l, r),
+                    (BinOp::Add, false) => format!("{} = add {} {}, {}", tmp, ity, l, r),
                     (BinOp::Add, true) => format!("{} = fadd double {}, {}", tmp, l, r),
-                    (BinOp::Sub, false) => format!("{} = sub i64 {}, {}", tmp, l, r),
+                    (BinOp::Sub, false) => format!("{} = sub {} {}, {}", tmp, ity, l, r),
                     (BinOp::Sub, true) => format!("{} = fsub double {}, {}", tmp, l, r),
-                    (BinOp::Mul, false) => format!("{} = mul i64 {}, {}", tmp, l, r),
+                    (BinOp::Mul, false) => format!("{} = mul {} {}, {}", tmp, ity, l, r),
                     (BinOp::Mul, true) => format!("{} = fmul double {}, {}", tmp, l, r),
-                    (BinOp::Div, false) => format!("{} = sdiv i64 {}, {}", tmp, l, r),
+                    (BinOp::Div, false) => format!("{} = sdiv {} {}, {}", tmp, ity, l, r),
                     (BinOp::Div, true) => format!("{} = fdiv double {}, {}", tmp, l, r),
-                    (BinOp::Mod, false) => format!("{} = srem i64 {}, {}", tmp, l, r),
+                    (BinOp::Mod, false) => format!("{} = srem {} {}, {}", tmp, ity, l, r),
                     (BinOp::Mod, true) => format!("{} = frem double {}, {}", tmp, l, r),
-                    (BinOp::Eq, false) => format!("{} = icmp eq i64 {}, {}", tmp, l, r),
+                    (BinOp::Eq, false) => format!("{} = icmp eq {} {}, {}", tmp, ity, l, r),
                     (BinOp::Eq, true) => format!("{} = fcmp oeq double {}, {}", tmp, l, r),
-                    (BinOp::NotEq, false) => format!("{} = icmp ne i64 {}, {}", tmp, l, r),
+                    (BinOp::NotEq, false) => format!("{} = icmp ne {} {}, {}", tmp, ity, l, r),
                     (BinOp::NotEq, true) => format!("{} = fcmp one double {}, {}", tmp, l, r),
-                    (BinOp::Lt, false) => format!("{} = icmp slt i64 {}, {}", tmp, l, r),
+                    (BinOp::Lt, false) => format!("{} = icmp slt {} {}, {}", tmp, ity, l, r),
                     (BinOp::Lt, true) => format!("{} = fcmp olt double {}, {}", tmp, l, r),
-                    (BinOp::Gt, false) => format!("{} = icmp sgt i64 {}, {}", tmp, l, r),
+                    (BinOp::Gt, false) => format!("{} = icmp sgt {} {}, {}", tmp, ity, l, r),
                     (BinOp::Gt, true) => format!("{} = fcmp ogt double {}, {}", tmp, l, r),
-                    (BinOp::LtEq, false) => format!("{} = icmp sle i64 {}, {}", tmp, l, r),
+                    (BinOp::LtEq, false) => format!("{} = icmp sle {} {}, {}", tmp, ity, l, r),
                     (BinOp::LtEq, true) => format!("{} = fcmp ole double {}, {}", tmp, l, r),
-                    (BinOp::GtEq, false) => format!("{} = icmp sge i64 {}, {}", tmp, l, r),
+                    (BinOp::GtEq, false) => format!("{} = icmp sge {} {}, {}", tmp, ity, l, r),
                     (BinOp::GtEq, true) => format!("{} = fcmp oge double {}, {}", tmp, l, r),
                     (BinOp::And, _) => format!("{} = and i1 {}, {}", tmp, l, r),
                     (BinOp::Or, _) => format!("{} = or i1 {}, {}", tmp, l, r),
@@ -1323,7 +1867,7 @@ impl Codegen {
                         let arr_ptr = self.emit_expr_ptr(&args[0])?;
                         let len_gep = self.fresh_temp();
                         self.emit_line(&format!(
-                            "{} = getelementptr {{ ptr, i64 }}, ptr {}, i32 0, i32 1",
+                            "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 1",
                             len_gep, arr_ptr
                         ));
                         let len_val = self.fresh_temp();
@@ -1339,6 +1883,242 @@ impl Codegen {
                     }
                     if name == "recv" && args.len() == 1 {
                         return self.emit_chan_recv(&args[0]);
+                    }
+
+                    // Built-in push() for dynamic arrays
+                    if name == "push" && args.len() == 2 {
+                        let arr_ptr = self.emit_expr(&args[0])?;
+                        let elem_ty = if let ExprKind::Ident(arr_name) = &args[0].kind {
+                            self.array_elem_types
+                                .get(arr_name)
+                                .cloned()
+                                .unwrap_or_else(|| "i64".to_string())
+                        } else {
+                            "i64".to_string()
+                        };
+                        let elem_size = self.llvm_type_size(&elem_ty);
+
+                        // Load data, length, capacity
+                        let data_gep = self.fresh_temp();
+                        self.emit_line(&format!(
+                            "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 0",
+                            data_gep, arr_ptr
+                        ));
+                        let data_ptr = self.fresh_temp();
+                        self.emit_line(&format!("{} = load ptr, ptr {}", data_ptr, data_gep));
+
+                        let len_gep = self.fresh_temp();
+                        self.emit_line(&format!(
+                            "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 1",
+                            len_gep, arr_ptr
+                        ));
+                        let len_val = self.fresh_temp();
+                        self.emit_line(&format!("{} = load i64, ptr {}", len_val, len_gep));
+
+                        let cap_gep = self.fresh_temp();
+                        self.emit_line(&format!(
+                            "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 2",
+                            cap_gep, arr_ptr
+                        ));
+                        let cap_val = self.fresh_temp();
+                        self.emit_line(&format!("{} = load i64, ptr {}", cap_val, cap_gep));
+
+                        // Check if need to grow: len == cap
+                        let need_grow = self.fresh_temp();
+                        self.emit_line(&format!(
+                            "{} = icmp eq i64 {}, {}",
+                            need_grow, len_val, cap_val
+                        ));
+                        let grow_label = self.fresh_label("push.grow");
+                        let store_label = self.fresh_label("push.store");
+                        self.emit_line(&format!(
+                            "br i1 {}, label %{}, label %{}",
+                            need_grow, grow_label, store_label
+                        ));
+
+                        // Grow block: realloc with doubled capacity (min 4)
+                        self.emit_label(&grow_label);
+                        self.block_terminated = false;
+                        let doubled = self.fresh_temp();
+                        self.emit_line(&format!("{} = shl i64 {}, 1", doubled, cap_val));
+                        let is_zero = self.fresh_temp();
+                        self.emit_line(&format!("{} = icmp eq i64 {}, 0", is_zero, cap_val));
+                        let new_cap = self.fresh_temp();
+                        self.emit_line(&format!(
+                            "{} = select i1 {}, i64 4, i64 {}",
+                            new_cap, is_zero, doubled
+                        ));
+                        let new_bytes = self.fresh_temp();
+                        self.emit_line(&format!(
+                            "{} = mul i64 {}, {}",
+                            new_bytes, new_cap, elem_size
+                        ));
+                        let new_data = self.fresh_temp();
+                        self.emit_line(&format!(
+                            "{} = call ptr @realloc(ptr {}, i64 {})",
+                            new_data, data_ptr, new_bytes
+                        ));
+                        self.emit_line(&format!("store ptr {}, ptr {}", new_data, data_gep));
+                        self.emit_line(&format!("store i64 {}, ptr {}", new_cap, cap_gep));
+                        self.emit_line(&format!("br label %{}", store_label));
+
+                        // Store block: store element at data[len], increment length
+                        self.emit_label(&store_label);
+                        self.block_terminated = false;
+                        let cur_data = self.fresh_temp();
+                        self.emit_line(&format!("{} = load ptr, ptr {}", cur_data, data_gep));
+                        let is_agg = Self::is_aggregate_type(&elem_ty);
+                        let val = if is_agg {
+                            self.emit_expr_ptr(&args[1])?
+                        } else {
+                            self.emit_expr(&args[1])?
+                        };
+                        let elem_gep = self.fresh_temp();
+                        self.emit_line(&format!(
+                            "{} = getelementptr {}, ptr {}, i64 {}",
+                            elem_gep, elem_ty, cur_data, len_val
+                        ));
+                        if Self::is_aggregate_type(&elem_ty) {
+                            self.emit_line(&format!(
+                                "call ptr @memcpy(ptr {}, ptr {}, i64 {})",
+                                elem_gep, val, elem_size
+                            ));
+                        } else {
+                            self.emit_line(&format!("store {} {}, ptr {}", elem_ty, val, elem_gep));
+                        }
+                        let new_len = self.fresh_temp();
+                        self.emit_line(&format!("{} = add i64 {}, 1", new_len, len_val));
+                        self.emit_line(&format!("store i64 {}, ptr {}", new_len, len_gep));
+                        return Ok("void".to_string());
+                    }
+
+                    // Built-in pop() for dynamic arrays
+                    if name == "pop" && args.len() == 1 {
+                        let arr_ptr = self.emit_expr(&args[0])?;
+                        let elem_ty = if let ExprKind::Ident(arr_name) = &args[0].kind {
+                            self.array_elem_types
+                                .get(arr_name)
+                                .cloned()
+                                .unwrap_or_else(|| "i64".to_string())
+                        } else {
+                            "i64".to_string()
+                        };
+
+                        // Load length
+                        let len_gep = self.fresh_temp();
+                        self.emit_line(&format!(
+                            "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 1",
+                            len_gep, arr_ptr
+                        ));
+                        let len_val = self.fresh_temp();
+                        self.emit_line(&format!("{} = load i64, ptr {}", len_val, len_gep));
+
+                        // Check not empty: len > 0
+                        let is_empty = self.fresh_temp();
+                        self.emit_line(&format!("{} = icmp eq i64 {}, 0", is_empty, len_val));
+                        let fail_label = self.fresh_label("pop.fail");
+                        let ok_label = self.fresh_label("pop.ok");
+                        self.emit_line(&format!(
+                            "br i1 {}, label %{}, label %{}",
+                            is_empty, fail_label, ok_label
+                        ));
+
+                        // Fail block: print error and abort
+                        self.emit_label(&fail_label);
+                        self.block_terminated = false;
+                        self.emit_line("call i32 (ptr, ...) @printf(ptr @.fmt.pop_empty)");
+                        self.emit_line("call void @abort()");
+                        self.emit_line("unreachable");
+
+                        // OK block: decrement length, load last element
+                        self.emit_label(&ok_label);
+                        self.block_terminated = false;
+                        let new_len = self.fresh_temp();
+                        self.emit_line(&format!("{} = sub i64 {}, 1", new_len, len_val));
+                        self.emit_line(&format!("store i64 {}, ptr {}", new_len, len_gep));
+
+                        let data_gep = self.fresh_temp();
+                        self.emit_line(&format!(
+                            "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 0",
+                            data_gep, arr_ptr
+                        ));
+                        let data_ptr = self.fresh_temp();
+                        self.emit_line(&format!("{} = load ptr, ptr {}", data_ptr, data_gep));
+                        let elem_gep = self.fresh_temp();
+                        self.emit_line(&format!(
+                            "{} = getelementptr {}, ptr {}, i64 {}",
+                            elem_gep, elem_ty, data_ptr, new_len
+                        ));
+                        if Self::is_aggregate_type(&elem_ty) {
+                            // For aggregate types, copy to a local alloca and return pointer
+                            let tmp_alloca = self.fresh_temp();
+                            self.emit_line(&format!("{} = alloca {}", tmp_alloca, elem_ty));
+                            let sz = self.llvm_type_size(&elem_ty);
+                            self.emit_line(&format!(
+                                "call ptr @memcpy(ptr {}, ptr {}, i64 {})",
+                                tmp_alloca, elem_gep, sz
+                            ));
+                            return Ok(tmp_alloca);
+                        } else {
+                            let val = self.fresh_temp();
+                            self.emit_line(&format!(
+                                "{} = load {}, ptr {}",
+                                val, elem_ty, elem_gep
+                            ));
+                            return Ok(val);
+                        }
+                    }
+
+                    // Built-in exit() — truncate i64 to i32 and call C exit
+                    if name == "exit" && args.len() == 1 {
+                        let code = self.emit_expr(&args[0])?;
+                        let code32 = self.fresh_temp();
+                        self.emit_line(&format!("{} = trunc i64 {} to i32", code32, code));
+                        self.emit_line(&format!("call void @exit(i32 {})", code32));
+                        self.emit_line("unreachable");
+                        self.block_terminated = true;
+                        return Ok("void".to_string());
+                    }
+
+                    // Built-in args() — build [string] from stored argc/argv
+                    if name == "args" && args.is_empty() {
+                        let argc32 = self.fresh_temp();
+                        self.emit_line(&format!("{} = load i32, ptr @__yorum_argc", argc32));
+                        let argc = self.fresh_temp();
+                        self.emit_line(&format!("{} = zext i32 {} to i64", argc, argc32));
+                        let argv = self.fresh_temp();
+                        self.emit_line(&format!("{} = load ptr, ptr @__yorum_argv", argv));
+                        // Allocate data array and copy argv pointers
+                        let bytes = self.fresh_temp();
+                        self.emit_line(&format!("{} = mul i64 {}, 8", bytes, argc));
+                        let data = self.fresh_temp();
+                        self.emit_line(&format!("{} = call ptr @malloc(i64 {})", data, bytes));
+                        self.emit_line(&format!(
+                            "call ptr @memcpy(ptr {}, ptr {}, i64 {})",
+                            data, argv, bytes
+                        ));
+                        // Build { ptr, i64, i64 } fat pointer
+                        let fat = self.fresh_temp();
+                        self.emit_line(&format!("{} = alloca {{ ptr, i64, i64 }}", fat));
+                        let d_gep = self.fresh_temp();
+                        self.emit_line(&format!(
+                            "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 0",
+                            d_gep, fat
+                        ));
+                        self.emit_line(&format!("store ptr {}, ptr {}", data, d_gep));
+                        let l_gep = self.fresh_temp();
+                        self.emit_line(&format!(
+                            "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 1",
+                            l_gep, fat
+                        ));
+                        self.emit_line(&format!("store i64 {}, ptr {}", argc, l_gep));
+                        let c_gep = self.fresh_temp();
+                        self.emit_line(&format!(
+                            "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 2",
+                            c_gep, fat
+                        ));
+                        self.emit_line(&format!("store i64 {}, ptr {}", argc, c_gep));
+                        return Ok(fat);
                     }
 
                     // Check if this is an enum variant constructor
@@ -1477,19 +2257,25 @@ impl Codegen {
                 if count == 0 {
                     // Empty array: { null, 0 }
                     let ptr = self.fresh_temp();
-                    self.emit_line(&format!("{} = alloca {{ ptr, i64 }}", ptr));
+                    self.emit_line(&format!("{} = alloca {{ ptr, i64, i64 }}", ptr));
                     let d_gep = self.fresh_temp();
                     self.emit_line(&format!(
-                        "{} = getelementptr {{ ptr, i64 }}, ptr {}, i32 0, i32 0",
+                        "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 0",
                         d_gep, ptr
                     ));
                     self.emit_line(&format!("store ptr null, ptr {}", d_gep));
                     let l_gep = self.fresh_temp();
                     self.emit_line(&format!(
-                        "{} = getelementptr {{ ptr, i64 }}, ptr {}, i32 0, i32 1",
+                        "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 1",
                         l_gep, ptr
                     ));
                     self.emit_line(&format!("store i64 0, ptr {}", l_gep));
+                    let c_gep = self.fresh_temp();
+                    self.emit_line(&format!(
+                        "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 2",
+                        c_gep, ptr
+                    ));
+                    self.emit_line(&format!("store i64 0, ptr {}", c_gep));
                     return Ok(ptr);
                 }
                 // Determine element type from first element
@@ -1505,31 +2291,49 @@ impl Codegen {
                 ));
 
                 // Store each element
+                let is_aggregate = Self::is_aggregate_type(&elem_ty);
                 for (i, elem) in elements.iter().enumerate() {
-                    let val = self.emit_expr(elem)?;
+                    let val = if is_aggregate {
+                        self.emit_expr_ptr(elem)?
+                    } else {
+                        self.emit_expr(elem)?
+                    };
                     let gep = self.fresh_temp();
                     self.emit_line(&format!(
                         "{} = getelementptr {}, ptr {}, i64 {}",
                         gep, elem_ty, data_ptr, i
                     ));
-                    self.emit_line(&format!("store {} {}, ptr {}", elem_ty, val, gep));
+                    if is_aggregate {
+                        self.emit_line(&format!(
+                            "call ptr @memcpy(ptr {}, ptr {}, i64 {})",
+                            gep, val, elem_size
+                        ));
+                    } else {
+                        self.emit_line(&format!("store {} {}, ptr {}", elem_ty, val, gep));
+                    }
                 }
 
-                // Build { ptr, i64 } fat pointer on stack
+                // Build { ptr, i64, i64 } fat pointer on stack
                 let fat_ptr = self.fresh_temp();
-                self.emit_line(&format!("{} = alloca {{ ptr, i64 }}", fat_ptr));
+                self.emit_line(&format!("{} = alloca {{ ptr, i64, i64 }}", fat_ptr));
                 let d_gep = self.fresh_temp();
                 self.emit_line(&format!(
-                    "{} = getelementptr {{ ptr, i64 }}, ptr {}, i32 0, i32 0",
+                    "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 0",
                     d_gep, fat_ptr
                 ));
                 self.emit_line(&format!("store ptr {}, ptr {}", data_ptr, d_gep));
                 let l_gep = self.fresh_temp();
                 self.emit_line(&format!(
-                    "{} = getelementptr {{ ptr, i64 }}, ptr {}, i32 0, i32 1",
+                    "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 1",
                     l_gep, fat_ptr
                 ));
                 self.emit_line(&format!("store i64 {}, ptr {}", count, l_gep));
+                let c_gep = self.fresh_temp();
+                self.emit_line(&format!(
+                    "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 2",
+                    c_gep, fat_ptr
+                ));
+                self.emit_line(&format!("store i64 {}, ptr {}", count, c_gep));
 
                 Ok(fat_ptr)
             }
@@ -1547,10 +2351,10 @@ impl Codegen {
 
                 let arr_ptr = self.emit_expr_ptr(arr_expr)?;
 
-                // Load data pointer from { ptr, i64 }
+                // Load data pointer from { ptr, i64, i64 }
                 let data_gep = self.fresh_temp();
                 self.emit_line(&format!(
-                    "{} = getelementptr {{ ptr, i64 }}, ptr {}, i32 0, i32 0",
+                    "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 0",
                     data_gep, arr_ptr
                 ));
                 let data_ptr = self.fresh_temp();
@@ -1559,7 +2363,7 @@ impl Codegen {
                 // Load length for bounds check
                 let len_gep = self.fresh_temp();
                 self.emit_line(&format!(
-                    "{} = getelementptr {{ ptr, i64 }}, ptr {}, i32 0, i32 1",
+                    "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 1",
                     len_gep, arr_ptr
                 ));
                 let len_val = self.fresh_temp();
@@ -1579,9 +2383,21 @@ impl Codegen {
                     "{} = getelementptr {}, ptr {}, i64 {}",
                     elem_gep, elem_ty, data_ptr, idx_val
                 ));
-                let val = self.fresh_temp();
-                self.emit_line(&format!("{} = load {}, ptr {}", val, elem_ty, elem_gep));
-                Ok(val)
+                if Self::is_aggregate_type(&elem_ty) {
+                    // For aggregate types, copy to a local alloca and return pointer
+                    let tmp_alloca = self.fresh_temp();
+                    self.emit_line(&format!("{} = alloca {}", tmp_alloca, elem_ty));
+                    let sz = self.llvm_type_size(&elem_ty);
+                    self.emit_line(&format!(
+                        "call ptr @memcpy(ptr {}, ptr {}, i64 {})",
+                        tmp_alloca, elem_gep, sz
+                    ));
+                    Ok(tmp_alloca)
+                } else {
+                    let val = self.fresh_temp();
+                    self.emit_line(&format!("{} = load {}, ptr {}", val, elem_ty, elem_gep));
+                    Ok(val)
+                }
             }
         }
     }
@@ -1595,9 +2411,37 @@ impl Codegen {
                 })?;
                 Ok(slot.ptr.clone())
             }
-            _ => {
-                // For complex expressions, evaluate to a temp alloca
+            ExprKind::StructInit(_, _) => {
+                // StructInit's emit_expr already returns an alloca pointer
                 self.emit_expr(expr)
+            }
+            ExprKind::Index(arr_expr, _) => {
+                // Index on aggregate types already returns an alloca pointer
+                // (the codegen does memcpy to a temp alloca for struct elements)
+                let val = self.emit_expr(expr)?;
+                // Check if element type is aggregate
+                if let ExprKind::Ident(name) = &arr_expr.kind {
+                    if let Some(elem_ty) = self.array_elem_types.get(name) {
+                        if Self::is_aggregate_type(elem_ty) {
+                            return Ok(val); // already a pointer to temp alloca
+                        }
+                    }
+                }
+                Ok(val)
+            }
+            _ => {
+                // For complex expressions that return aggregate types (e.g., function calls
+                // returning structs), store to a temp alloca and return the alloca pointer
+                let val = self.emit_expr(expr)?;
+                let llvm_ty = self.expr_llvm_type(expr);
+                if Self::is_aggregate_type(&llvm_ty) {
+                    let tmp = self.fresh_temp();
+                    self.emit_line(&format!("{} = alloca {}", tmp, llvm_ty));
+                    self.emit_line(&format!("store {} {}, ptr {}", llvm_ty, val, tmp));
+                    Ok(tmp)
+                } else {
+                    Ok(val)
+                }
             }
         }
     }
@@ -1680,6 +2524,7 @@ impl Codegen {
             } else {
                 "false".to_string()
             }),
+            Literal::Char(c) => Ok((*c as u8).to_string()),
             Literal::String(s) => {
                 // Emit as a global constant
                 let id = self.string_counter;
@@ -2387,6 +3232,7 @@ impl Codegen {
             Type::Int => "i64".to_string(),
             Type::Float => "double".to_string(),
             Type::Bool => "i1".to_string(),
+            Type::Char => "i8".to_string(),
             Type::Str => "ptr".to_string(),
             Type::Unit => "void".to_string(),
             Type::Named(name) => {
@@ -2404,6 +3250,7 @@ impl Codegen {
             Type::Fn(_, _) => "ptr".to_string(),
             Type::Task(_) => "ptr".to_string(),
             Type::Chan(_) => "ptr".to_string(),
+            Type::Map => "ptr".to_string(),
         }
     }
 
@@ -2412,6 +3259,7 @@ impl Codegen {
             Type::Int => 8,
             Type::Float => 8,
             Type::Bool => 1,
+            Type::Char => 1,
             Type::Str => 8,
             Type::Unit => 0,
             Type::Named(name) => {
@@ -2433,6 +3281,7 @@ impl Codegen {
             ExprKind::Literal(Literal::Float(_)) => true,
             ExprKind::Literal(Literal::Int(_)) => false,
             ExprKind::Literal(Literal::Bool(_)) => false,
+            ExprKind::Literal(Literal::Char(_)) => false,
             ExprKind::Literal(Literal::String(_)) => false,
             ExprKind::Ident(name) => {
                 if let Some(slot) = self.lookup_var(name) {
@@ -2496,16 +3345,49 @@ impl Codegen {
         }
     }
 
+    /// Heuristic to determine if an expression produces a char (i8) value.
+    fn expr_is_char(&self, expr: &Expr) -> bool {
+        match &expr.kind {
+            ExprKind::Literal(Literal::Char(_)) => true,
+            ExprKind::Literal(_) => false,
+            ExprKind::Ident(name) => {
+                if let Some(slot) = self.lookup_var(name) {
+                    slot.llvm_ty == "i8"
+                } else {
+                    false
+                }
+            }
+            ExprKind::Call(callee, _) => {
+                if let ExprKind::Ident(name) = &callee.kind {
+                    if let Some(ret_ty) = self.fn_ret_types.get(name.as_str()) {
+                        return *ret_ty == Type::Char;
+                    }
+                }
+                false
+            }
+            ExprKind::Index(arr_expr, _) => {
+                if let ExprKind::Ident(name) = &arr_expr.kind {
+                    if let Some(elem_ty) = self.array_elem_types.get(name) {
+                        return elem_ty == "i8";
+                    }
+                }
+                false
+            }
+            _ => false,
+        }
+    }
+
     fn expr_llvm_type(&self, expr: &Expr) -> String {
         match &expr.kind {
             ExprKind::Literal(Literal::Int(_)) => "i64".to_string(),
             ExprKind::Literal(Literal::Float(_)) => "double".to_string(),
             ExprKind::Literal(Literal::Bool(_)) => "i1".to_string(),
+            ExprKind::Literal(Literal::Char(_)) => "i8".to_string(),
             ExprKind::Literal(Literal::String(_)) => "ptr".to_string(),
             ExprKind::Ident(name) => {
                 if let Some(slot) = self.lookup_var(name) {
                     // Array idents are returned as raw pointers by emit_expr (reference semantics)
-                    if slot.llvm_ty == "{ ptr, i64 }" {
+                    if slot.llvm_ty == "{ ptr, i64, i64 }" {
                         "ptr".to_string()
                     } else {
                         slot.llvm_ty.clone()
@@ -2558,7 +3440,7 @@ impl Codegen {
                 }
                 "i64".to_string()
             }
-            ExprKind::ArrayLit(_) => "{ ptr, i64 }".to_string(),
+            ExprKind::ArrayLit(_) => "{ ptr, i64, i64 }".to_string(),
             ExprKind::Index(arr_expr, _) => {
                 if let ExprKind::Ident(name) = &arr_expr.kind {
                     if let Some(elem_ty) = self.array_elem_types.get(name) {
@@ -2567,9 +3449,9 @@ impl Codegen {
                 }
                 "i64".to_string()
             }
+            ExprKind::StructInit(name, _) => format!("%{}", name),
             ExprKind::Closure(_) => "ptr".to_string(),
             ExprKind::Spawn(_) => "ptr".to_string(),
-            _ => "i64".to_string(),
         }
     }
 
@@ -2590,6 +3472,31 @@ impl Codegen {
                         message: format!("undefined variable '{}'", name),
                     })
                 }
+            }
+            ExprKind::Index(arr_expr, _) => {
+                // Array indexing: element type is stored in array_elem_types
+                if let ExprKind::Ident(name) = &arr_expr.kind {
+                    if let Some(elem_ty) = self.array_elem_types.get(name) {
+                        if let Some(stripped) = elem_ty.strip_prefix('%') {
+                            return Ok(stripped.to_string());
+                        }
+                    }
+                }
+                Err(CodegenError {
+                    message: "cannot determine struct name from index expression".to_string(),
+                })
+            }
+            ExprKind::StructInit(name, _) => Ok(name.clone()),
+            ExprKind::Call(callee, _) => {
+                // Function call: look up return type from function signatures
+                if let ExprKind::Ident(fn_name) = &callee.kind {
+                    if let Some(Type::Named(name)) = self.fn_ret_types.get(fn_name) {
+                        return Ok(name.clone());
+                    }
+                }
+                Err(CodegenError {
+                    message: "cannot determine struct name from call expression".to_string(),
+                })
             }
             _ => Err(CodegenError {
                 message: "cannot determine struct name from expression".to_string(),
@@ -2758,7 +3665,7 @@ mod tests {
     #[test]
     fn test_simple_function() {
         let ir = compile_to_ir("fn main() -> int { return 42; }");
-        assert!(ir.contains("define i64 @main()"));
+        assert!(ir.contains("define i64 @main(i32 %__argc, ptr %__argv)"));
         assert!(ir.contains("ret i64 42"));
     }
 

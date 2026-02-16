@@ -1,6 +1,6 @@
 # Yorum Language Specification
 
-**Version:** 0.4.0
+**Version:** 0.5.0
 
 ## 1. Overview
 
@@ -40,7 +40,7 @@ fn  let  mut  return  if  else  while  for  in  match  spawn
 struct  enum  module  use  const  pub  pure  own  impl  trait  Self
 and  or  not  true  false
 requires  ensures  effects
-int  float  bool  string  unit
+int  float  bool  char  string  unit
 ```
 
 ### 3.4 Operators and Punctuation
@@ -62,6 +62,7 @@ and  or  not
 | `int` | 64-bit signed integer | `i64` |
 | `float` | 64-bit IEEE 754 double | `double` |
 | `bool` | Boolean value | `i1` |
+| `char` | 8-bit character | `i8` |
 | `string` | UTF-8 string (pointer to null-terminated data) | `ptr` |
 | `unit` | No meaningful value (like `void`) | `void` |
 
@@ -69,7 +70,8 @@ and  or  not
 
 - **Structs:** Named product types with ordered fields. May be generic (`struct Pair<T, U>`).
 - **Enums:** Tagged unions (sum types) with optional payload per variant. May be generic.
-- **Arrays:** `[T]` — homogeneous, heap-allocated sequences with runtime bounds checking.
+- **Arrays:** `[T]` — homogeneous, heap-allocated dynamic arrays with runtime bounds checking, `push`/`pop` support.
+- **Maps:** `Map` — hash map with `string` keys and `int` values. Built-in type backed by FNV-1a hashing with linear probing.
 - **Tasks:** `Task<T>` — handle to a spawned concurrent task that produces a value of type `T`.
 - **Channels:** `Chan<T>` — synchronized channel for sending values of type `T` between tasks.
 - **References:** `&T` (immutable), `&mut T` (mutable).
@@ -264,6 +266,21 @@ arr[0] = 100;
 
 The built-in function `len(arr)` returns the number of elements as an `int`.
 
+### 7.5.1 Dynamic Array Operations
+Arrays are dynamic — they can grow and shrink at runtime:
+```
+let mut arr: [int] = [1, 2, 3];
+push(arr, 4);           // arr is now [1, 2, 3, 4]
+let last: int = pop(arr);  // last is 4, arr is [1, 2, 3]
+```
+
+`push(arr, val)` appends an element to the end of the array, growing the backing
+buffer via `realloc` when capacity is exceeded (doubling strategy).  `pop(arr)`
+removes and returns the last element; it aborts if the array is empty.
+
+Arrays are represented internally as `{ ptr, i64, i64 }` fat pointers (data
+pointer + length + capacity).
+
 ### 7.6 For Loops
 For loops iterate over arrays:
 ```
@@ -276,14 +293,39 @@ The loop variable is bound to each element in order.  Its type is the array's
 element type.  The loop variable is scoped to the loop body.  Only array types
 are iterable — there is no general iterator protocol.
 
-### 7.7 String Operations
-Three built-in functions operate on strings:
+### 7.7 String and Character Operations
+
+**String functions:**
 
 | Function | Signature | Pure | Description |
 |---|---|---|---|
 | `str_len(s)` | `(string) -> int` | yes | Returns the byte length of `s` |
 | `str_concat(a, b)` | `(string, string) -> string` | no | Returns a new string `a + b` (heap-allocated) |
 | `str_eq(a, b)` | `(string, string) -> bool` | yes | Returns `true` if `a` and `b` are equal |
+| `str_charAt(s, i)` | `(string, int) -> char` | yes | Returns the character at byte index `i` (bounds-checked) |
+| `str_sub(s, start, len)` | `(string, int, int) -> string` | no | Returns a substring (heap-allocated) |
+| `str_from_char(c)` | `(char) -> string` | no | Returns a single-character string (heap-allocated) |
+
+**Character classification:**
+
+| Function | Signature | Pure | Description |
+|---|---|---|---|
+| `char_is_alpha(c)` | `(char) -> bool` | yes | True if `c` is a letter (a-z, A-Z) |
+| `char_is_digit(c)` | `(char) -> bool` | yes | True if `c` is a digit (0-9) |
+| `char_is_whitespace(c)` | `(char) -> bool` | yes | True if `c` is space, tab, newline, or carriage return |
+
+Character literals use single quotes: `'a'`, `'\n'`, `'\t'`, `'\0'`, `'\\'`.
+
+### 7.7.1 Type Casting
+
+| Function | Signature | Pure | Description |
+|---|---|---|---|
+| `char_to_int(c)` | `(char) -> int` | yes | Zero-extends char to 64-bit integer |
+| `int_to_char(n)` | `(int) -> char` | yes | Truncates integer to 8-bit character |
+| `int_to_str(n)` | `(int) -> string` | no | Converts integer to decimal string |
+| `str_to_int(s)` | `(string) -> int` | yes | Parses decimal string to integer |
+| `int_to_float(n)` | `(int) -> float` | yes | Converts integer to float |
+| `float_to_int(f)` | `(float) -> int` | yes | Truncates float to integer |
 
 ### 7.8 Pattern Matching
 Match statements destructure values against patterns:
@@ -454,7 +496,9 @@ The compiler emits textual LLVM IR.  Key mappings:
 | `bool` | `i1` |
 | `string` | `ptr` (null-terminated C string) |
 | `fn(T) -> U` | `ptr` (opaque pointer to `{ ptr, ptr }` pair) |
-| `[T]` (array) | `{ ptr, i64 }` fat pointer (data pointer + length) |
+| `char` | `i8` |
+| `[T]` (array) | `{ ptr, i64, i64 }` fat pointer (data pointer + length + capacity) |
+| `Map` | `ptr` (hash table: keys, values, flags, capacity, size) |
 | Local variables | `alloca` + `load`/`store` |
 | Function calls | `call` instruction |
 | Method calls | `call @Type_method(ptr %self, ...)` |
@@ -474,14 +518,21 @@ The compiler emits textual LLVM IR.  Key mappings:
 | `requires`/`ensures` | Conditional `br` to `@__yorum_contract_fail` on violation |
 
 ### 11.2 Arrays
-Arrays are heap-allocated fat pointers: `{ ptr, i64 }`.  The first field points
-to a contiguous `malloc`'d buffer of elements; the second holds the length.
+Arrays are heap-allocated fat pointers: `{ ptr, i64, i64 }`.  The first field
+points to a contiguous `malloc`'d buffer of elements; the second holds the
+length; the third holds the capacity.
 
 Every index operation emits a call to a bounds-check helper that aborts on
 out-of-range access (negative index or index >= length).
 
 Array parameters are passed as `ptr` (opaque pointer to the fat pointer struct).
 `len(arr)` loads the length field directly from the fat pointer.
+
+`push` checks if length equals capacity, doubles capacity via `realloc` when
+needed, then stores the element at `data[len]` and increments length.  For
+aggregate element types (structs, enums), `memcpy` is used instead of `store`.
+`pop` checks length > 0, decrements length, and loads the element at the new
+end position.
 
 For loops compile to an index-counting loop: an `i64` counter starts at 0,
 increments each iteration, and the loop exits when the counter reaches the
@@ -560,22 +611,84 @@ The entire AST is serializable to JSON via `serde`.  This enables:
 
 All built-in functions are available without imports.
 
+**Output:**
+
 | Function | Signature | Pure | Description |
 |---|---|---|---|
 | `print_int(n)` | `(int) -> unit` | no | Print an integer followed by newline |
 | `print_float(f)` | `(float) -> unit` | no | Print a float followed by newline |
 | `print_bool(b)` | `(bool) -> unit` | no | Print `true` or `false` followed by newline |
 | `print_str(s)` | `(string) -> unit` | no | Print a string followed by newline |
-| `len(arr)` | `([T]) -> int` | yes | Return the length of an array |
+| `print_char(c)` | `(char) -> unit` | no | Print a character (no newline) |
+| `print_err(s)` | `(string) -> unit` | no | Print a string to stderr followed by newline |
+
+**String and character operations:**
+
+| Function | Signature | Pure | Description |
+|---|---|---|---|
 | `str_len(s)` | `(string) -> int` | yes | Return the byte length of a string |
 | `str_concat(a, b)` | `(string, string) -> string` | no | Concatenate two strings (heap-allocates result) |
 | `str_eq(a, b)` | `(string, string) -> bool` | yes | Compare two strings for equality |
+| `str_charAt(s, i)` | `(string, int) -> char` | yes | Return character at byte index (bounds-checked) |
+| `str_sub(s, start, len)` | `(string, int, int) -> string` | no | Return substring (heap-allocated) |
+| `str_from_char(c)` | `(char) -> string` | no | Return single-character string |
+| `char_is_alpha(c)` | `(char) -> bool` | yes | True if letter (a-z, A-Z) |
+| `char_is_digit(c)` | `(char) -> bool` | yes | True if digit (0-9) |
+| `char_is_whitespace(c)` | `(char) -> bool` | yes | True if space, tab, newline, or CR |
+
+**Type casting:**
+
+| Function | Signature | Pure | Description |
+|---|---|---|---|
+| `char_to_int(c)` | `(char) -> int` | yes | Zero-extend char to integer |
+| `int_to_char(n)` | `(int) -> char` | yes | Truncate integer to char |
+| `int_to_str(n)` | `(int) -> string` | no | Convert integer to decimal string |
+| `str_to_int(s)` | `(string) -> int` | yes | Parse decimal string to integer |
+| `int_to_float(n)` | `(int) -> float` | yes | Convert integer to float |
+| `float_to_int(f)` | `(float) -> int` | yes | Truncate float to integer |
+
+**Array operations:**
+
+| Function | Signature | Pure | Description |
+|---|---|---|---|
+| `len(arr)` | `([T]) -> int` | yes | Return the length of an array |
+| `push(arr, val)` | `([T], T) -> unit` | no | Append element, growing buffer if needed |
+| `pop(arr)` | `([T]) -> T` | no | Remove and return last element (aborts if empty) |
+
+**File I/O:**
+
+| Function | Signature | Pure | Description |
+|---|---|---|---|
+| `file_read(path)` | `(string) -> string` | no | Read entire file to string |
+| `file_write(path, content)` | `(string, string) -> bool` | no | Write string to file, returns success |
+
+**Process interaction:**
+
+| Function | Signature | Pure | Description |
+|---|---|---|---|
+| `args()` | `() -> [string]` | no | Return command-line arguments |
+| `exit(code)` | `(int) -> unit` | no | Terminate with exit code |
+
+**HashMap:**
+
+| Function | Signature | Pure | Description |
+|---|---|---|---|
+| `map_new()` | `() -> Map` | no | Create a new empty hash map |
+| `map_set(m, key, val)` | `(Map, string, int) -> unit` | no | Insert or update a key-value pair |
+| `map_get(m, key)` | `(Map, string) -> int` | yes | Look up a key (aborts if not found) |
+| `map_has(m, key)` | `(Map, string) -> bool` | yes | Check if a key exists |
+
+**Concurrency:**
+
+| Function | Signature | Pure | Description |
+|---|---|---|---|
 | `chan()` | `() -> Chan<T>` | no | Create a new synchronous channel |
 | `send(ch, val)` | `(Chan<T>, T) -> unit` | no | Send a value into a channel (blocks until received) |
 | `recv(ch)` | `(Chan<T>) -> T` | no | Receive a value from a channel (blocks until sent) |
 
-`len` is special-cased in the type checker — it is not a registered function but
-is handled directly in call expression checking.  It works on any array type.
+`len`, `push`, `pop`, `args`, and `exit` are special-cased in the type checker —
+they are handled directly in call expression checking rather than being
+registered as normal functions.
 
 `chan`, `send`, and `recv` are also special-cased in the type checker.  The
 channel element type for `chan()` defaults to `int` when not otherwise
@@ -601,8 +714,15 @@ constrained by the binding context.
 - Structured concurrency: `spawn`/`.join()` backed by pthreads, must-join enforcement
 - Channels: `chan()`/`send()`/`recv()` with mutex+condvar synchronization
 
-### v0.5
-- Self-hosting compiler
+### v0.5 (Done)
+- `char` type with literals and classification builtins
+- Type casting builtins (`int_to_str`, `str_to_int`, `char_to_int`, `int_to_char`, `int_to_float`, `float_to_int`)
+- Extended string/char operations (`str_charAt`, `str_sub`, `str_from_char`)
+- Dynamic arrays with `push`/`pop` (realloc-based growth)
+- File I/O (`file_read`, `file_write`, `print_err`)
+- Process interaction (`args()`, `exit()`)
+- HashMap (`map_new`, `map_set`, `map_get`, `map_has`)
+- Self-hosting compiler (5,226 lines of Yorum, bootstrap fixed-point achieved)
 
 ### v0.6
 - Standard library (io, collections, math, networking)

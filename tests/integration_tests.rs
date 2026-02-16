@@ -3298,3 +3298,705 @@ fn test_networking_ir_definitions() {
     assert!(ir.contains("define ptr @http_get"));
     assert!(ir.contains("define ptr @http_post"));
 }
+
+// ═══════════════════════════════════════════════════════════════
+//  v1.0 — Robustness tests
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn test_empty_input_compiles() {
+    // Empty / whitespace-only input should not panic — it compiles to a valid (empty) module
+    let result = yorum::compile_to_ir("");
+    assert!(result.is_ok());
+    let result2 = yorum::compile_to_ir("   \n\n  ");
+    assert!(result2.is_ok());
+}
+
+#[test]
+fn test_unterminated_string_error() {
+    let result = yorum::compile_to_ir("fn f() -> string { return \"hello; }");
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_unterminated_block_comment() {
+    // Unterminated block comment — lexer should not panic
+    let result = yorum::compile_to_ir("/* unclosed comment\nfn f() -> int { return 0; }");
+    // Whether this errors or not, the key invariant is no panic
+    let _ = result;
+}
+
+#[test]
+fn test_invalid_token_error() {
+    let result = yorum::compile_to_ir("fn f() -> int { let x: int = @; return x; }");
+    assert!(result.is_err());
+    let result2 = yorum::compile_to_ir("fn f() -> int { let x: int = $; return x; }");
+    assert!(result2.is_err());
+}
+
+#[test]
+fn test_missing_semicolon_error() {
+    let result = yorum::compile_to_ir("fn f() -> int { return 1 }");
+    assert!(result.is_err());
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  v1.0 — Parser error tests
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn test_parse_error_unclosed_brace() {
+    let result = yorum::compile_to_ir("fn f() -> int { return 1;");
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(err.contains("parse error"));
+}
+
+#[test]
+fn test_parse_error_unclosed_paren() {
+    let result = yorum::compile_to_ir("fn f(x: int -> int { return x; }");
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(err.contains("expected ')'"));
+}
+
+#[test]
+fn test_parse_error_missing_type_annotation() {
+    let result = yorum::compile_to_ir("fn f() -> int { let x = 1; return x; }");
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(err.contains("expected ':'"));
+}
+
+#[test]
+fn test_parse_error_missing_fn_name() {
+    let result = yorum::compile_to_ir("fn () -> int { return 0; }");
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(err.contains("expected identifier"));
+}
+
+#[test]
+fn test_parse_error_keyword_as_variable() {
+    let result = yorum::compile_to_ir("fn f() -> int { let while: int = 1; return while; }");
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(err.contains("expected identifier"));
+}
+
+#[test]
+fn test_parse_error_double_arrow() {
+    let result = yorum::compile_to_ir("fn f() -> -> int { return 0; }");
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(err.contains("expected type"));
+}
+
+#[test]
+fn test_parse_error_missing_return_type() {
+    let result = yorum::compile_to_ir("fn f() { return 1; }");
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(err.contains("expected '->'"));
+}
+
+#[test]
+fn test_parse_error_struct_missing_field_type() {
+    let result = yorum::compile_to_ir("struct S { x; }");
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(err.contains("expected ':'"));
+}
+
+#[test]
+fn test_parse_error_array_unclosed() {
+    let result = yorum::compile_to_ir("fn f() -> [int] { let a: [int] = [1, 2; return a; }");
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(err.contains("expected ']'"));
+}
+
+#[test]
+fn test_parse_error_if_missing_brace() {
+    let result = yorum::compile_to_ir("fn f(x: int) -> int { if x > 0 return x; return 0; }");
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(err.contains("expected '{'"));
+}
+
+#[test]
+fn test_parse_error_while_missing_body() {
+    let result = yorum::compile_to_ir("fn f() -> int { while true return 0; }");
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(err.contains("expected '{'"));
+}
+
+#[test]
+fn test_parse_error_empty_enum_accepted() {
+    // Empty enum is accepted by the parser — no variants, but valid syntax
+    let result = yorum::compile_to_ir("enum E { }\nfn main() -> int { return 0; }");
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_parse_error_match_no_arms_accepted() {
+    // Match with no arms is accepted — potentially unreachable at runtime
+    let result =
+        yorum::compile_to_ir("fn f(x: int) -> int { match x { } }\nfn main() -> int { return 0; }");
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_parse_error_duplicate_function() {
+    let result = yorum::compile_to_ir("fn f() -> int { return 1; }\nfn f() -> int { return 2; }");
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(err.contains("already defined"));
+}
+
+#[test]
+fn test_parse_error_nested_function_rejected() {
+    // Functions cannot be nested — should fail at parse or type-check level
+    let result = yorum::compile_to_ir(
+        "fn outer() -> int { fn inner() -> int { return 1; } return inner(); }",
+    );
+    assert!(result.is_err());
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  v1.0 — Module system tests
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn test_module_pub_struct_accessible() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+
+    std::fs::write(
+        dir.path().join("yorum.toml"),
+        "[package]\nname = \"testproj\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+
+    std::fs::write(
+        src.join("shapes.yrm"),
+        "module shapes;\n\
+         pub struct Point { x: int, y: int }\n\
+         pub fn sum_xy(x: int, y: int) -> int { return x + y; }\n",
+    )
+    .unwrap();
+
+    std::fs::write(
+        src.join("main.yrm"),
+        "module main;\n\
+         use shapes;\n\
+         fn main() -> int {\n\
+         \x20   let s: int = sum_xy(3, 4);\n\
+         \x20   print_int(s);\n\
+         \x20   return 0;\n\
+         }\n",
+    )
+    .unwrap();
+
+    let ir = yorum::compile_project(dir.path()).expect("pub struct/fn should be accessible");
+    assert!(ir.contains("define i64 @main"));
+    assert!(ir.contains("shapes__Point"));
+}
+
+#[test]
+fn test_module_private_fn_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+
+    std::fs::write(
+        dir.path().join("yorum.toml"),
+        "[package]\nname = \"testproj\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+
+    std::fs::write(
+        src.join("secret.yrm"),
+        "module secret;\n\
+         fn hidden() -> int { return 42; }\n",
+    )
+    .unwrap();
+
+    std::fs::write(
+        src.join("main.yrm"),
+        "module main;\n\
+         use secret;\n\
+         fn main() -> int { return hidden(); }\n",
+    )
+    .unwrap();
+
+    let result = yorum::compile_project(dir.path());
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_module_pub_enum_accessible() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+
+    std::fs::write(
+        dir.path().join("yorum.toml"),
+        "[package]\nname = \"testproj\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+
+    std::fs::write(
+        src.join("types.yrm"),
+        "module types;\n\
+         pub enum Color { Red, Green, Blue }\n\
+         pub fn make_red() -> int { return 0; }\n",
+    )
+    .unwrap();
+
+    std::fs::write(
+        src.join("main.yrm"),
+        "module main;\n\
+         use types;\n\
+         fn main() -> int {\n\
+         \x20   let x: int = make_red();\n\
+         \x20   return x;\n\
+         }\n",
+    )
+    .unwrap();
+
+    let ir = yorum::compile_project(dir.path()).expect("pub enum module should compile");
+    assert!(ir.contains("types__Color") || ir.contains("types__make_red"));
+}
+
+#[test]
+fn test_module_multiple_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+
+    std::fs::write(
+        dir.path().join("yorum.toml"),
+        "[package]\nname = \"testproj\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+
+    std::fs::write(
+        src.join("math.yrm"),
+        "module math;\n\
+         pub fn add(a: int, b: int) -> int { return a + b; }\n",
+    )
+    .unwrap();
+
+    std::fs::write(
+        src.join("str_utils.yrm"),
+        "module str_utils;\n\
+         pub fn greeting() -> string { return \"hello\"; }\n",
+    )
+    .unwrap();
+
+    std::fs::write(
+        src.join("main.yrm"),
+        "module main;\n\
+         use math;\n\
+         use str_utils;\n\
+         fn main() -> int {\n\
+         \x20   let x: int = add(1, 2);\n\
+         \x20   let s: string = greeting();\n\
+         \x20   print_int(x);\n\
+         \x20   return 0;\n\
+         }\n",
+    )
+    .unwrap();
+
+    let ir = yorum::compile_project(dir.path()).expect("3-file project should compile");
+    assert!(ir.contains("@math__add"));
+    assert!(ir.contains("@str_utils__greeting"));
+}
+
+#[test]
+fn test_module_use_statement() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+
+    std::fs::write(
+        dir.path().join("yorum.toml"),
+        "[package]\nname = \"testproj\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+
+    std::fs::write(
+        src.join("utils.yrm"),
+        "module utils;\n\
+         pub fn double(x: int) -> int { return x * 2; }\n",
+    )
+    .unwrap();
+
+    std::fs::write(
+        src.join("main.yrm"),
+        "module main;\n\
+         use utils;\n\
+         fn main() -> int { return double(21); }\n",
+    )
+    .unwrap();
+
+    let ir = yorum::compile_project(dir.path()).expect("use statement should work");
+    assert!(ir.contains("@utils__double"));
+}
+
+#[test]
+fn test_module_wrong_module_decl() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+
+    std::fs::write(
+        dir.path().join("yorum.toml"),
+        "[package]\nname = \"testproj\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+
+    // File is lib.yrm but declares module wrong
+    std::fs::write(
+        src.join("lib.yrm"),
+        "module wrong;\n\
+         pub fn f() -> int { return 1; }\n",
+    )
+    .unwrap();
+
+    std::fs::write(
+        src.join("main.yrm"),
+        "module main;\n\
+         fn main() -> int { return 0; }\n",
+    )
+    .unwrap();
+
+    let result = yorum::compile_project(dir.path());
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_module_missing_main() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+
+    std::fs::write(
+        dir.path().join("yorum.toml"),
+        "[package]\nname = \"testproj\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+
+    // Only a library module, no main
+    std::fs::write(
+        src.join("lib.yrm"),
+        "module lib;\n\
+         pub fn f() -> int { return 1; }\n",
+    )
+    .unwrap();
+
+    let result = yorum::compile_project(dir.path());
+    // Missing main module should produce an error
+    assert!(result.is_err());
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  v1.0 — Control flow tests
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn test_nested_while_loops_compile() {
+    compile(
+        "fn matrix_sum() -> int {\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   let mut i: int = 0;\n\
+         \x20   while i < 3 {\n\
+         \x20       let mut j: int = 0;\n\
+         \x20       while j < 3 {\n\
+         \x20           sum = sum + i * 3 + j;\n\
+         \x20           j = j + 1;\n\
+         \x20       }\n\
+         \x20       i = i + 1;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+}
+
+#[test]
+fn test_while_with_array_push() {
+    compile(
+        "fn build_array() -> [int] {\n\
+         \x20   let mut arr: [int] = [0];\n\
+         \x20   let mut i: int = 1;\n\
+         \x20   while i < 5 {\n\
+         \x20       push(arr, i);\n\
+         \x20       i = i + 1;\n\
+         \x20   }\n\
+         \x20   return arr;\n\
+         }\n",
+    );
+}
+
+#[test]
+fn test_for_loop_over_array() {
+    compile(
+        "fn sum_array() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for x in arr {\n\
+         \x20       sum = sum + x;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+}
+
+#[test]
+fn test_if_without_else() {
+    compile(
+        "fn maybe_print(x: int) -> int {\n\
+         \x20   if x > 0 {\n\
+         \x20       print_int(x);\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+}
+
+#[test]
+fn test_nested_if_else_if() {
+    compile(
+        "fn classify(x: int) -> int {\n\
+         \x20   if x > 100 {\n\
+         \x20       return 3;\n\
+         \x20   } else if x > 10 {\n\
+         \x20       return 2;\n\
+         \x20   } else if x > 0 {\n\
+         \x20       return 1;\n\
+         \x20   } else {\n\
+         \x20       return 0;\n\
+         \x20   }\n\
+         }\n",
+    );
+}
+
+#[test]
+fn test_match_wildcard_only() {
+    compile(
+        "fn always_zero(x: int) -> int {\n\
+         \x20   match x {\n\
+         \x20       _ => { return 0; }\n\
+         \x20   }\n\
+         }\n",
+    );
+}
+
+#[test]
+fn test_match_multiple_patterns() {
+    compile(
+        "fn describe(x: int) -> int {\n\
+         \x20   match x {\n\
+         \x20       0 => { return 0; }\n\
+         \x20       1 => { return 1; }\n\
+         \x20       2 => { return 2; }\n\
+         \x20       _ => { return 99; }\n\
+         \x20   }\n\
+         }\n",
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  v1.0 — Struct/impl/trait tests
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn test_struct_many_fields() {
+    compile(
+        "struct Record {\n\
+         \x20   a: int, b: int, c: int, d: int,\n\
+         \x20   e: int, f: int, g: int, h: int\n\
+         }\n\
+         fn main() -> int {\n\
+         \x20   let r: Record = Record { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 };\n\
+         \x20   return r.a + r.h;\n\
+         }\n",
+    );
+}
+
+#[test]
+fn test_struct_nested_structs() {
+    compile(
+        "struct Inner { value: int }\n\
+         struct Outer { inner: Inner, label: int }\n\
+         fn main() -> int {\n\
+         \x20   let i: Inner = Inner { value: 42 };\n\
+         \x20   let o: Outer = Outer { inner: i, label: 7 };\n\
+         \x20   print_int(o.label);\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+}
+
+#[test]
+fn test_impl_multiple_methods() {
+    compile(
+        "struct Counter { value: int }\n\
+         impl Counter {\n\
+         \x20   fn get(self: &Counter) -> int { return self.value; }\n\
+         \x20   fn is_zero(self: &Counter) -> bool { return self.value == 0; }\n\
+         \x20   fn double(self: &Counter) -> int { return self.value * 2; }\n\
+         }\n\
+         fn main() -> int {\n\
+         \x20   let c: Counter = Counter { value: 5 };\n\
+         \x20   print_int(c.get());\n\
+         \x20   print_int(c.double());\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+}
+
+#[test]
+fn test_trait_multiple_methods() {
+    compile(
+        "struct Vec2 { x: int, y: int }\n\
+         trait Geometric {\n\
+         \x20   fn area(self: &Self) -> int;\n\
+         \x20   fn perimeter(self: &Self) -> int;\n\
+         }\n\
+         impl Geometric for Vec2 {\n\
+         \x20   fn area(self: &Vec2) -> int { return self.x * self.y; }\n\
+         \x20   fn perimeter(self: &Vec2) -> int { return 2 * (self.x + self.y); }\n\
+         }\n\
+         fn main() -> int {\n\
+         \x20   let v: Vec2 = Vec2 { x: 3, y: 4 };\n\
+         \x20   return v.area() + v.perimeter();\n\
+         }\n",
+    );
+}
+
+#[test]
+fn test_trait_impl_missing_method_error() {
+    // Trait requires two methods but impl only provides one
+    let result = yorum::typecheck(
+        "struct Foo { x: int }\n\
+         trait Bar {\n\
+         \x20   fn baz(self: &Self) -> int;\n\
+         \x20   fn qux(self: &Self) -> int;\n\
+         }\n\
+         impl Bar for Foo {\n\
+         \x20   fn baz(self: &Foo) -> int { return self.x; }\n\
+         }\n",
+    );
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("missing method"));
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  v1.0 — Example program compilation tests
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn test_example_hello_compiles() {
+    let source = include_str!("../examples/hello.yrm");
+    yorum::compile_to_ir(source).expect("examples/hello.yrm should compile");
+}
+
+#[test]
+fn test_example_fibonacci_compiles() {
+    let source = include_str!("../examples/fibonacci.yrm");
+    yorum::compile_to_ir(source).expect("examples/fibonacci.yrm should compile");
+}
+
+#[test]
+fn test_example_structs_compiles() {
+    let source = include_str!("../examples/structs.yrm");
+    yorum::compile_to_ir(source).expect("examples/structs.yrm should compile");
+}
+
+#[test]
+fn test_example_pattern_match_compiles() {
+    let source = include_str!("../examples/pattern_match.yrm");
+    yorum::compile_to_ir(source).expect("examples/pattern_match.yrm should compile");
+}
+
+#[test]
+fn test_example_effects_compiles() {
+    let source = include_str!("../examples/effects.yrm");
+    yorum::compile_to_ir(source).expect("examples/effects.yrm should compile");
+}
+
+#[test]
+fn test_example_methods_compiles() {
+    let source = include_str!("../examples/methods.yrm");
+    yorum::compile_to_ir(source).expect("examples/methods.yrm should compile");
+}
+
+#[test]
+fn test_example_traits_compiles() {
+    let source = include_str!("../examples/traits.yrm");
+    yorum::compile_to_ir(source).expect("examples/traits.yrm should compile");
+}
+
+#[test]
+fn test_example_generics_compiles() {
+    let source = include_str!("../examples/generics.yrm");
+    yorum::compile_to_ir(source).expect("examples/generics.yrm should compile");
+}
+
+#[test]
+fn test_example_closures_compiles() {
+    let source = include_str!("../examples/closures.yrm");
+    yorum::compile_to_ir(source).expect("examples/closures.yrm should compile");
+}
+
+#[test]
+fn test_example_arrays_compiles() {
+    let source = include_str!("../examples/arrays.yrm");
+    yorum::compile_to_ir(source).expect("examples/arrays.yrm should compile");
+}
+
+#[test]
+fn test_example_strings_compiles() {
+    let source = include_str!("../examples/strings.yrm");
+    yorum::compile_to_ir(source).expect("examples/strings.yrm should compile");
+}
+
+#[test]
+fn test_example_concurrency_compiles() {
+    let source = include_str!("../examples/concurrency.yrm");
+    yorum::compile_to_ir(source).expect("examples/concurrency.yrm should compile");
+}
+
+#[test]
+fn test_example_contracts_compiles() {
+    let source = include_str!("../examples/contracts.yrm");
+    yorum::compile_to_ir(source).expect("examples/contracts.yrm should compile");
+}
+
+#[test]
+fn test_example_chars_compiles() {
+    let source = include_str!("../examples/chars.yrm");
+    yorum::compile_to_ir(source).expect("examples/chars.yrm should compile");
+}
+
+#[test]
+fn test_example_string_ops_compiles() {
+    let source = include_str!("../examples/string_ops.yrm");
+    yorum::compile_to_ir(source).expect("examples/string_ops.yrm should compile");
+}
+
+#[test]
+fn test_example_tcp_echo_server_compiles() {
+    let source = include_str!("../examples/tcp_echo_server.yrm");
+    yorum::compile_to_ir(source).expect("examples/tcp_echo_server.yrm should compile");
+}
+
+#[test]
+fn test_example_tcp_echo_client_compiles() {
+    let source = include_str!("../examples/tcp_echo_client.yrm");
+    yorum::compile_to_ir(source).expect("examples/tcp_echo_client.yrm should compile");
+}

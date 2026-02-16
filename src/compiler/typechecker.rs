@@ -604,6 +604,16 @@ impl TypeChecker {
                 span: f.span,
             });
         }
+        if let Some(existing) = self.functions.get(&f.name) {
+            // Allow shadowing builtins (synthetic span), but reject user-defined duplicates
+            if existing.span.line != 0 {
+                self.errors.push(TypeError {
+                    message: format!("function '{}' is already defined", f.name),
+                    span: f.span,
+                });
+                return;
+            }
+        }
         self.functions.insert(f.name.clone(), sig);
     }
 

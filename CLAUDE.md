@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 cargo build                          # dev build
 cargo build --release                # release build
-cargo test                           # all tests (270: 46 unit + 224 integration)
+cargo test                           # all tests (326: 46 unit + 280 integration)
 cargo test compiler::lexer           # tests in one module
 cargo test test_fibonacci_compiles   # single test by name
 cargo test -- --nocapture            # see stdout from tests
@@ -256,6 +256,18 @@ Fixed and verified the ownership checker to properly enforce the spec (SPEC.md s
 6. **HTTP/1.0 with `Connection: close`** — Simplifies response reading. No chunked transfer encoding
 7. **No TLS/HTTPS** — Plain HTTP only. TLS would require linking OpenSSL
 8. **`htons` implemented in LLVM IR** — Byte-swap helper emitted directly, no external dependency
+
+## Completed: v1.0 — Stable Language Specification and ABI
+
+Stabilization release — no new language features or builtins. Focus on robustness, ABI documentation, and test coverage.
+
+### Key changes
+
+- **Robustness:** Replaced all `panic!()` calls in codegen (`Type::SelfType`/`Type::TypeVar`) with `debug_assert!` + fallback. Replaced all `unwrap()` calls in LSP server with error handling (`unwrap_or`, match with early return)
+- **Dynamic versioning:** `src/main.rs` and `src/lsp/server.rs` use `env!("CARGO_PKG_VERSION")` instead of hardcoded strings
+- **ABI appendix:** `SPEC.md` Appendix A documents primitive layout, struct/enum/array representation, calling convention, name mangling, closure/concurrency/HashMap internals
+- **Effects clarification:** `SPEC.md` section 5.1 notes that `effects` is parsed but not enforced
+- **Test coverage:** 56 new integration tests (5 robustness, 15 parser errors, 7 module system, 7 control flow, 5 struct/trait, 17 example programs) — total 326 tests (46 unit + 280 integration)
 
 ## Git Workflow
 

@@ -705,7 +705,7 @@ diff gen1.ll gen2.ll    # identical — fixed-point achieved
 ## Testing
 
 ```bash
-cargo test                    # 270 tests (46 unit + 224 integration)
+cargo test                    # 326 tests (46 unit + 280 integration)
 cargo test compiler::lexer    # tests in one module
 cargo test test_fibonacci     # single test by name
 ```
@@ -728,7 +728,7 @@ cargo test test_fibonacci     # single test by name
 | **v0.7** | LSP server for editor integration (diagnostics, hover, go-to-definition) | Done |
 | **v0.8** | Ownership checker: type-aware move tracking, branch merging, loop safety | Done |
 | **v0.9** | Networking: TCP/UDP sockets, DNS resolution, HTTP client (14 builtins) | Done |
-| **v1.0** | Stable language specification and ABI | |
+| **v1.0** | Stable language specification and ABI, production-ready toolchain | Done |
 
 ## License
 

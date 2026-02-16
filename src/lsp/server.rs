@@ -114,11 +114,15 @@ impl LspServer {
             },
             server_info: ServerInfo {
                 name: "yorum-lsp".to_string(),
-                version: "0.7.0".to_string(),
+                version: env!("CARGO_PKG_VERSION").to_string(),
             },
         };
         if let Some(id) = &msg.id {
-            self.send_response(writer, id.clone(), serde_json::to_value(result).unwrap())?;
+            self.send_response(
+                writer,
+                id.clone(),
+                serde_json::to_value(result).unwrap_or(serde_json::Value::Null),
+            )?;
         }
         Ok(())
     }
@@ -221,7 +225,7 @@ impl LspServer {
         });
 
         let result = match hover {
-            Some(h) => serde_json::to_value(h).unwrap(),
+            Some(h) => serde_json::to_value(h).unwrap_or(serde_json::Value::Null),
             None => serde_json::Value::Null,
         };
         self.send_response(writer, id, result)
@@ -283,7 +287,7 @@ impl LspServer {
         });
 
         let result = match location {
-            Some(loc) => serde_json::to_value(loc).unwrap(),
+            Some(loc) => serde_json::to_value(loc).unwrap_or(serde_json::Value::Null),
             None => serde_json::Value::Null,
         };
         self.send_response(writer, id, result)
@@ -314,11 +318,11 @@ impl LspServer {
             diagnostics: lsp_diags,
         };
 
-        self.send_notification(
-            writer,
-            "textDocument/publishDiagnostics",
-            serde_json::to_value(params).unwrap(),
-        )
+        let value = match serde_json::to_value(params) {
+            Ok(v) => v,
+            Err(_) => return Ok(()),
+        };
+        self.send_notification(writer, "textDocument/publishDiagnostics", value)
     }
 
     fn send_response(
@@ -343,7 +347,10 @@ impl LspServer {
                 error: None,
             }
         };
-        let body = serde_json::to_string(&resp).unwrap();
+        let body = match serde_json::to_string(&resp) {
+            Ok(b) => b,
+            Err(_) => return Ok(()),
+        };
         transport::write_message(writer, &body)
     }
 
@@ -363,7 +370,10 @@ impl LspServer {
                 message: message.to_string(),
             }),
         };
-        let body = serde_json::to_string(&resp).unwrap();
+        let body = match serde_json::to_string(&resp) {
+            Ok(b) => b,
+            Err(_) => return Ok(()),
+        };
         transport::write_message(writer, &body)
     }
 
@@ -378,7 +388,10 @@ impl LspServer {
             method: method.to_string(),
             params,
         };
-        let body = serde_json::to_string(&notif).unwrap();
+        let body = match serde_json::to_string(&notif) {
+            Ok(b) => b,
+            Err(_) => return Ok(()),
+        };
         transport::write_message(writer, &body)
     }
 }

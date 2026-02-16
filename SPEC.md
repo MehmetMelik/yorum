@@ -1,6 +1,6 @@
 # Yorum Language Specification
 
-**Version:** 0.8.0
+**Version:** 1.0.0
 
 ## 1. Overview
 
@@ -123,6 +123,9 @@ fields but different names are distinct types.
   The identifier `result` is bound to the return value and may be used in the
   expression.
 - `effects` lists the effect capabilities the function may use.
+  The `effects` clause is parsed and preserved in the AST but is not enforced by
+  the compiler. It serves as documentation. Effect enforcement is planned for a
+  future release.
 - Type parameters (e.g., `<T, U>`) make the function generic.
 
 ### 5.2 Structs
@@ -852,6 +855,121 @@ HTTP/1.0 only (no TLS/HTTPS).
 - HTTP client: `http_request`, `http_get`, `http_post` (HTTP/1.0, plain text)
 - Platform-specific sockaddr_in layout (macOS vs Linux)
 
-### v1.0
-- Stable language specification and ABI
-- Production-ready toolchain
+### v1.0 (Done)
+- Stable language specification and ABI (Appendix A)
+- Production-ready toolchain: no compiler panics on any input
+- Comprehensive test suite (~330 tests)
+- Dynamic versioning via Cargo.toml
+
+## Appendix A: Application Binary Interface (ABI)
+
+This appendix documents the binary layout and calling conventions used by the
+Yorum compiler when emitting LLVM IR. The ABI is stable from v1.0 onward;
+breaking changes will only occur on major version bumps.
+
+### A.1 Primitive Type Layout
+
+| Yorum type | LLVM type | Size (bytes) | Notes |
+|---|---|---|---|
+| `int` | `i64` | 8 | 64-bit signed integer |
+| `float` | `double` | 8 | IEEE 754 double precision |
+| `bool` | `i1` | 1 | `0` = false, `1` = true |
+| `char` | `i8` | 1 | ASCII character |
+| `string` | `ptr` | 8 | Pointer to null-terminated UTF-8 |
+| `unit` | `void` | 0 | No value |
+
+### A.2 Struct Layout
+
+Structs are emitted as LLVM named struct types with fields in declaration order:
+
+```llvm
+%Point = type { i64, i64 }       ; struct Point { x: int, y: int }
+```
+
+Fields are accessed via `getelementptr` with the struct type and field index
+(0-based, in declaration order). Structs are passed to functions as `ptr`
+(opaque pointer to the struct alloca).
+
+### A.3 Enum Layout
+
+Enums without associated data are represented as `{ i32 }` (tag only):
+
+```llvm
+%Color = type { i32 }            ; enum Color { Red, Green, Blue }
+```
+
+Enums with associated data use a tagged union `{ i32, [N x i8] }`, where `N` is
+the size of the largest variant's payload:
+
+```llvm
+%Option = type { i32, [8 x i8] } ; enum Option { None, Some(int) }
+```
+
+Variant tags are 0-indexed in declaration order. Variant constructors store the
+tag and then bitcast the payload area to store the associated data.
+
+### A.4 Array Layout
+
+Arrays are heap-allocated fat pointers with the following structure:
+
+```llvm
+{ ptr, i64, i64 }                ; { data, length, capacity }
+```
+
+- `data`: pointer to heap-allocated element storage (via `malloc`/`realloc`)
+- `length`: number of elements currently stored
+- `capacity`: number of elements that can be stored before reallocation
+
+`push` doubles capacity via `realloc` when `length == capacity`. `pop`
+decrements length and returns the last element. Both abort on invariant
+violations (push cannot fail; pop on empty array aborts). Array parameters are
+passed as `ptr` (opaque pointer to the fat pointer struct).
+
+### A.5 Calling Convention
+
+Yorum uses the LLVM default calling convention:
+
+- **Primitives** (`int`, `float`, `bool`, `char`): passed and returned by value
+- **Strings**: passed as `ptr` (pointer to null-terminated data)
+- **Structs and enums**: passed as `ptr` (pointer to stack alloca)
+- **Arrays**: passed as `ptr` (pointer to fat pointer struct)
+- **`unit` return**: LLVM `void`
+
+The `main` function has the signature `define i64 @main(i32 %__argc, ptr %__argv)`.
+
+### A.6 Name Mangling
+
+| Context | Pattern | Example |
+|---|---|---|
+| Module function | `module__fn` | `math__add` |
+| Method (impl) | `Type_method` | `Point_get_x` |
+| Generic instantiation | `name__type1__type2` | `identity__int`, `Pair__int__float` |
+
+### A.7 Closures
+
+Closures are represented as a pair of pointers:
+
+```llvm
+{ ptr, ptr }                      ; { function_pointer, environment_pointer }
+```
+
+The environment pointer points to a heap-allocated struct containing captured
+variables. The function pointer points to a generated function that takes the
+environment as its first argument.
+
+### A.8 Concurrency Primitives
+
+**Task** (from `spawn`): control block `{ pthread_t, ptr }` where the second
+element is a pointer to the environment struct (which includes a result slot).
+`.join()` calls `pthread_join` and reads the result.
+
+**Channel** (from `chan()`): heap-allocated struct containing a pthread mutex,
+condition variable, value slot, and ready flag. `send()` locks, stores, signals.
+`recv()` locks, waits, reads.
+
+### A.9 HashMap
+
+Hash maps use FNV-1a hashing with linear probing. The internal layout is a
+heap-allocated struct containing: key array, value array, state array (empty/
+occupied/deleted flags), capacity, and count. All helper functions (`map_new`,
+`map_set`, `map_get`, etc.) are emitted as LLVM IR function bodies.

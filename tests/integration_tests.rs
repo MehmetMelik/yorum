@@ -2074,3 +2074,195 @@ fn test_str_utility_ir_definitions() {
     assert!(ir.contains("define ptr @str_to_lower"));
     assert!(ir.contains("define ptr @str_repeat"));
 }
+
+// ═══════════════════════════════════════════════════════════════
+//  v0.6 Standard Library — Collection utility builtins
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn test_slice_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let arr: [int] = [1, 2, 3, 4, 5];\n\
+         \x20 let s: [int] = slice(arr, 1, 4);\n\
+         \x20 print_int(len(s));\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    // slice is inlined, check for its characteristic pattern
+    assert!(ir.contains("@malloc"));
+    assert!(ir.contains("@memcpy"));
+}
+
+#[test]
+fn test_concat_arrays_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let a: [int] = [1, 2];\n\
+         \x20 let b: [int] = [3, 4];\n\
+         \x20 let c: [int] = concat_arrays(a, b);\n\
+         \x20 print_int(len(c));\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("@malloc"));
+}
+
+#[test]
+fn test_reverse_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let arr: [int] = [1, 2, 3];\n\
+         \x20 let rev: [int] = reverse(arr);\n\
+         \x20 print_int(len(rev));\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("rev.loop"));
+}
+
+#[test]
+fn test_contains_int_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let arr: [int] = [1, 2, 3];\n\
+         \x20 let b: bool = contains_int(arr, 2);\n\
+         \x20 print_bool(b);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call i1 @contains_int"));
+}
+
+#[test]
+fn test_contains_str_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let arr: [string] = [\"hello\", \"world\"];\n\
+         \x20 let b: bool = contains_str(arr, \"world\");\n\
+         \x20 print_bool(b);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call i1 @contains_str"));
+}
+
+#[test]
+fn test_sort_int_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let arr: [int] = [3, 1, 2];\n\
+         \x20 let sorted: [int] = sort_int(arr);\n\
+         \x20 print_int(len(sorted));\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call ptr @sort_int"));
+}
+
+#[test]
+fn test_sort_str_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let arr: [string] = [\"c\", \"a\", \"b\"];\n\
+         \x20 let sorted: [string] = sort_str(arr);\n\
+         \x20 print_int(len(sorted));\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call ptr @sort_str"));
+}
+
+#[test]
+fn test_map_size_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let m: Map = map_new();\n\
+         \x20 map_set(m, \"a\", 1);\n\
+         \x20 let s: int = map_size(m);\n\
+         \x20 print_int(s);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call i64 @map_size"));
+}
+
+#[test]
+fn test_map_remove_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let m: Map = map_new();\n\
+         \x20 map_set(m, \"a\", 1);\n\
+         \x20 let removed: bool = map_remove(m, \"a\");\n\
+         \x20 print_bool(removed);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call i1 @map_remove"));
+}
+
+#[test]
+fn test_map_keys_values_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let m: Map = map_new();\n\
+         \x20 map_set(m, \"a\", 1);\n\
+         \x20 let keys: [string] = map_keys(m);\n\
+         \x20 let vals: [int] = map_values(m);\n\
+         \x20 print_int(len(keys));\n\
+         \x20 print_int(len(vals));\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call ptr @map_keys"));
+    assert!(ir.contains("call ptr @map_values"));
+}
+
+#[test]
+fn test_contains_int_pure() {
+    // contains_int is pure
+    parse_and_check(
+        "fn main() -> int {\n\
+         \x20 let arr: [int] = [1, 2, 3];\n\
+         \x20 let b: bool = contains_int(arr, 2);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+}
+
+#[test]
+fn test_slice_type_error() {
+    // slice requires array argument
+    let result = yorum::typecheck("fn f(x: int) { let y: int = slice(x, 0, 1); }");
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_concat_arrays_type_mismatch() {
+    let result = yorum::typecheck(
+        "fn f() {\n\
+         \x20 let a: [int] = [1];\n\
+         \x20 let b: [string] = [\"x\"];\n\
+         \x20 let c: [int] = concat_arrays(a, b);\n\
+         }",
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_collection_ir_definitions() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let m: Map = map_new();\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("define i1 @contains_int"));
+    assert!(ir.contains("define i1 @contains_str"));
+    assert!(ir.contains("define ptr @sort_int"));
+    assert!(ir.contains("define ptr @sort_str"));
+    assert!(ir.contains("define i64 @map_size"));
+    assert!(ir.contains("define i1 @map_remove"));
+    assert!(ir.contains("define ptr @map_keys"));
+    assert!(ir.contains("define ptr @map_values"));
+}

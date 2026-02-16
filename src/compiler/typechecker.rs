@@ -337,6 +337,56 @@ impl TypeChecker {
             "str_repeat".to_string(),
             builtin(vec![Type::Str, Type::Int], Type::Str, false),
         );
+        // Collection utility builtins (type-specific)
+        self.functions.insert(
+            "contains_int".to_string(),
+            builtin(
+                vec![Type::Array(Box::new(Type::Int)), Type::Int],
+                Type::Bool,
+                true,
+            ),
+        );
+        self.functions.insert(
+            "contains_str".to_string(),
+            builtin(
+                vec![Type::Array(Box::new(Type::Str)), Type::Str],
+                Type::Bool,
+                true,
+            ),
+        );
+        self.functions.insert(
+            "sort_int".to_string(),
+            builtin(
+                vec![Type::Array(Box::new(Type::Int))],
+                Type::Array(Box::new(Type::Int)),
+                false,
+            ),
+        );
+        self.functions.insert(
+            "sort_str".to_string(),
+            builtin(
+                vec![Type::Array(Box::new(Type::Str))],
+                Type::Array(Box::new(Type::Str)),
+                false,
+            ),
+        );
+        // Map utility builtins
+        self.functions.insert(
+            "map_size".to_string(),
+            builtin(vec![Type::Map], Type::Int, true),
+        );
+        self.functions.insert(
+            "map_remove".to_string(),
+            builtin(vec![Type::Map, Type::Str], Type::Bool, false),
+        );
+        self.functions.insert(
+            "map_keys".to_string(),
+            builtin(vec![Type::Map], Type::Array(Box::new(Type::Str)), false),
+        );
+        self.functions.insert(
+            "map_values".to_string(),
+            builtin(vec![Type::Map], Type::Array(Box::new(Type::Int)), false),
+        );
     }
 
     /// Type-check an entire program. Returns Ok(()) or collected errors.
@@ -1084,6 +1134,146 @@ impl TypeChecker {
                                 self.errors.push(TypeError {
                                     message: format!(
                                         "pop: argument must be an array, found '{}'",
+                                        arr_ty
+                                    ),
+                                    span: args[0].span,
+                                });
+                            }
+                        }
+                        return None;
+                    }
+
+                    // Built-in slice(arr, start, end) — returns [T]
+                    if name == "slice" {
+                        if args.len() != 3 {
+                            self.errors.push(TypeError {
+                                message: format!(
+                                    "'slice' expects 3 arguments, found {}",
+                                    args.len()
+                                ),
+                                span: expr.span,
+                            });
+                            return None;
+                        }
+                        if self.current_fn_is_pure {
+                            self.errors.push(TypeError {
+                                message: "pure function cannot call impure function 'slice'"
+                                    .to_string(),
+                                span: expr.span,
+                            });
+                        }
+                        if let Some(arr_ty) = self.infer_expr(&args[0]) {
+                            if let Type::Array(inner) = &arr_ty {
+                                for arg in &args[1..] {
+                                    if let Some(t) = self.infer_expr(arg) {
+                                        if t != Type::Int {
+                                            self.errors.push(TypeError {
+                                                message: format!(
+                                                    "slice: index must be int, found '{}'",
+                                                    t
+                                                ),
+                                                span: arg.span,
+                                            });
+                                        }
+                                    }
+                                }
+                                return Some(Type::Array(inner.clone()));
+                            } else {
+                                self.errors.push(TypeError {
+                                    message: format!(
+                                        "slice: first argument must be an array, found '{}'",
+                                        arr_ty
+                                    ),
+                                    span: args[0].span,
+                                });
+                            }
+                        }
+                        return None;
+                    }
+
+                    // Built-in concat_arrays(a, b) — returns [T]
+                    if name == "concat_arrays" {
+                        if args.len() != 2 {
+                            self.errors.push(TypeError {
+                                message: format!(
+                                    "'concat_arrays' expects 2 arguments, found {}",
+                                    args.len()
+                                ),
+                                span: expr.span,
+                            });
+                            return None;
+                        }
+                        if self.current_fn_is_pure {
+                            self.errors.push(TypeError {
+                                message:
+                                    "pure function cannot call impure function 'concat_arrays'"
+                                        .to_string(),
+                                span: expr.span,
+                            });
+                        }
+                        if let Some(a_ty) = self.infer_expr(&args[0]) {
+                            if let Type::Array(inner_a) = &a_ty {
+                                if let Some(b_ty) = self.infer_expr(&args[1]) {
+                                    if let Type::Array(inner_b) = &b_ty {
+                                        if *inner_a != *inner_b {
+                                            self.errors.push(TypeError {
+                                                message: format!(
+                                                    "concat_arrays: array types must match, found '[{}]' and '[{}]'",
+                                                    inner_a, inner_b
+                                                ),
+                                                span: expr.span,
+                                            });
+                                        }
+                                    } else {
+                                        self.errors.push(TypeError {
+                                            message: format!(
+                                                "concat_arrays: second argument must be an array, found '{}'",
+                                                b_ty
+                                            ),
+                                            span: args[1].span,
+                                        });
+                                    }
+                                }
+                                return Some(Type::Array(inner_a.clone()));
+                            } else {
+                                self.errors.push(TypeError {
+                                    message: format!(
+                                        "concat_arrays: first argument must be an array, found '{}'",
+                                        a_ty
+                                    ),
+                                    span: args[0].span,
+                                });
+                            }
+                        }
+                        return None;
+                    }
+
+                    // Built-in reverse(arr) — returns [T]
+                    if name == "reverse" {
+                        if args.len() != 1 {
+                            self.errors.push(TypeError {
+                                message: format!(
+                                    "'reverse' expects 1 argument, found {}",
+                                    args.len()
+                                ),
+                                span: expr.span,
+                            });
+                            return None;
+                        }
+                        if self.current_fn_is_pure {
+                            self.errors.push(TypeError {
+                                message: "pure function cannot call impure function 'reverse'"
+                                    .to_string(),
+                                span: expr.span,
+                            });
+                        }
+                        if let Some(arr_ty) = self.infer_expr(&args[0]) {
+                            if let Type::Array(inner) = &arr_ty {
+                                return Some(Type::Array(inner.clone()));
+                            } else {
+                                self.errors.push(TypeError {
+                                    message: format!(
+                                        "reverse: argument must be an array, found '{}'",
                                         arr_ty
                                     ),
                                     span: args[0].span,

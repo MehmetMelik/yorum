@@ -14,27 +14,25 @@ The language is functionally complete but has daily-use paper cuts.
 
 ---
 
-## v1.2 — String Interpolation & Generic Collections
+## v1.2 — String Interpolation, Tuple Types, Option/Result (Done)
 
-- **String interpolation**: `"hello {name}"` or a `format()` builtin — `str_concat` chains are painful
-- **`Map<K, V>`** — generic hash map. Keys need a hash/equality constraint (either built-in for primitive types, or a `Hashable` trait)
-- **`Set<T>`** — built on top of `Map<T, unit>` or similar
-- **Tuple types**: `(int, string)` — anonymous product types for multi-return and lightweight grouping
-- **Standard `Option<T>` and `Result<T, E>`** — ship as prelude types (always available, no import needed)
-
-Rationale: String interpolation is the last remaining ergonomic paper cut. Generic collections unblock real-world data structures — the current `Map` severely limits what can be built.
+- ~~**String interpolation**: `"hello {name}"` — desugars to `str_concat`/`to_str` chains in the parser~~
+- ~~**Tuple types**: `(int, string)` — anonymous product types with `.0` access and destructuring~~
+- ~~**Standard `Option<T>` and `Result<T, E>`** — prelude generic enums with monomorphization and methods~~
+- **`Map<K, V>`** and **`Set<T>`** — deferred to v1.3
 
 ---
 
-## v1.3 — Error Handling Sugar
+## v1.3 — Generic Collections & Error Handling Sugar
 
-With `Option<T>` and `Result<T, E>` in place, add ergonomic error propagation.
+With `Option<T>` and `Result<T, E>` in place, add generic collections and ergonomic error propagation.
 
+- **`Map<K, V>`** — generic hash map. Keys need a hash/equality constraint (either built-in for primitive types, or a `Hashable` trait)
+- **`Set<T>`** — built on top of `Map<T, unit>` or similar
 - **`?` operator** or `try` expression — propagates `Err`/`None` up the call stack without manual match boilerplate
-- **`unwrap()` method** on `Option`/`Result` — aborts with a message on failure (useful for prototyping)
 - **`match` exhaustiveness checking** — warn or error when not all variants are covered
 
-Rationale: Yorum's error-as-values philosophy is right, but without `?` it's extremely verbose. This is the #1 thing that would make the language pleasant to use at scale.
+Rationale: Generic collections unblock real-world data structures. The `?` operator makes error handling ergonomic at scale.
 
 ---
 
@@ -121,7 +119,8 @@ Rationale: Natural evolution of the `for` loop and array builtins. Lazy evaluati
 The top 3 highest-impact releases:
 
 1. ~~**v1.1 (Ergonomics)** — removes friction that makes users bounce immediately~~ **Done**
-2. **v1.2 (String Interpolation & Generic Collections)** — unblocks building anything non-trivial
-3. **v1.4 (Effect System)** — the unique differentiator that no other language has done well
+2. ~~**v1.2 (String Interpolation, Tuples, Option/Result)** — unblocks real-world programs~~ **Done**
+3. **v1.3 (Generic Collections & Error Sugar)** — `Map<K,V>`, `Set<T>`, `?` operator
+4. **v1.4 (Effect System)** — the unique differentiator that no other language has done well
 
 The collections work is "catch-up" to be competitive. The effect system is where Yorum can lead.

@@ -40,10 +40,11 @@ struct VarInfo {
 
 /// Copy types are freely duplicated — assigning or returning them does not move.
 fn is_copy_type(ty: &Type) -> bool {
-    matches!(
-        ty,
-        Type::Int | Type::Float | Type::Bool | Type::Char | Type::Str | Type::Unit
-    )
+    match ty {
+        Type::Int | Type::Float | Type::Bool | Type::Char | Type::Str | Type::Unit => true,
+        Type::Tuple(types) => types.iter().all(is_copy_type),
+        _ => false,
+    }
 }
 
 pub struct OwnershipChecker {
@@ -122,7 +123,16 @@ impl OwnershipChecker {
         match stmt {
             Stmt::Let(s) => {
                 self.check_expr_move(&s.value);
-                self.define(&s.name, s.ty.clone(), s.span);
+                // Handle tuple destructuring: define each name with its element type
+                if let Some(ref names) = s.destructure {
+                    if let Type::Tuple(ref elem_types) = s.ty {
+                        for (name, ty) in names.iter().zip(elem_types.iter()) {
+                            self.define(name, ty.clone(), s.span);
+                        }
+                    }
+                } else {
+                    self.define(&s.name, s.ty.clone(), s.span);
+                }
                 // Track Task variables for must-consume enforcement
                 if matches!(s.value.kind, ExprKind::Spawn(_)) || matches!(s.ty, Type::Task(_)) {
                     if let Some(tasks) = self.task_vars.last_mut() {
@@ -297,7 +307,7 @@ impl OwnershipChecker {
                     self.check_expr_use(&fi.value);
                 }
             }
-            ExprKind::ArrayLit(elements) => {
+            ExprKind::ArrayLit(elements) | ExprKind::TupleLit(elements) => {
                 for elem in elements {
                     self.check_expr_use(elem);
                 }

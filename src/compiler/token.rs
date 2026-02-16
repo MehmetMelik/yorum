@@ -13,12 +13,22 @@ impl Token {
     }
 }
 
+/// A part of an interpolated string literal.
+#[derive(Debug, Clone, PartialEq)]
+pub enum InterpPart {
+    /// A literal string segment.
+    Literal(String),
+    /// An expression (as a sequence of tokens) to be interpolated.
+    Expr(Vec<Token>),
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum TokenKind {
     // ── Literals ──────────────────────────────────────────────
     IntLit(i64),
     FloatLit(f64),
     StringLit(String),
+    InterpStringLit(Vec<InterpPart>),
     CharLit(char),
 
     // ── Identifier ───────────────────────────────────────────
@@ -177,6 +187,7 @@ impl fmt::Display for TokenKind {
             TokenKind::IntLit(n) => write!(f, "{}", n),
             TokenKind::FloatLit(n) => write!(f, "{}", n),
             TokenKind::StringLit(s) => write!(f, "\"{}\"", s),
+            TokenKind::InterpStringLit(_) => write!(f, "\"...{{...}}...\""),
             TokenKind::CharLit(c) => write!(f, "'{}'", c),
             TokenKind::Ident(s) => write!(f, "{}", s),
             TokenKind::Fn => write!(f, "fn"),

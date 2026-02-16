@@ -81,6 +81,7 @@ struct StructInfo {
 #[derive(Debug, Clone)]
 struct EnumInfo {
     variants: Vec<(String, Vec<Type>)>,
+    type_params: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -539,6 +540,37 @@ impl TypeChecker {
             "http_post".to_string(),
             builtin(vec![Type::Str, Type::Str], Type::Str, false),
         );
+        // String conversion builtins (for string interpolation)
+        self.functions.insert(
+            "float_to_str".to_string(),
+            builtin(vec![Type::Float], Type::Str, true),
+        );
+        self.functions.insert(
+            "bool_to_str".to_string(),
+            builtin(vec![Type::Bool], Type::Str, true),
+        );
+
+        // Register prelude generic enums: Option<T> and Result<T, E>
+        self.enums.insert(
+            "Option".to_string(),
+            EnumInfo {
+                variants: vec![
+                    ("Some".to_string(), vec![Type::TypeVar("T".to_string())]),
+                    ("None".to_string(), vec![]),
+                ],
+                type_params: vec!["T".to_string()],
+            },
+        );
+        self.enums.insert(
+            "Result".to_string(),
+            EnumInfo {
+                variants: vec![
+                    ("Ok".to_string(), vec![Type::TypeVar("T".to_string())]),
+                    ("Err".to_string(), vec![Type::TypeVar("E".to_string())]),
+                ],
+                type_params: vec!["T".to_string(), "E".to_string()],
+            },
+        );
     }
 
     /// Type-check an entire program. Returns Ok(()) or collected errors.
@@ -749,6 +781,7 @@ impl TypeChecker {
                 .iter()
                 .map(|v| (v.name.clone(), v.fields.clone()))
                 .collect(),
+            type_params: e.type_params.iter().map(|tp| tp.name.clone()).collect(),
         };
         if self.collect_symbols {
             let variants_desc: Vec<String> = e
@@ -877,6 +910,7 @@ impl TypeChecker {
                     // For generic types, compare base name
                     let compatible = match (&s.ty, &val_ty) {
                         (Type::Generic(name, _), Type::Named(vname)) => name == vname,
+                        (Type::Generic(name1, _), Type::Generic(name2, _)) => name1 == name2,
                         _ => val_ty == s.ty,
                     };
                     if !compatible {
@@ -889,6 +923,46 @@ impl TypeChecker {
                         });
                     }
                 }
+
+                // Handle tuple destructuring: let (a, b): (int, string) = expr;
+                if let Some(names) = &s.destructure {
+                    if let Type::Tuple(ref elem_types) = s.ty {
+                        if names.len() != elem_types.len() {
+                            self.errors.push(TypeError {
+                                message: format!(
+                                    "destructuring pattern has {} names but tuple has {} elements",
+                                    names.len(),
+                                    elem_types.len()
+                                ),
+                                span: s.span,
+                            });
+                        } else {
+                            for (name, ty) in names.iter().zip(elem_types.iter()) {
+                                if self.collect_symbols {
+                                    self.symbol_table.definitions.push(SymbolDef {
+                                        name: name.clone(),
+                                        kind: SymbolKind::Variable,
+                                        type_desc: format!(
+                                            "{}{}: {}",
+                                            if s.is_mut { "let mut " } else { "let " },
+                                            name,
+                                            ty
+                                        ),
+                                        span: s.span,
+                                    });
+                                }
+                                self.define_with_span(name, ty.clone(), s.is_mut, s.span);
+                            }
+                        }
+                    } else {
+                        self.errors.push(TypeError {
+                            message: format!("cannot destructure non-tuple type '{}'", s.ty),
+                            span: s.span,
+                        });
+                    }
+                    return;
+                }
+
                 if self.collect_symbols {
                     self.symbol_table.definitions.push(SymbolDef {
                         name: s.name.clone(),
@@ -950,7 +1024,12 @@ impl TypeChecker {
                 if let Some(expected) = &self.current_fn_ret {
                     let expected = expected.clone();
                     if let Some(actual) = self.infer_expr(&s.value) {
-                        if actual != expected {
+                        let compatible = match (&expected, &actual) {
+                            (Type::Generic(name1, _), Type::Generic(name2, _)) => name1 == name2,
+                            (Type::Generic(name, _), Type::Named(vname)) => name == vname,
+                            _ => actual == expected,
+                        };
+                        if !compatible {
                             self.errors.push(TypeError {
                                 message: format!(
                                     "return type mismatch: expected '{}', found '{}'",
@@ -1085,12 +1164,55 @@ impl TypeChecker {
         }
     }
 
+    /// Extract the enum name and type arg substitution map from a subject type.
+    /// For `Type::Named("Foo")` returns `Some(("Foo", {}))`.
+    /// For `Type::Generic("Option", [Int])` returns `Some(("Option", {T -> Int}))`.
+    fn subject_enum_info(
+        &self,
+        subject_ty: &Option<Type>,
+    ) -> Option<(String, HashMap<String, Type>)> {
+        match subject_ty {
+            Some(Type::Named(ref name)) => Some((name.clone(), HashMap::new())),
+            Some(Type::Generic(ref name, ref args)) => {
+                if let Some(info) = self.enums.get(name) {
+                    let mut subst = HashMap::new();
+                    for (i, tp) in info.type_params.iter().enumerate() {
+                        if let Some(arg) = args.get(i) {
+                            subst.insert(tp.clone(), arg.clone());
+                        }
+                    }
+                    Some((name.clone(), subst))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Substitute type variables in a type using a substitution map.
+    fn subst_type(ty: &Type, subst: &HashMap<String, Type>) -> Type {
+        match ty {
+            Type::TypeVar(name) => subst.get(name).cloned().unwrap_or_else(|| ty.clone()),
+            Type::Array(inner) => Type::Array(Box::new(Self::subst_type(inner, subst))),
+            Type::Tuple(elems) => {
+                Type::Tuple(elems.iter().map(|t| Self::subst_type(t, subst)).collect())
+            }
+            Type::Generic(name, args) => Type::Generic(
+                name.clone(),
+                args.iter().map(|t| Self::subst_type(t, subst)).collect(),
+            ),
+            other => other.clone(),
+        }
+    }
+
     fn check_pattern(&mut self, pattern: &Pattern, subject_ty: &Option<Type>) {
         match pattern {
             Pattern::Wildcard(_) => {}
             Pattern::Binding(name, _) => {
                 // If the subject is an enum and the binding name matches a variant, don't bind
-                if let Some(Type::Named(ref enum_name)) = subject_ty {
+                let enum_info = self.subject_enum_info(subject_ty);
+                if let Some((ref enum_name, _)) = enum_info {
                     if let Some(info) = self.enums.get(enum_name) {
                         if info.variants.iter().any(|(vn, _)| vn == name) {
                             return; // It's a no-data variant match, not a binding
@@ -1103,15 +1225,46 @@ impl TypeChecker {
             }
             Pattern::Literal(_, _) => {}
             Pattern::Variant(name, sub_patterns, span) => {
-                // Clone enums to avoid borrow conflict with self.define()
-                let enums_snapshot: Vec<_> = self
-                    .enums
-                    .values()
-                    .flat_map(|info| info.variants.clone())
-                    .collect();
+                let enum_info = self.subject_enum_info(subject_ty);
+                let enums_snapshot = self.enums.clone();
+
+                // Build prioritized variant list with substituted types:
+                // 1. Subject enum (with type var substitution)
+                // 2. Non-generic enums
+                // 3. Generic enums (raw, unsubstituted - fallback)
+                let mut ordered_variants: Vec<(String, Vec<Type>)> = Vec::new();
+                if let Some((ref enum_name, ref subst)) = enum_info {
+                    if let Some(info) = enums_snapshot.get(enum_name) {
+                        for (vname, vfields) in &info.variants {
+                            let substituted: Vec<Type> =
+                                vfields.iter().map(|t| Self::subst_type(t, subst)).collect();
+                            ordered_variants.push((vname.clone(), substituted));
+                        }
+                    }
+                }
+                for (ename, info) in &enums_snapshot {
+                    if enum_info.as_ref().map(|(n, _)| n) == Some(ename) {
+                        continue; // already added
+                    }
+                    if info.type_params.is_empty() {
+                        for v in &info.variants {
+                            ordered_variants.push(v.clone());
+                        }
+                    }
+                }
+                for (ename, info) in &enums_snapshot {
+                    if enum_info.as_ref().map(|(n, _)| n) == Some(ename) {
+                        continue; // already added as substituted
+                    }
+                    if !info.type_params.is_empty() {
+                        for v in &info.variants {
+                            ordered_variants.push(v.clone());
+                        }
+                    }
+                }
 
                 let mut found = false;
-                for (vname, vfields) in &enums_snapshot {
+                for (vname, vfields) in &ordered_variants {
                     if vname == name {
                         found = true;
                         if sub_patterns.len() != vfields.len() {
@@ -1132,6 +1285,7 @@ impl TypeChecker {
                                 }
                             }
                         }
+                        break; // Use first match (prioritized)
                     }
                 }
                 if !found {
@@ -1171,6 +1325,23 @@ impl TypeChecker {
                     }
                     Some(ty)
                 } else {
+                    // Check if it's a data-less enum variant (e.g., None)
+                    for (enum_name, info) in &self.enums {
+                        for (vname, vfields) in &info.variants {
+                            if vname == name && vfields.is_empty() {
+                                if !info.type_params.is_empty() {
+                                    // Generic enum: return with TypeVar placeholders
+                                    let type_args: Vec<Type> = info
+                                        .type_params
+                                        .iter()
+                                        .map(|tp| Type::TypeVar(tp.clone()))
+                                        .collect();
+                                    return Some(Type::Generic(enum_name.clone(), type_args));
+                                }
+                                return Some(Type::Named(enum_name.clone()));
+                            }
+                        }
+                    }
                     self.errors.push(TypeError {
                         message: format!("undefined variable '{}'", name),
                         span: expr.span,
@@ -1310,6 +1481,23 @@ impl TypeChecker {
                             }
                         }
                         return None;
+                    }
+
+                    // Built-in to_str() — polymorphic string conversion
+                    if name == "to_str" {
+                        if args.len() != 1 {
+                            self.errors.push(TypeError {
+                                message: format!(
+                                    "'to_str' expects 1 argument, found {}",
+                                    args.len()
+                                ),
+                                span: expr.span,
+                            });
+                            return None;
+                        }
+                        // Type-check the argument but accept any type
+                        self.infer_expr(&args[0]);
+                        return Some(Type::Str);
                     }
 
                     // Built-in str_split() — returns [string]
@@ -1633,11 +1821,44 @@ impl TypeChecker {
                         Some(sig.ret)
                     } else {
                         // Check if it's an enum variant constructor
-                        for (_enum_name, info) in &self.enums {
-                            for (vname, vfields) in &info.variants {
-                                if vname == name && !vfields.is_empty() {
-                                    // For now, return the enum as Named type
-                                    return Some(Type::Named(_enum_name.clone()));
+                        // Prefer non-generic (user-defined) enums over generic (prelude) enums
+                        let enums_snapshot = self.enums.clone();
+                        for (enum_name, info) in &enums_snapshot {
+                            if info.type_params.is_empty() {
+                                for (vname, vfields) in &info.variants {
+                                    if vname == name && !vfields.is_empty() {
+                                        return Some(Type::Named(enum_name.clone()));
+                                    }
+                                }
+                            }
+                        }
+                        // Then check generic enums
+                        for (enum_name, info) in &enums_snapshot {
+                            if !info.type_params.is_empty() {
+                                for (vname, vfields) in &info.variants {
+                                    if vname == name && !vfields.is_empty() {
+                                        let mut bindings: HashMap<String, Type> = HashMap::new();
+                                        for (i, arg) in args.iter().enumerate() {
+                                            if i < vfields.len() {
+                                                if let Some(arg_ty) = self.infer_expr(arg) {
+                                                    if let Type::TypeVar(ref tv) = vfields[i] {
+                                                        bindings.insert(tv.clone(), arg_ty);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        let type_args: Vec<Type> = info
+                                            .type_params
+                                            .iter()
+                                            .map(|tp| {
+                                                bindings
+                                                    .get(tp)
+                                                    .cloned()
+                                                    .unwrap_or(Type::TypeVar(tp.clone()))
+                                            })
+                                            .collect();
+                                        return Some(Type::Generic(enum_name.clone(), type_args));
+                                    }
                                 }
                             }
                         }
@@ -1748,6 +1969,83 @@ impl TypeChecker {
                     }
                 }
 
+                // Handle Option<T> and Result<T, E> methods
+                if let Type::Generic(ref enum_name, ref type_args) = recv_ty {
+                    if enum_name == "Option" {
+                        match method_name.as_str() {
+                            "unwrap" => {
+                                if !args.is_empty() {
+                                    self.errors.push(TypeError {
+                                        message: "unwrap() takes no arguments".to_string(),
+                                        span: expr.span,
+                                    });
+                                }
+                                return type_args.first().cloned();
+                            }
+                            "is_some" | "is_none" => {
+                                if !args.is_empty() {
+                                    self.errors.push(TypeError {
+                                        message: format!("{}() takes no arguments", method_name),
+                                        span: expr.span,
+                                    });
+                                }
+                                return Some(Type::Bool);
+                            }
+                            _ => {
+                                self.errors.push(TypeError {
+                                    message: format!(
+                                        "no method '{}' found for type '{}'",
+                                        method_name, recv_ty
+                                    ),
+                                    span: expr.span,
+                                });
+                                return None;
+                            }
+                        }
+                    }
+                    if enum_name == "Result" {
+                        match method_name.as_str() {
+                            "unwrap" => {
+                                if !args.is_empty() {
+                                    self.errors.push(TypeError {
+                                        message: "unwrap() takes no arguments".to_string(),
+                                        span: expr.span,
+                                    });
+                                }
+                                return type_args.first().cloned();
+                            }
+                            "unwrap_err" => {
+                                if !args.is_empty() {
+                                    self.errors.push(TypeError {
+                                        message: "unwrap_err() takes no arguments".to_string(),
+                                        span: expr.span,
+                                    });
+                                }
+                                return type_args.get(1).cloned();
+                            }
+                            "is_ok" | "is_err" => {
+                                if !args.is_empty() {
+                                    self.errors.push(TypeError {
+                                        message: format!("{}() takes no arguments", method_name),
+                                        span: expr.span,
+                                    });
+                                }
+                                return Some(Type::Bool);
+                            }
+                            _ => {
+                                self.errors.push(TypeError {
+                                    message: format!(
+                                        "no method '{}' found for type '{}'",
+                                        method_name, recv_ty
+                                    ),
+                                    span: expr.span,
+                                });
+                                return None;
+                            }
+                        }
+                    }
+                }
+
                 let type_name = match &recv_ty {
                     Type::Named(n) => n.clone(),
                     Type::Ref(inner) | Type::MutRef(inner) => {
@@ -1835,6 +2133,33 @@ impl TypeChecker {
                     Type::Ref(inner) | Type::MutRef(inner) => inner.as_ref().clone(),
                     other => other.clone(),
                 };
+                // Tuple field access: t.0, t.1, ...
+                if let Type::Tuple(ref types) = obj_ty {
+                    if let Ok(idx) = field.parse::<usize>() {
+                        if idx < types.len() {
+                            return Some(types[idx].clone());
+                        } else {
+                            self.errors.push(TypeError {
+                                message: format!(
+                                    "tuple index {} out of bounds (tuple has {} elements)",
+                                    idx,
+                                    types.len()
+                                ),
+                                span: expr.span,
+                            });
+                            return None;
+                        }
+                    } else {
+                        self.errors.push(TypeError {
+                            message: format!(
+                                "tuple fields must be numeric indices, found '{}'",
+                                field
+                            ),
+                            span: expr.span,
+                        });
+                        return None;
+                    }
+                }
                 // Extract struct name and optional type args
                 let (struct_name, type_args) = match &obj_ty {
                     Type::Named(name) => (name.clone(), None),
@@ -1842,7 +2167,7 @@ impl TypeChecker {
                     _ => {
                         self.errors.push(TypeError {
                             message: format!(
-                                "field access requires a struct type, found '{}'",
+                                "field access requires a struct or tuple type, found '{}'",
                                 obj_ty
                             ),
                             span: expr.span,
@@ -1944,6 +2269,21 @@ impl TypeChecker {
                     }
                 }
                 Some(Type::Array(Box::new(first_ty)))
+            }
+
+            ExprKind::TupleLit(elements) => {
+                if elements.is_empty() {
+                    return Some(Type::Unit);
+                }
+                let mut elem_types = Vec::new();
+                for elem in elements {
+                    if let Some(ty) = self.infer_expr(elem) {
+                        elem_types.push(ty);
+                    } else {
+                        return None;
+                    }
+                }
+                Some(Type::Tuple(elem_types))
             }
 
             ExprKind::Spawn(block) => {
@@ -2227,6 +2567,7 @@ impl TypeChecker {
             Type::Fn(_, _) => true,
             Type::Task(inner) => self.is_valid_type(inner),
             Type::Chan(inner) => self.is_valid_type(inner),
+            Type::Tuple(types) => types.iter().all(|t| self.is_valid_type(t)),
         }
     }
 

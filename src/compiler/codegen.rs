@@ -84,6 +84,11 @@ pub struct Codegen {
     // Array support: tracks the LLVM element type for each array variable
     array_elem_types: HashMap<String, String>,
 
+    // Tuple support: tracks LLVM element types for each tuple type name
+    tuple_elem_types: HashMap<String, Vec<String>>,
+    // Tracks AST-level Type for variables (used for tuple field access)
+    var_ast_types: HashMap<String, Type>,
+
     // State within a function
     current_fn_ret_ty: Option<String>,
     block_terminated: bool,
@@ -95,6 +100,9 @@ pub struct Codegen {
 
     // Loop control flow: (continue_label, break_label)
     loop_labels: Vec<(String, String)>,
+
+    // Expected enum type hint for variant constructor disambiguation
+    current_expected_enum: Option<String>,
 }
 
 impl Default for Codegen {
@@ -123,12 +131,15 @@ impl Codegen {
             deferred_fns: Vec::new(),
             closure_var_types: HashMap::new(),
             array_elem_types: HashMap::new(),
+            tuple_elem_types: HashMap::new(),
+            var_ast_types: HashMap::new(),
             current_fn_ret_ty: None,
             block_terminated: false,
             current_block: "entry".to_string(),
             current_fn_contracts: Vec::new(),
             current_fn_name: String::new(),
             loop_labels: Vec::new(),
+            current_expected_enum: None,
         }
     }
 
@@ -279,6 +290,11 @@ impl Codegen {
             .insert("http_request".to_string(), Type::Str);
         self.fn_ret_types.insert("http_get".to_string(), Type::Str);
         self.fn_ret_types.insert("http_post".to_string(), Type::Str);
+        // String conversion builtins
+        self.fn_ret_types
+            .insert("float_to_str".to_string(), Type::Str);
+        self.fn_ret_types
+            .insert("bool_to_str".to_string(), Type::Str);
 
         // Register function return types (including impl methods with mangled names)
         for decl in &program.declarations {
@@ -489,6 +505,13 @@ impl Codegen {
         // Networking constants
         self.globals
             .push_str("@.str.empty = private unnamed_addr constant [1 x i8] c\"\\00\"\n");
+        // String conversion format strings
+        self.globals
+            .push_str("@.fmt.g = private unnamed_addr constant [3 x i8] c\"%g\\00\"\n");
+        self.globals
+            .push_str("@.str.true = private unnamed_addr constant [5 x i8] c\"true\\00\"\n");
+        self.globals
+            .push_str("@.str.false = private unnamed_addr constant [6 x i8] c\"false\\00\"\n");
         self.globals.push_str(
             "@.str.http_req_line = private unnamed_addr constant [15 x i8] c\"%s %s HTTP/1.0\\00\"\n",
         );
@@ -714,6 +737,26 @@ impl Codegen {
              \x20 %buf = call ptr @malloc(i64 24)\n\
              \x20 call i32 (ptr, i64, ptr, ...) @snprintf(ptr %buf, i64 24, ptr @.fmt.lld, i64 %n)\n\
              \x20 ret ptr %buf\n\
+             }\n\n",
+        );
+        // float_to_str — converts double to heap-allocated string using %g
+        self.body.push_str(
+            "define ptr @float_to_str(double %n) {\n\
+             entry:\n\
+             \x20 %buf = call ptr @malloc(i64 32)\n\
+             \x20 call i32 (ptr, i64, ptr, ...) @snprintf(ptr %buf, i64 32, ptr @.fmt.g, double %n)\n\
+             \x20 ret ptr %buf\n\
+             }\n\n",
+        );
+        // bool_to_str — converts i1 to "true" or "false"
+        self.body.push_str(
+            "define ptr @bool_to_str(i1 %b) {\n\
+             entry:\n\
+             \x20 br i1 %b, label %is.true, label %is.false\n\
+             is.true:\n\
+             \x20 ret ptr @.str.true\n\
+             is.false:\n\
+             \x20 ret ptr @.str.false\n\
              }\n\n",
         );
         // str_to_int — parses string to i64
@@ -2586,6 +2629,16 @@ impl Codegen {
         self.current_fn_contracts = f.contracts.clone();
         self.current_fn_name = f.name.clone();
 
+        // Ensure tuple type definitions exist for params and return type
+        if let Type::Tuple(ref types) = f.return_type {
+            self.ensure_tuple_type(types);
+        }
+        for p in &f.params {
+            if let Type::Tuple(ref types) = p.ty {
+                self.ensure_tuple_type(types);
+            }
+        }
+
         let ret_ty = self.llvm_type(&f.return_type);
         self.current_fn_ret_ty = Some(ret_ty.clone());
 
@@ -2640,6 +2693,11 @@ impl Codegen {
             // Track fn-typed params for indirect calls
             if let Type::Fn(_, _) = &param.ty {
                 self.closure_var_types
+                    .insert(param.name.clone(), param.ty.clone());
+            }
+            // Track tuple-typed params for field access
+            if let Type::Tuple(_) = &param.ty {
+                self.var_ast_types
                     .insert(param.name.clone(), param.ty.clone());
             }
         }
@@ -2820,16 +2878,81 @@ impl Codegen {
         // instead of trying to store a whole struct as a value.
         if let Type::Named(ref name) = s.ty {
             if self.struct_layouts.contains_key(name) {
-                let val_ptr = self.emit_expr(&s.value)?;
-                self.define_var(&s.name, &val_ptr, &ty);
+                let returns_ptr = self.expr_returns_ptr(&s.value);
+                let val = self.emit_expr(&s.value)?;
+                if returns_ptr {
+                    // StructInit: reuse alloca directly
+                    self.define_var(&s.name, &val, &ty);
+                } else {
+                    // Function call or variable: value returned, need alloca + store
+                    let ptr = format!("%{}.addr", s.name);
+                    self.emit_line(&format!("{} = alloca {}", ptr, ty));
+                    self.emit_line(&format!("store {} {}, ptr {}", ty, val, ptr));
+                    self.define_var(&s.name, &ptr, &ty);
+                }
                 return Ok(());
             }
-            // Enum-typed let: reuse alloca from constructor
+            // Enum-typed let
             if self.enum_layouts.contains_key(name) {
-                let val_ptr = self.emit_expr(&s.value)?;
-                self.define_var(&s.name, &val_ptr, &ty);
+                self.current_expected_enum = Some(name.clone());
+                let returns_ptr = self.expr_returns_ptr(&s.value);
+                let val = self.emit_expr(&s.value)?;
+                self.current_expected_enum = None;
+                if returns_ptr {
+                    // Variant constructor: reuse alloca directly
+                    self.define_var(&s.name, &val, &ty);
+                } else {
+                    // Function call or variable: value returned, need alloca + store
+                    let ptr = format!("%{}.addr", s.name);
+                    self.emit_line(&format!("{} = alloca {}", ptr, ty));
+                    self.emit_line(&format!("store {} {}, ptr {}", ty, val, ptr));
+                    self.define_var(&s.name, &ptr, &ty);
+                }
                 return Ok(());
             }
+        }
+
+        // For tuple-typed variables, TupleLit already creates an alloca.
+        // Reuse that alloca directly as the variable slot.
+        if let Type::Tuple(ref elem_types) = s.ty {
+            let val_ptr = self.emit_expr(&s.value)?;
+
+            // Handle destructuring: let (a, b): (int, string) = expr;
+            if let Some(ref names) = s.destructure {
+                let tuple_name = self.tuple_type_name(elem_types);
+                // Ensure the tuple type is defined
+                let llvm_elem_types: Vec<String> =
+                    elem_types.iter().map(|t| self.llvm_type(t)).collect();
+                let llvm_fields = llvm_elem_types.join(", ");
+                let type_def = format!("%{} = type {{ {} }}\n", tuple_name, llvm_fields);
+                if !self.type_defs.contains(&format!("%{} = type", tuple_name)) {
+                    self.type_defs.push_str(&type_def);
+                }
+                self.tuple_elem_types
+                    .insert(tuple_name.clone(), llvm_elem_types.clone());
+
+                for (i, name) in names.iter().enumerate() {
+                    let elem_ty = &llvm_elem_types[i];
+                    let gep = self.fresh_temp();
+                    self.emit_line(&format!(
+                        "{} = getelementptr %{}, ptr {}, i32 0, i32 {}",
+                        gep, tuple_name, val_ptr, i
+                    ));
+                    let val = self.fresh_temp();
+                    self.emit_line(&format!("{} = load {}, ptr {}", val, elem_ty, gep));
+                    let ptr = format!("%{}.addr", name);
+                    self.emit_line(&format!("{} = alloca {}", ptr, elem_ty));
+                    self.emit_line(&format!("store {} {}, ptr {}", elem_ty, val, ptr));
+                    self.define_var(name, &ptr, elem_ty);
+                    self.var_ast_types
+                        .insert(name.clone(), elem_types[i].clone());
+                }
+                return Ok(());
+            }
+
+            self.define_var(&s.name, &val_ptr, &ty);
+            self.var_ast_types.insert(s.name.clone(), s.ty.clone());
+            return Ok(());
         }
 
         // For array-typed variables, ArrayLit creates a { ptr, i64, i64 } alloca.
@@ -2949,7 +3072,25 @@ impl Codegen {
         if ret_ty == "void" {
             self.emit_line("ret void");
         } else {
+            // Set expected enum hint for return value (e.g., return Some(42);)
+            if let Some(stripped) = ret_ty.strip_prefix('%') {
+                if self.enum_layouts.contains_key(stripped) {
+                    self.current_expected_enum = Some(stripped.to_string());
+                }
+            }
             let val = self.emit_expr(&s.value)?;
+            self.current_expected_enum = None;
+
+            // Enum/struct variant constructors return alloca pointers (ptr type),
+            // but `ret %EnumType %ptr` is invalid — need to load the value first
+            let val = if ret_ty.starts_with('%') && self.expr_returns_ptr(&s.value) {
+                let loaded = self.fresh_temp();
+                self.emit_line(&format!("{} = load {}, ptr {}", loaded, ret_ty, val));
+                loaded
+            } else {
+                val
+            };
+
             // Emit ensures checks before the actual return
             let contracts = self.current_fn_contracts.clone();
             let fn_name = self.current_fn_name.clone();
@@ -3245,7 +3386,12 @@ impl Codegen {
         let subject_enum_name = self.expr_enum_name(&s.subject);
         let is_enum = subject_enum_name.is_some();
 
-        let subject_val = self.emit_expr(&s.subject)?;
+        // For enums, we need the alloca pointer (not the loaded value) for GEP
+        let subject_val = if is_enum {
+            self.emit_expr_ptr(&s.subject)?
+        } else {
+            self.emit_expr(&s.subject)?
+        };
         let merge_label = self.fresh_label("match.end");
 
         // For enums: extract tag from alloca via GEP
@@ -3502,22 +3648,25 @@ impl Codegen {
             ExprKind::Literal(lit) => self.emit_literal(lit),
 
             ExprKind::Ident(name) => {
-                let slot = self
-                    .lookup_var(name)
-                    .ok_or_else(|| CodegenError {
+                if let Some(slot) = self.lookup_var(name).cloned() {
+                    // Array variables: return the pointer directly (arrays are reference types)
+                    if slot.llvm_ty == "{ ptr, i64, i64 }" {
+                        return Ok(slot.ptr.clone());
+                    }
+                    let tmp = self.fresh_temp();
+                    self.emit_line(&format!(
+                        "{} = load {}, ptr {}",
+                        tmp, slot.llvm_ty, slot.ptr
+                    ));
+                    Ok(tmp)
+                } else if let Some(enum_name) = self.find_enum_for_variant(name) {
+                    // Data-less enum variant (e.g., None)
+                    self.emit_enum_variant_constructor(&enum_name, name, &[])
+                } else {
+                    Err(CodegenError {
                         message: format!("undefined variable '{}'", name),
-                    })?
-                    .clone();
-                // Array variables: return the pointer directly (arrays are reference types)
-                if slot.llvm_ty == "{ ptr, i64, i64 }" {
-                    return Ok(slot.ptr.clone());
+                    })
                 }
-                let tmp = self.fresh_temp();
-                self.emit_line(&format!(
-                    "{} = load {}, ptr {}",
-                    tmp, slot.llvm_ty, slot.ptr
-                ));
-                Ok(tmp)
             }
 
             ExprKind::Binary(lhs, op, rhs) => {
@@ -4176,6 +4325,11 @@ impl Codegen {
                         return Ok(fat);
                     }
 
+                    // Built-in to_str() — polymorphic string conversion
+                    if name == "to_str" && args.len() == 1 {
+                        return self.emit_to_str(&args[0]);
+                    }
+
                     // Check if this is an enum variant constructor
                     if let Some(enum_name) = self.find_enum_for_variant(name) {
                         return self.emit_enum_variant_constructor(&enum_name, name, args);
@@ -4223,6 +4377,39 @@ impl Codegen {
             ExprKind::FieldAccess(obj, field) => {
                 let obj_ptr = self.emit_expr_ptr(obj)?;
                 let struct_name = self.expr_struct_name(obj)?;
+
+                // Tuple field access: t.0, t.1, ...
+                if struct_name.starts_with("tuple.") {
+                    let idx: usize = field.parse().map_err(|_| CodegenError {
+                        message: format!("invalid tuple field '{}'", field),
+                    })?;
+                    let elem_types = self
+                        .tuple_elem_types
+                        .get(&struct_name)
+                        .ok_or_else(|| CodegenError {
+                            message: format!("unknown tuple type '{}'", struct_name),
+                        })?
+                        .clone();
+                    if idx >= elem_types.len() {
+                        return Err(CodegenError {
+                            message: format!(
+                                "tuple index {} out of bounds (tuple has {} elements)",
+                                idx,
+                                elem_types.len()
+                            ),
+                        });
+                    }
+                    let fty = &elem_types[idx];
+                    let gep = self.fresh_temp();
+                    self.emit_line(&format!(
+                        "{} = getelementptr %{}, ptr {}, i32 0, i32 {}",
+                        gep, struct_name, obj_ptr, idx
+                    ));
+                    let val = self.fresh_temp();
+                    self.emit_line(&format!("{} = load {}, ptr {}", val, fty, gep));
+                    return Ok(val);
+                }
+
                 let (idx, field_ty) = self.struct_field_index(&struct_name, field)?;
                 let fty = self.llvm_type(&field_ty);
 
@@ -4240,6 +4427,27 @@ impl Codegen {
                 // Handle .join() on Task values
                 if method_name == "join" {
                     return self.emit_task_join(receiver);
+                }
+
+                // Handle Option/Result methods
+                if let Ok(ref ename) = self.expr_struct_name(receiver) {
+                    if let Some(layout) = self.enum_layouts.get(ename).cloned() {
+                        match method_name.as_str() {
+                            "unwrap" => {
+                                return self.emit_option_unwrap(receiver, ename, &layout);
+                            }
+                            "unwrap_err" => {
+                                return self.emit_result_unwrap_err(receiver, ename, &layout);
+                            }
+                            "is_some" | "is_ok" => {
+                                return self.emit_enum_tag_check(receiver, ename, 0);
+                            }
+                            "is_none" | "is_err" => {
+                                return self.emit_enum_tag_check(receiver, ename, 1);
+                            }
+                            _ => {}
+                        }
+                    }
                 }
 
                 let struct_name = self.expr_struct_name(receiver)?;
@@ -4279,6 +4487,8 @@ impl Codegen {
             ExprKind::Closure(closure) => self.emit_closure(closure),
 
             ExprKind::Spawn(block) => self.emit_spawn(block),
+
+            ExprKind::TupleLit(elements) => self.emit_tuple_lit(elements),
 
             ExprKind::Range(_, _) => Err(CodegenError {
                 message: "range expression is only valid in for loops".to_string(),
@@ -4470,8 +4680,8 @@ impl Codegen {
                 })?;
                 Ok(slot.ptr.clone())
             }
-            ExprKind::StructInit(_, _) => {
-                // StructInit's emit_expr already returns an alloca pointer
+            ExprKind::StructInit(_, _) | ExprKind::TupleLit(_) => {
+                // StructInit/TupleLit emit_expr already returns an alloca pointer
                 self.emit_expr(expr)
             }
             ExprKind::Index(arr_expr, _) => {
@@ -4662,6 +4872,131 @@ impl Codegen {
         }
 
         Ok(ptr)
+    }
+
+    // ── Tuple helpers ─────────────────────────────────────
+
+    /// Generate a stable LLVM type name for a tuple type.
+    fn tuple_type_name(&self, types: &[Type]) -> String {
+        let parts: Vec<String> = types
+            .iter()
+            .map(|t| match t {
+                Type::Int => "int".to_string(),
+                Type::Float => "float".to_string(),
+                Type::Bool => "bool".to_string(),
+                Type::Char => "char".to_string(),
+                Type::Str => "string".to_string(),
+                Type::Unit => "unit".to_string(),
+                Type::Named(n) => n.clone(),
+                Type::Tuple(inner) => self.tuple_type_name(inner),
+                _ => format!("{}", t),
+            })
+            .collect();
+        format!("tuple.{}", parts.join("."))
+    }
+
+    /// Ensure a tuple type definition is emitted and element types are tracked.
+    fn ensure_tuple_type(&mut self, types: &[Type]) {
+        let type_name = self.tuple_type_name(types);
+        if self.tuple_elem_types.contains_key(&type_name) {
+            return;
+        }
+        let llvm_elem_types: Vec<String> = types.iter().map(|t| self.llvm_type(t)).collect();
+        let llvm_fields = llvm_elem_types.join(", ");
+        let type_def = format!("%{} = type {{ {} }}\n", type_name, llvm_fields);
+        if !self.type_defs.contains(&format!("%{} = type", type_name)) {
+            self.type_defs.push_str(&type_def);
+        }
+        self.tuple_elem_types.insert(type_name, llvm_elem_types);
+    }
+
+    /// Emit a tuple literal: alloca the tuple struct, store each element.
+    fn emit_tuple_lit(&mut self, elements: &[Expr]) -> Result<String, CodegenError> {
+        // Compute element LLVM types
+        let elem_types: Vec<String> = elements.iter().map(|e| self.expr_llvm_type(e)).collect();
+        let type_name = format!(
+            "tuple.{}",
+            elem_types
+                .iter()
+                .map(|t| match t.as_str() {
+                    "i64" => "int".to_string(),
+                    "double" => "float".to_string(),
+                    "i1" => "bool".to_string(),
+                    "i8" => "char".to_string(),
+                    "ptr" => "string".to_string(),
+                    "void" => "unit".to_string(),
+                    other => other.strip_prefix('%').unwrap_or(other).to_string(),
+                })
+                .collect::<Vec<_>>()
+                .join(".")
+        );
+
+        // Ensure the tuple type is defined and element types are tracked
+        let llvm_fields = elem_types.join(", ");
+        let type_def = format!("%{} = type {{ {} }}\n", type_name, llvm_fields);
+        if !self.type_defs.contains(&format!("%{} = type", type_name)) {
+            self.type_defs.push_str(&type_def);
+        }
+        self.tuple_elem_types
+            .insert(type_name.clone(), elem_types.clone());
+
+        // Alloca the tuple
+        let ptr = self.fresh_temp();
+        self.emit_line(&format!("{} = alloca %{}", ptr, type_name));
+
+        // Store each element
+        for (i, elem) in elements.iter().enumerate() {
+            let val = self.emit_expr(elem)?;
+            let gep = self.fresh_temp();
+            self.emit_line(&format!(
+                "{} = getelementptr %{}, ptr {}, i32 0, i32 {}",
+                gep, type_name, ptr, i
+            ));
+            self.emit_line(&format!("store {} {}, ptr {}", elem_types[i], val, gep));
+        }
+
+        Ok(ptr)
+    }
+
+    // ── to_str polymorphic dispatch ────────────────────────
+
+    fn emit_to_str(&mut self, arg: &Expr) -> Result<String, CodegenError> {
+        let arg_llvm_ty = self.expr_llvm_type(arg);
+        let val = self.emit_expr(arg)?;
+        match arg_llvm_ty.as_str() {
+            "i64" => {
+                // int → int_to_str
+                let tmp = self.fresh_temp();
+                self.emit_line(&format!("{} = call ptr @int_to_str(i64 {})", tmp, val));
+                Ok(tmp)
+            }
+            "double" => {
+                // float → float_to_str
+                let tmp = self.fresh_temp();
+                self.emit_line(&format!("{} = call ptr @float_to_str(double {})", tmp, val));
+                Ok(tmp)
+            }
+            "i1" => {
+                // bool → bool_to_str
+                let tmp = self.fresh_temp();
+                self.emit_line(&format!("{} = call ptr @bool_to_str(i1 {})", tmp, val));
+                Ok(tmp)
+            }
+            "i8" => {
+                // char → str_from_char
+                let tmp = self.fresh_temp();
+                self.emit_line(&format!("{} = call ptr @str_from_char(i8 {})", tmp, val));
+                Ok(tmp)
+            }
+            "ptr" => {
+                // string → identity (already a ptr to char data)
+                Ok(val)
+            }
+            _ => {
+                // Unsupported type: return empty string
+                Ok("@.str.empty".to_string())
+            }
+        }
     }
 
     // ── Closure helpers ──────────────────────────────────────
@@ -5089,6 +5424,141 @@ impl Codegen {
         Ok(result)
     }
 
+    // ── Option/Result method codegen ─────────────────────────────
+
+    /// Emit `.unwrap()` for Option/Result: check tag == 0 (Some/Ok), extract payload, abort if wrong.
+    fn emit_option_unwrap(
+        &mut self,
+        receiver: &Expr,
+        enum_name: &str,
+        layout: &EnumLayout,
+    ) -> Result<String, CodegenError> {
+        let ptr = self.emit_expr_ptr(receiver)?;
+        // Load tag
+        let tag_gep = self.fresh_temp();
+        self.emit_line(&format!(
+            "{} = getelementptr %{}, ptr {}, i32 0, i32 0",
+            tag_gep, enum_name, ptr
+        ));
+        let tag = self.fresh_temp();
+        self.emit_line(&format!("{} = load i32, ptr {}", tag, tag_gep));
+
+        // Check tag == 0 (Some/Ok variant)
+        let cmp = self.fresh_temp();
+        self.emit_line(&format!("{} = icmp eq i32 {}, 0", cmp, tag));
+        let ok_label = self.fresh_label("unwrap_ok");
+        let fail_label = self.fresh_label("unwrap_fail");
+        self.emit_line(&format!(
+            "br i1 {}, label %{}, label %{}",
+            cmp, ok_label, fail_label
+        ));
+
+        // Fail: abort
+        self.emit_label(&fail_label);
+        self.emit_line("call void @abort()");
+        self.emit_line("unreachable");
+
+        // Ok: extract payload
+        self.emit_label(&ok_label);
+        // Get payload type from first variant's first field
+        let payload_ty = if let Some((_, fields)) = layout.variants.first() {
+            if let Some(field_ty) = fields.first() {
+                self.llvm_type(field_ty)
+            } else {
+                "i64".to_string()
+            }
+        } else {
+            "i64".to_string()
+        };
+        let payload_gep = self.fresh_temp();
+        self.emit_line(&format!(
+            "{} = getelementptr %{}, ptr {}, i32 0, i32 1",
+            payload_gep, enum_name, ptr
+        ));
+        let val = self.fresh_temp();
+        self.emit_line(&format!(
+            "{} = load {}, ptr {}",
+            val, payload_ty, payload_gep
+        ));
+        Ok(val)
+    }
+
+    /// Emit `.unwrap_err()` for Result: check tag == 1 (Err), extract payload.
+    fn emit_result_unwrap_err(
+        &mut self,
+        receiver: &Expr,
+        enum_name: &str,
+        layout: &EnumLayout,
+    ) -> Result<String, CodegenError> {
+        let ptr = self.emit_expr_ptr(receiver)?;
+        // Load tag
+        let tag_gep = self.fresh_temp();
+        self.emit_line(&format!(
+            "{} = getelementptr %{}, ptr {}, i32 0, i32 0",
+            tag_gep, enum_name, ptr
+        ));
+        let tag = self.fresh_temp();
+        self.emit_line(&format!("{} = load i32, ptr {}", tag, tag_gep));
+
+        // Check tag == 1 (Err variant)
+        let cmp = self.fresh_temp();
+        self.emit_line(&format!("{} = icmp eq i32 {}, 1", cmp, tag));
+        let ok_label = self.fresh_label("unwrap_err_ok");
+        let fail_label = self.fresh_label("unwrap_err_fail");
+        self.emit_line(&format!(
+            "br i1 {}, label %{}, label %{}",
+            cmp, ok_label, fail_label
+        ));
+
+        // Fail: abort
+        self.emit_label(&fail_label);
+        self.emit_line("call void @abort()");
+        self.emit_line("unreachable");
+
+        // Ok: extract Err payload
+        self.emit_label(&ok_label);
+        let payload_ty = if let Some((_, fields)) = layout.variants.get(1) {
+            if let Some(field_ty) = fields.first() {
+                self.llvm_type(field_ty)
+            } else {
+                "i64".to_string()
+            }
+        } else {
+            "i64".to_string()
+        };
+        let payload_gep = self.fresh_temp();
+        self.emit_line(&format!(
+            "{} = getelementptr %{}, ptr {}, i32 0, i32 1",
+            payload_gep, enum_name, ptr
+        ));
+        let val = self.fresh_temp();
+        self.emit_line(&format!(
+            "{} = load {}, ptr {}",
+            val, payload_ty, payload_gep
+        ));
+        Ok(val)
+    }
+
+    /// Emit `.is_some()`/`.is_none()`/`.is_ok()`/`.is_err()`: compare tag against expected value.
+    fn emit_enum_tag_check(
+        &mut self,
+        receiver: &Expr,
+        enum_name: &str,
+        expected_tag: u32,
+    ) -> Result<String, CodegenError> {
+        let ptr = self.emit_expr_ptr(receiver)?;
+        let tag_gep = self.fresh_temp();
+        self.emit_line(&format!(
+            "{} = getelementptr %{}, ptr {}, i32 0, i32 0",
+            tag_gep, enum_name, ptr
+        ));
+        let tag = self.fresh_temp();
+        self.emit_line(&format!("{} = load i32, ptr {}", tag, tag_gep));
+        let cmp = self.fresh_temp();
+        self.emit_line(&format!("{} = icmp eq i32 {}, {}", cmp, tag, expected_tag));
+        Ok(cmp)
+    }
+
     fn emit_chan_create(&mut self) -> Result<String, CodegenError> {
         let ch = self.fresh_temp();
         self.emit_line(&format!("{} = call ptr @__yorum_chan_create()", ch));
@@ -5294,7 +5764,7 @@ impl Codegen {
                     Self::collect_idents_from_expr(&fi.value, locals, names);
                 }
             }
-            ExprKind::ArrayLit(elements) => {
+            ExprKind::ArrayLit(elements) | ExprKind::TupleLit(elements) => {
                 for elem in elements {
                     Self::collect_idents_from_expr(elem, locals, names);
                 }
@@ -5333,6 +5803,10 @@ impl Codegen {
                 } else {
                     "i64".to_string() // fallback
                 }
+            }
+            Type::Tuple(types) => {
+                let name = self.tuple_type_name(types);
+                format!("%{}", name)
             }
             Type::Array(_) => "ptr".to_string(),
             Type::Ref(_) | Type::MutRef(_) | Type::Own(_) => "ptr".to_string(),
@@ -5425,6 +5899,17 @@ impl Codegen {
             }
             ExprKind::FieldAccess(obj, field) => {
                 if let Ok(sname) = self.expr_struct_name(obj) {
+                    // Tuple field access
+                    if sname.starts_with("tuple.") {
+                        if let Ok(idx) = field.parse::<usize>() {
+                            if let Some(elem_types) = self.tuple_elem_types.get(&sname) {
+                                if idx < elem_types.len() {
+                                    return elem_types[idx] == "double";
+                                }
+                            }
+                        }
+                        return false;
+                    }
                     if let Ok((_, fty)) = self.struct_field_index(&sname, field) {
                         return fty == Type::Float;
                     }
@@ -5538,6 +6023,17 @@ impl Codegen {
             }
             ExprKind::FieldAccess(obj, field) => {
                 if let Ok(sname) = self.expr_struct_name(obj) {
+                    // Tuple field access
+                    if sname.starts_with("tuple.") {
+                        if let Ok(idx) = field.parse::<usize>() {
+                            if let Some(elem_types) = self.tuple_elem_types.get(&sname) {
+                                if idx < elem_types.len() {
+                                    return elem_types[idx].clone();
+                                }
+                            }
+                        }
+                        return "i64".to_string();
+                    }
                     if let Ok((_, fty)) = self.struct_field_index(&sname, field) {
                         return self.llvm_type(&fty);
                     }
@@ -5564,6 +6060,12 @@ impl Codegen {
             }
             ExprKind::StructInit(name, _) => format!("%{}", name),
             ExprKind::Closure(_) => "ptr".to_string(),
+            ExprKind::TupleLit(elements) => {
+                // Infer element types and construct the tuple LLVM type name
+                let elem_types: Vec<String> =
+                    elements.iter().map(|e| self.expr_llvm_type(e)).collect();
+                format!("%tuple.{}", elem_types.join("."))
+            }
             ExprKind::Spawn(_) => "ptr".to_string(),
             ExprKind::Range(_, _) => "i64".to_string(),
         }
@@ -5640,6 +6142,15 @@ impl Codegen {
     }
 
     fn find_enum_for_variant(&self, variant_name: &str) -> Option<String> {
+        // Use the expected enum hint first for disambiguation
+        if let Some(ref expected) = self.current_expected_enum {
+            if let Some(layout) = self.enum_layouts.get(expected) {
+                if layout.variants.iter().any(|(vn, _)| vn == variant_name) {
+                    return Some(expected.clone());
+                }
+            }
+        }
+        // Fallback: search all enums
         for (ename, layout) in &self.enum_layouts {
             for (vname, _) in &layout.variants {
                 if vname == variant_name {
@@ -5663,6 +6174,31 @@ impl Codegen {
                 None
             }
             _ => None,
+        }
+    }
+
+    /// Check if emit_expr for this expression returns a pointer to an aggregate
+    /// (enum variant constructor, struct init, tuple lit) rather than a loaded value.
+    fn expr_returns_ptr(&self, expr: &Expr) -> bool {
+        match &expr.kind {
+            ExprKind::StructInit(_, _) | ExprKind::TupleLit(_) => true,
+            ExprKind::Call(callee, _) => {
+                // Enum variant constructors (e.g., Some(42)) return alloca pointers
+                if let ExprKind::Ident(name) = &callee.kind {
+                    self.find_enum_for_variant(name).is_some()
+                } else {
+                    false
+                }
+            }
+            ExprKind::Ident(name) => {
+                // Data-less enum variant (e.g., None) returns alloca pointer
+                if self.lookup_var(name).is_some() {
+                    false // regular variable, emit_expr loads it
+                } else {
+                    self.find_enum_for_variant(name).is_some()
+                }
+            }
+            _ => false,
         }
     }
 

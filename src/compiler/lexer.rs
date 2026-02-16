@@ -1,5 +1,5 @@
 use crate::compiler::span::Span;
-use crate::compiler::token::{Token, TokenKind};
+use crate::compiler::token::{InterpPart, Token, TokenKind};
 use std::fmt;
 
 // ═══════════════════════════════════════════════════════════════
@@ -292,7 +292,9 @@ impl Lexer {
         start_line: u32,
         start_col: u32,
     ) -> Result<Token, LexError> {
-        let mut value = String::new();
+        let mut current_literal = String::new();
+        let mut parts: Vec<InterpPart> = Vec::new();
+        let mut has_interpolation = false;
 
         loop {
             if self.is_at_end() {
@@ -314,12 +316,12 @@ impl Lexer {
                     }
                     let escaped = self.advance();
                     match escaped {
-                        'n' => value.push('\n'),
-                        't' => value.push('\t'),
-                        'r' => value.push('\r'),
-                        '\\' => value.push('\\'),
-                        '"' => value.push('"'),
-                        '0' => value.push('\0'),
+                        'n' => current_literal.push('\n'),
+                        't' => current_literal.push('\t'),
+                        'r' => current_literal.push('\r'),
+                        '\\' => current_literal.push('\\'),
+                        '"' => current_literal.push('"'),
+                        '0' => current_literal.push('\0'),
                         other => {
                             return Err(LexError {
                                 message: format!("unknown escape sequence '\\{}'", other),
@@ -328,14 +330,74 @@ impl Lexer {
                         }
                     }
                 }
-                _ => value.push(c),
+                '{' => {
+                    // Check for escaped brace: {{ → literal {
+                    if self.peek() == Some('{') {
+                        self.advance();
+                        current_literal.push('{');
+                    } else {
+                        // Start of interpolation expression
+                        has_interpolation = true;
+                        if !current_literal.is_empty() {
+                            parts.push(InterpPart::Literal(std::mem::take(&mut current_literal)));
+                        }
+                        // Lex tokens until matching }
+                        let mut expr_tokens = Vec::new();
+                        let mut brace_depth = 1;
+                        loop {
+                            if self.is_at_end() {
+                                return Err(LexError {
+                                    message: "unterminated interpolation expression".to_string(),
+                                    span: Span::new(start, self.pos, start_line, start_col),
+                                });
+                            }
+                            if self.peek() == Some('}') {
+                                brace_depth -= 1;
+                                if brace_depth == 0 {
+                                    self.advance(); // consume the closing }
+                                    break;
+                                }
+                            }
+                            let tok = self.next_token()?;
+                            if tok.kind == TokenKind::LBrace {
+                                brace_depth += 1;
+                            }
+                            expr_tokens.push(tok);
+                        }
+                        // Add EOF token so the sub-parser knows where to stop
+                        let eof_span = Span::new(self.pos, self.pos, self.line, self.col);
+                        expr_tokens.push(Token::new(TokenKind::EOF, eof_span));
+                        parts.push(InterpPart::Expr(expr_tokens));
+                    }
+                }
+                '}' => {
+                    // Check for escaped brace: }} → literal }
+                    if self.peek() == Some('}') {
+                        self.advance();
+                        current_literal.push('}');
+                    } else {
+                        return Err(LexError {
+                            message: "unexpected '}' in string literal (use '}}' for literal '}')"
+                                .to_string(),
+                            span: Span::new(start, self.pos, start_line, start_col),
+                        });
+                    }
+                }
+                _ => current_literal.push(c),
             }
         }
 
-        Ok(Token::new(
-            TokenKind::StringLit(value),
-            Span::new(start, self.pos, start_line, start_col),
-        ))
+        let span = Span::new(start, self.pos, start_line, start_col);
+
+        if has_interpolation {
+            // Push any trailing literal
+            if !current_literal.is_empty() {
+                parts.push(InterpPart::Literal(current_literal));
+            }
+            Ok(Token::new(TokenKind::InterpStringLit(parts), span))
+        } else {
+            Ok(Token::new(TokenKind::StringLit(current_literal), span))
+        }
     }
 
     fn lex_char(

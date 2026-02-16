@@ -677,28 +677,28 @@ fn test_str_typecheck() {
 #[test]
 fn test_enum_variant_constructor_compiles() {
     let ir = compile(
-        "enum Option { Some(int), None }\n\
+        "enum MyOption { Some(int), None }\n\
          fn main() -> int {\n\
-         \x20   let opt: Option = Some(42);\n\
+         \x20   let opt: MyOption = Some(42);\n\
          \x20   return 0;\n\
          }\n",
     );
-    assert!(ir.contains("getelementptr %Option"));
+    assert!(ir.contains("getelementptr %MyOption"));
     assert!(ir.contains("store i32")); // tag
 }
 
 #[test]
 fn test_enum_match_with_data() {
     let ir = compile(
-        "enum Option { Some(int), None }\n\
-         fn get_or(opt: Option, default_val: int) -> int {\n\
+        "enum MyOption { Some(int), None }\n\
+         fn get_or(opt: MyOption, default_val: int) -> int {\n\
          \x20   match opt {\n\
          \x20       Some(val) => { return val; }\n\
          \x20       None => { return default_val; }\n\
          \x20   }\n\
          }\n\
          fn main() -> int {\n\
-         \x20   let opt: Option = Some(42);\n\
+         \x20   let opt: MyOption = Some(42);\n\
          \x20   return get_or(opt, 0);\n\
          }\n",
     );
@@ -709,8 +709,8 @@ fn test_enum_match_with_data() {
 #[test]
 fn test_enum_match_typecheck() {
     parse_and_check(
-        "enum Option { Some(int), None }\n\
-         fn get_or(opt: Option, default_val: int) -> int {\n\
+        "enum MyOption { Some(int), None }\n\
+         fn get_or(opt: MyOption, default_val: int) -> int {\n\
          \x20   match opt {\n\
          \x20       Some(val) => { return val; }\n\
          \x20       None => { return default_val; }\n\
@@ -2862,11 +2862,11 @@ fn test_function_args_dont_move() {
 #[test]
 fn test_enum_use_after_move() {
     expect_ownership_error(
-        "enum Option { Some(int), None }\n\
+        "enum MyOption { Some(int), None }\n\
          fn f() -> int {\n\
-         \x20   let a: Option = Some(42);\n\
-         \x20   let b: Option = a;\n\
-         \x20   let c: Option = a;\n\
+         \x20   let a: MyOption = Some(42);\n\
+         \x20   let b: MyOption = a;\n\
+         \x20   let c: MyOption = a;\n\
          \x20   return 0;\n\
          }\n",
         "use of moved variable 'a'",
@@ -3094,7 +3094,7 @@ fn test_http_get_typecheck() {
 fn test_http_post_typecheck() {
     parse_and_check(
         "fn main() -> int {\n\
-         \x20 let resp: string = http_post(\"http://example.com/api\", \"{}\");\n\
+         \x20 let resp: string = http_post(\"http://example.com/api\", \"{{}}\");\n\
          \x20 return 0;\n\
          }\n",
     );
@@ -4645,4 +4645,345 @@ fn test_range_outside_for_error() {
          }\n",
     );
     assert!(result.is_err());
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  String interpolation tests (v1.2)
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn test_string_interp_basic() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let name: string = \"world\";\n\
+         \x20 let s: string = \"hello {name}\";\n\
+         \x20 print_str(s);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("@str_concat"));
+}
+
+#[test]
+fn test_string_interp_int() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let x: int = 42;\n\
+         \x20 let s: string = \"x = {x}\";\n\
+         \x20 print_str(s);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("@int_to_str"));
+    assert!(ir.contains("@str_concat"));
+}
+
+#[test]
+fn test_string_interp_float() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let pi: float = 3.14;\n\
+         \x20 let s: string = \"pi = {pi}\";\n\
+         \x20 print_str(s);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("@float_to_str"));
+}
+
+#[test]
+fn test_string_interp_bool() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let flag: bool = true;\n\
+         \x20 let s: string = \"flag = {flag}\";\n\
+         \x20 print_str(s);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("@bool_to_str"));
+}
+
+#[test]
+fn test_string_interp_escape_braces() {
+    // {{x}} should produce literal {x} — a plain string, not an interpolation
+    parse_and_check(
+        "fn main() -> int {\n\
+         \x20 let s: string = \"{{x}}\";\n\
+         \x20 print_str(s);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    // Verify at AST level: should be a StringLit, not desugared
+    let json = parse_to_json(
+        "fn main() -> int {\n\
+         \x20 let s: string = \"{{x}}\";\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(json.contains("{x}"));
+}
+
+#[test]
+fn test_string_interp_complex_expr() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let a: int = 3;\n\
+         \x20 let b: int = 4;\n\
+         \x20 let s: string = \"sum = {a + b}\";\n\
+         \x20 print_str(s);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("@str_concat"));
+    assert!(ir.contains("@int_to_str"));
+}
+
+#[test]
+fn test_float_to_str_builtin() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let s: string = float_to_str(3.14);\n\
+         \x20 print_str(s);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("@float_to_str"));
+}
+
+#[test]
+fn test_bool_to_str_builtin() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let s: string = bool_to_str(true);\n\
+         \x20 print_str(s);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("@bool_to_str"));
+}
+
+// ── Tuple type tests ──────────────────────────────────────────────
+
+#[test]
+fn test_tuple_literal() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let t: (int, string) = (42, \"hello\");\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("%tuple.int.string = type { i64, ptr }"));
+}
+
+#[test]
+fn test_tuple_field_access() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let t: (int, string) = (42, \"hello\");\n\
+         \x20 let x: int = t.0;\n\
+         \x20 let s: string = t.1;\n\
+         \x20 print_int(x);\n\
+         \x20 print_str(s);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("getelementptr %tuple.int.string"));
+}
+
+#[test]
+fn test_tuple_destructure() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let t: (int, string) = (42, \"hello\");\n\
+         \x20 let (a, b): (int, string) = t;\n\
+         \x20 print_int(a);\n\
+         \x20 print_str(b);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("getelementptr %tuple.int.string"));
+}
+
+#[test]
+fn test_tuple_nested() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let inner: (bool, char) = (true, 'x');\n\
+         \x20 let t: (int, (bool, char)) = (1, inner);\n\
+         \x20 let x: int = t.0;\n\
+         \x20 print_int(x);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("%tuple.int.tuple.bool.char = type"));
+    assert!(ir.contains("%tuple.bool.char = type { i1, i8 }"));
+}
+
+#[test]
+fn test_tuple_function_param_return() {
+    let ir = compile(
+        "fn swap(t: (int, int)) -> (int, int) {\n\
+         \x20 let a: int = t.0;\n\
+         \x20 let b: int = t.1;\n\
+         \x20 return (b, a);\n\
+         }\n\
+         fn main() -> int {\n\
+         \x20 let t: (int, int) = (1, 2);\n\
+         \x20 let swapped: (int, int) = swap(t);\n\
+         \x20 print_int(swapped.0);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("define %tuple.int.int @swap"));
+}
+
+#[test]
+fn test_tuple_type_error() {
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20 let t: (int, string) = (42, 42);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_tuple_destructure_arity_mismatch() {
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20 let t: (int, string) = (42, \"hello\");\n\
+         \x20 let (a, b, c): (int, string) = t;\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  Option<T> & Result<T, E> prelude types
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn test_option_some_none() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let x: Option<int> = Some(42);\n\
+         \x20 match x {\n\
+         \x20   Some(val) => { return val; }\n\
+         \x20   None => { return 0; }\n\
+         \x20 }\n\
+         }\n",
+    );
+    assert!(ir.contains("%Option__int"));
+    assert!(ir.contains("ret i64"));
+}
+
+#[test]
+fn test_option_unwrap() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let x: Option<int> = Some(7);\n\
+         \x20 let val: int = x.unwrap();\n\
+         \x20 return val;\n\
+         }\n",
+    );
+    assert!(ir.contains("%Option__int"));
+    assert!(ir.contains("@abort"));
+}
+
+#[test]
+fn test_option_is_some_is_none() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let x: Option<int> = Some(1);\n\
+         \x20 let y: Option<int> = None;\n\
+         \x20 if x.is_some() and y.is_none() {\n\
+         \x20   return 1;\n\
+         \x20 }\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("icmp eq i32"));
+}
+
+#[test]
+fn test_result_ok_err() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let r: Result<int, string> = Ok(42);\n\
+         \x20 match r {\n\
+         \x20   Ok(val) => { return val; }\n\
+         \x20   Err(msg) => { return 0; }\n\
+         \x20 }\n\
+         }\n",
+    );
+    assert!(ir.contains("%Result__int__string"));
+}
+
+#[test]
+fn test_result_unwrap() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let r: Result<int, string> = Ok(5);\n\
+         \x20 let val: int = r.unwrap();\n\
+         \x20 return val;\n\
+         }\n",
+    );
+    assert!(ir.contains("%Result__int__string"));
+    assert!(ir.contains("@abort"));
+}
+
+#[test]
+fn test_result_is_ok_is_err() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let r: Result<int, string> = Ok(1);\n\
+         \x20 if r.is_ok() {\n\
+         \x20   return 1;\n\
+         \x20 }\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("icmp eq i32"));
+}
+
+#[test]
+fn test_option_generic_monomorphize() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let a: Option<int> = Some(42);\n\
+         \x20 let b: Option<string> = Some(\"hello\");\n\
+         \x20 return a.unwrap();\n\
+         }\n",
+    );
+    assert!(ir.contains("%Option__int"));
+    assert!(ir.contains("%Option__string"));
+}
+
+#[test]
+fn test_option_in_function_return() {
+    let ir = compile(
+        "fn find(arr: [int], target: int) -> Option<int> {\n\
+         \x20 let mut i: int = 0;\n\
+         \x20 while i < len(arr) {\n\
+         \x20   if arr[i] == target {\n\
+         \x20     return Some(i);\n\
+         \x20   }\n\
+         \x20   i = i + 1;\n\
+         \x20 }\n\
+         \x20 return None;\n\
+         }\n\
+         fn main() -> int {\n\
+         \x20 let arr: [int] = [10, 20, 30];\n\
+         \x20 let result: Option<int> = find(arr, 20);\n\
+         \x20 match result {\n\
+         \x20   Some(idx) => { return idx; }\n\
+         \x20   None => { return -1; }\n\
+         \x20 }\n\
+         }\n",
+    );
+    assert!(ir.contains("define %Option__int @find"));
+    assert!(ir.contains("%Option__int"));
 }

@@ -100,6 +100,7 @@ exactly one owner.
 | `&T` | Immutable reference | `ptr` |
 | `&mut T` | Mutable reference | `ptr` |
 | `own T` | Explicit ownership | `ptr` |
+| `(T, U)` | Tuple type | `%tuple.T.U` struct |
 | `[T]` | Dynamic array (heap-allocated) | `{ ptr, i64, i64 }` |
 | `Map` | Hash map (`string -> int`) | `ptr` |
 | `Task<T>` | Concurrent task handle | `ptr` |
@@ -721,7 +722,7 @@ diff gen1.ll gen2.ll    # identical — fixed-point achieved
 ## Testing
 
 ```bash
-cargo test                    # 340 tests (46 unit + 294 integration)
+cargo test                    # 385 tests (46 unit + 339 integration)
 cargo test compiler::lexer    # tests in one module
 cargo test test_fibonacci     # single test by name
 ```
@@ -747,6 +748,7 @@ cargo test test_fibonacci     # single test by name
 | **v1.0** | Stable language specification and ABI, production-ready toolchain | Done |
 | **v1.0.2** | Codegen bug fixes: stale PHI labels, HashMap tombstone loop, spawn alignment, unit IR | Done |
 | **v1.1** | Ergonomics: compound assignment, bitwise operators, break/continue, range for-loops | Done |
+| **v1.2** | String interpolation, tuple types, prelude Option\<T\>/Result\<T,E\> with methods | Done |
 
 ## License
 

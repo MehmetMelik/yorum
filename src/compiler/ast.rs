@@ -162,6 +162,7 @@ pub enum Type {
     TypeVar(String),
     Generic(String, Vec<Type>),
     Fn(Vec<Type>, Box<Type>),
+    Tuple(Vec<Type>),
     Task(Box<Type>),
     Chan(Box<Type>),
     Map,
@@ -202,6 +203,16 @@ impl std::fmt::Display for Type {
                     write!(f, "{}", p)?;
                 }
                 write!(f, ") -> {}", ret)
+            }
+            Type::Tuple(types) => {
+                write!(f, "(")?;
+                for (i, t) in types.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", t)?;
+                }
+                write!(f, ")")
             }
             Type::Task(inner) => write!(f, "Task<{}>", inner),
             Type::Chan(inner) => write!(f, "Chan<{}>", inner),
@@ -250,6 +261,8 @@ pub struct LetStmt {
     pub is_mut: bool,
     pub ty: Type,
     pub value: Expr,
+    /// For tuple destructuring: `let (a, b): (int, string) = t;`
+    pub destructure: Option<Vec<String>>,
     pub span: Span,
 }
 
@@ -346,6 +359,7 @@ pub enum ExprKind {
     StructInit(String, Vec<FieldInit>),
     Closure(ClosureExpr),
     ArrayLit(Vec<Expr>),
+    TupleLit(Vec<Expr>),
     Spawn(Block),
     Range(Box<Expr>, Box<Expr>),
 }

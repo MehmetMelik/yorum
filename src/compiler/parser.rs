@@ -1,6 +1,6 @@
 use crate::compiler::ast::*;
 use crate::compiler::span::Span;
-use crate::compiler::token::{Token, TokenKind};
+use crate::compiler::token::{InterpPart, Token, TokenKind};
 use std::fmt;
 
 // ═══════════════════════════════════════════════════════════════
@@ -557,6 +557,32 @@ impl Parser {
                 let inner = self.parse_type()?;
                 Ok(Type::Own(Box::new(inner)))
             }
+            TokenKind::LParen => {
+                // Tuple type: (T1, T2, ...)
+                self.advance();
+                let first = self.parse_type()?;
+                if self.check(&TokenKind::Comma) {
+                    // It's a tuple type
+                    self.advance();
+                    let mut types = vec![first];
+                    if !self.check(&TokenKind::RParen) {
+                        types.push(self.parse_type()?);
+                        while self.check(&TokenKind::Comma) {
+                            self.advance();
+                            if self.check(&TokenKind::RParen) {
+                                break;
+                            }
+                            types.push(self.parse_type()?);
+                        }
+                    }
+                    self.expect(&TokenKind::RParen)?;
+                    Ok(Type::Tuple(types))
+                } else {
+                    // Single type in parens, not a tuple — just return the type
+                    self.expect(&TokenKind::RParen)?;
+                    Ok(first)
+                }
+            }
             _ => Err(self.error("expected type")),
         }
     }
@@ -614,6 +640,34 @@ impl Parser {
             false
         };
 
+        // Check for tuple destructuring: let (a, b): (int, string) = ...
+        if self.check(&TokenKind::LParen) {
+            self.advance();
+            let mut names = vec![self.expect_ident()?];
+            while self.check(&TokenKind::Comma) {
+                self.advance();
+                if self.check(&TokenKind::RParen) {
+                    break;
+                }
+                names.push(self.expect_ident()?);
+            }
+            self.expect(&TokenKind::RParen)?;
+            self.expect(&TokenKind::Colon)?;
+            let ty = self.parse_type()?;
+            self.expect(&TokenKind::Eq)?;
+            let value = self.parse_expr()?;
+            self.expect(&TokenKind::Semicolon)?;
+
+            return Ok(Stmt::Let(LetStmt {
+                name: String::new(), // unused for destructuring
+                is_mut,
+                ty,
+                value,
+                destructure: Some(names),
+                span: start.merge(self.prev_span()),
+            }));
+        }
+
         let name = self.expect_ident()?;
         self.expect(&TokenKind::Colon)?;
         let ty = self.parse_type()?;
@@ -626,6 +680,7 @@ impl Parser {
             is_mut,
             ty,
             value,
+            destructure: None,
             span: start.merge(self.prev_span()),
         }))
     }
@@ -941,8 +996,18 @@ impl Parser {
                     span,
                 };
             } else if self.check(&TokenKind::Dot) {
-                // Field access or method call
+                // Field access, method call, or tuple index
                 self.advance();
+                // Check for tuple index: .0, .1, .2, ...
+                if let TokenKind::IntLit(idx) = self.peek_kind() {
+                    self.advance();
+                    let span = expr.span.merge(self.prev_span());
+                    expr = Expr {
+                        kind: ExprKind::FieldAccess(Box::new(expr), idx.to_string()),
+                        span,
+                    };
+                    continue;
+                }
                 let field = self.expect_ident()?;
                 if self.check(&TokenKind::LParen) {
                     // Method call: expr.method(args)
@@ -1029,6 +1094,11 @@ impl Parser {
                     span: start,
                 })
             }
+            TokenKind::InterpStringLit(ref parts) => {
+                let parts = parts.clone();
+                self.advance();
+                self.desugar_interp_string(&parts, start)
+            }
             TokenKind::CharLit(c) => {
                 self.advance();
                 Ok(Expr {
@@ -1104,12 +1174,90 @@ impl Parser {
             TokenKind::Pipe => self.parse_closure_expr(),
             TokenKind::LParen => {
                 self.advance();
-                let expr = self.parse_expr()?;
-                self.expect(&TokenKind::RParen)?;
-                Ok(expr)
+                let first = self.parse_expr()?;
+                if self.check(&TokenKind::Comma) {
+                    // Tuple literal: (expr, expr, ...)
+                    self.advance();
+                    let mut elements = vec![first];
+                    if !self.check(&TokenKind::RParen) {
+                        elements.push(self.parse_expr()?);
+                        while self.check(&TokenKind::Comma) {
+                            self.advance();
+                            if self.check(&TokenKind::RParen) {
+                                break;
+                            }
+                            elements.push(self.parse_expr()?);
+                        }
+                    }
+                    self.expect(&TokenKind::RParen)?;
+                    let span = start.merge(self.prev_span());
+                    Ok(Expr {
+                        kind: ExprKind::TupleLit(elements),
+                        span,
+                    })
+                } else {
+                    // Grouping: (expr)
+                    self.expect(&TokenKind::RParen)?;
+                    Ok(first)
+                }
             }
             _ => Err(self.error(&format!("expected expression, found {}", self.peek_kind()))),
         }
+    }
+
+    /// Desugar an interpolated string `"hello {expr}"` into
+    /// `str_concat(str_concat("hello ", to_str(expr)), "")` chains.
+    fn desugar_interp_string(
+        &mut self,
+        parts: &[InterpPart],
+        span: Span,
+    ) -> Result<Expr, ParseError> {
+        let mut acc: Option<Expr> = None;
+
+        for part in parts {
+            let part_expr = match part {
+                InterpPart::Literal(s) => Expr {
+                    kind: ExprKind::Literal(Literal::String(s.clone())),
+                    span,
+                },
+                InterpPart::Expr(tokens) => {
+                    // Sub-parse the expression tokens
+                    let mut sub_parser = Parser::new(tokens.clone());
+                    let inner_expr = sub_parser.parse_expr()?;
+                    // Wrap in to_str() call
+                    Expr {
+                        kind: ExprKind::Call(
+                            Box::new(Expr {
+                                kind: ExprKind::Ident("to_str".to_string()),
+                                span,
+                            }),
+                            vec![inner_expr],
+                        ),
+                        span,
+                    }
+                }
+            };
+
+            acc = Some(match acc {
+                None => part_expr,
+                Some(prev) => Expr {
+                    kind: ExprKind::Call(
+                        Box::new(Expr {
+                            kind: ExprKind::Ident("str_concat".to_string()),
+                            span,
+                        }),
+                        vec![prev, part_expr],
+                    ),
+                    span,
+                },
+            });
+        }
+
+        // If no parts at all, return empty string
+        Ok(acc.unwrap_or(Expr {
+            kind: ExprKind::Literal(Literal::String(String::new())),
+            span,
+        }))
     }
 
     fn parse_closure_expr(&mut self) -> Result<Expr, ParseError> {

@@ -57,6 +57,7 @@ yorum check   <file.yrm>               Type-check and ownership-check only
 yorum ast     <file.yrm>               Dump the full AST as JSON
 yorum build   [-o output]              Build multi-file project (requires yorum.toml)
 yorum init    [name]                   Scaffold a new project
+yorum lsp                              Start LSP server (stdin/stdout)
 ```
 
 ## Why Yorum
@@ -574,6 +575,33 @@ This enables AI agents to parse Yorum source to structured JSON, manipulate the
 tree programmatically, and reconstruct valid source code — with exact span
 information preserved.
 
+## Editor Support (v0.7)
+
+Yorum ships with a built-in LSP server for editor integration:
+
+```bash
+yorum lsp    # starts the language server (JSON-RPC over stdin/stdout)
+```
+
+**Features:**
+- **Diagnostics** — Real-time error reporting as you type (type errors, ownership errors, parse errors)
+- **Hover** — Shows type information for variables, functions, structs, and enums
+- **Go-to-definition** — Jump to where a variable or function was defined
+
+### VS Code
+
+A VS Code extension is included in `editors/vscode/`:
+
+```bash
+cd editors/vscode
+npm install
+npm run compile
+```
+
+Then install the extension in VS Code (symlink or copy `editors/vscode/` to
+`~/.vscode/extensions/yorum`). The extension provides syntax highlighting and
+connects to the `yorum lsp` server for diagnostics, hover, and go-to-definition.
+
 ## Compiler Architecture
 
 ```
@@ -642,7 +670,7 @@ diff gen1.ll gen2.ll    # identical — fixed-point achieved
 ## Testing
 
 ```bash
-cargo test                    # 120 tests (34 unit + 86 integration)
+cargo test                    # 217 tests (46 unit + 171 integration)
 cargo test compiler::lexer    # tests in one module
 cargo test test_fibonacci     # single test by name
 ```
@@ -662,7 +690,7 @@ cargo test test_fibonacci     # single test by name
 | **v0.4** | Structured concurrency, runtime contract verification, multi-file compilation | Done |
 | **v0.5** | Self-hosting compiler, char type, dynamic arrays, file I/O, HashMap | Done |
 | **v0.6** | Standard library builtins: math, string utilities, collections, enhanced I/O | Done |
-| **v0.7** | LSP server for editor integration | |
+| **v0.7** | LSP server for editor integration (diagnostics, hover, go-to-definition) | Done |
 | **v0.8** | Formal verification of the ownership checker | |
 | **v0.9** | Networking (TCP/UDP sockets, HTTP client) | |
 | **v1.0** | Stable language specification and ABI | |

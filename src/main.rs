@@ -16,9 +16,10 @@ fn main() {
         "ast" => cmd_ast(&args[2..]),
         "build" => cmd_build(&args[2..]),
         "init" => cmd_init(&args[2..]),
+        "lsp" => cmd_lsp(),
         "help" | "--help" | "-h" => print_usage(),
         "version" | "--version" | "-v" => {
-            println!("yorum 0.4.0");
+            println!("yorum 0.7.0");
         }
         other => {
             // If it ends with .yrm, treat it as an implicit compile
@@ -43,6 +44,7 @@ fn print_usage() {
          \x20 yorum ast     <file.yrm>                Print AST as JSON\n\
          \x20 yorum build   [-o output]                Build project (requires yorum.toml)\n\
          \x20 yorum init    [name]                     Initialize a new project\n\
+         \x20 yorum lsp                                Start LSP server (stdin/stdout)\n\
          \x20 yorum help                               Show this message\n\
          \x20 yorum version                            Show version\n\
          \n\
@@ -54,6 +56,14 @@ fn print_usage() {
          \x20 yorum init myproject && cd myproject\n\
          \x20 yorum build -o out.ll"
     );
+}
+
+fn cmd_lsp() {
+    let mut server = yorum::lsp::server::LspServer::new();
+    if let Err(e) = server.run() {
+        eprintln!("LSP server error: {}", e);
+        process::exit(1);
+    }
 }
 
 fn cmd_compile(args: &[String]) {

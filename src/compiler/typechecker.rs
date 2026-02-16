@@ -22,6 +22,43 @@ impl fmt::Display for TypeError {
 impl std::error::Error for TypeError {}
 
 // ═══════════════════════════════════════════════════════════════
+//  Symbol table (for LSP hover / go-to-definition)
+// ═══════════════════════════════════════════════════════════════
+
+#[derive(Debug, Clone)]
+pub struct SymbolTable {
+    pub definitions: Vec<SymbolDef>,
+    pub references: Vec<SymbolRef>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SymbolDef {
+    pub name: String,
+    pub kind: SymbolKind,
+    pub type_desc: String,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct SymbolRef {
+    pub span: Span,
+    pub resolved_type: String,
+    pub def_name: String,
+    pub def_span: Option<Span>,
+}
+
+#[derive(Debug, Clone)]
+pub enum SymbolKind {
+    Function,
+    Variable,
+    Parameter,
+    Struct,
+    Enum,
+    #[allow(dead_code)]
+    Field,
+}
+
+// ═══════════════════════════════════════════════════════════════
 //  Type environment
 // ═══════════════════════════════════════════════════════════════
 
@@ -32,6 +69,7 @@ struct FnSig {
     #[allow(dead_code)]
     is_pure: bool,
     type_params: Vec<String>,
+    span: Span,
 }
 
 #[derive(Debug, Clone)]
@@ -49,6 +87,7 @@ struct EnumInfo {
 struct VarInfo {
     ty: Type,
     is_mut: bool,
+    def_span: Span,
 }
 
 #[derive(Debug, Clone)]
@@ -81,6 +120,8 @@ pub struct TypeChecker {
     current_fn_ret: Option<Type>,
     current_fn_is_pure: bool,
     errors: Vec<TypeError>,
+    collect_symbols: bool,
+    symbol_table: SymbolTable,
 }
 
 impl Default for TypeChecker {
@@ -104,9 +145,30 @@ impl TypeChecker {
             current_fn_ret: None,
             current_fn_is_pure: false,
             errors: Vec::new(),
+            collect_symbols: false,
+            symbol_table: SymbolTable {
+                definitions: Vec::new(),
+                references: Vec::new(),
+            },
         };
         checker.register_builtins();
         checker
+    }
+
+    pub fn new_with_symbols() -> Self {
+        let mut checker = Self::new();
+        checker.collect_symbols = true;
+        checker
+    }
+
+    pub fn take_symbol_table(&mut self) -> SymbolTable {
+        std::mem::replace(
+            &mut self.symbol_table,
+            SymbolTable {
+                definitions: Vec::new(),
+                references: Vec::new(),
+            },
+        )
     }
 
     fn register_builtins(&mut self) {
@@ -115,6 +177,7 @@ impl TypeChecker {
             ret,
             is_pure,
             type_params: Vec::new(),
+            span: Span::synthetic(),
         };
         self.functions.insert(
             "print_int".to_string(),
@@ -455,7 +518,26 @@ impl TypeChecker {
             ret: f.return_type.clone(),
             is_pure: f.is_pure,
             type_params: f.type_params.iter().map(|tp| tp.name.clone()).collect(),
+            span: f.span,
         };
+        if self.collect_symbols {
+            let params_desc: Vec<String> = f
+                .params
+                .iter()
+                .map(|p| format!("{}: {}", p.name, p.ty))
+                .collect();
+            self.symbol_table.definitions.push(SymbolDef {
+                name: f.name.clone(),
+                kind: SymbolKind::Function,
+                type_desc: format!(
+                    "fn {}({}) -> {}",
+                    f.name,
+                    params_desc.join(", "),
+                    f.return_type
+                ),
+                span: f.span,
+            });
+        }
         self.functions.insert(f.name.clone(), sig);
     }
 
@@ -468,6 +550,19 @@ impl TypeChecker {
                 .collect(),
             type_params: s.type_params.iter().map(|tp| tp.name.clone()).collect(),
         };
+        if self.collect_symbols {
+            let fields_desc: Vec<String> = s
+                .fields
+                .iter()
+                .map(|f| format!("{}: {}", f.name, f.ty))
+                .collect();
+            self.symbol_table.definitions.push(SymbolDef {
+                name: s.name.clone(),
+                kind: SymbolKind::Struct,
+                type_desc: format!("struct {} {{ {} }}", s.name, fields_desc.join(", ")),
+                span: s.span,
+            });
+        }
         self.structs.insert(s.name.clone(), info);
     }
 
@@ -481,6 +576,7 @@ impl TypeChecker {
                     ret: m.return_type.clone(),
                     is_pure: false,
                     type_params: Vec::new(),
+                    span: m.span,
                 };
                 (m.name.clone(), sig)
             })
@@ -507,6 +603,7 @@ impl TypeChecker {
                     .iter()
                     .map(|tp| tp.name.clone())
                     .collect(),
+                span: method.span,
             };
             let self_param_ty = if let Some(p) = method.params.first() {
                 self.resolve_self_type(&p.ty, &self_ty)
@@ -575,6 +672,27 @@ impl TypeChecker {
                 .map(|v| (v.name.clone(), v.fields.clone()))
                 .collect(),
         };
+        if self.collect_symbols {
+            let variants_desc: Vec<String> = e
+                .variants
+                .iter()
+                .map(|v| {
+                    if v.fields.is_empty() {
+                        v.name.clone()
+                    } else {
+                        let fields: Vec<String> =
+                            v.fields.iter().map(|f| format!("{}", f)).collect();
+                        format!("{}({})", v.name, fields.join(", "))
+                    }
+                })
+                .collect();
+            self.symbol_table.definitions.push(SymbolDef {
+                name: e.name.clone(),
+                kind: SymbolKind::Enum,
+                type_desc: format!("enum {} {{ {} }}", e.name, variants_desc.join(", ")),
+                span: e.span,
+            });
+        }
         self.enums.insert(e.name.clone(), info);
     }
 
@@ -599,7 +717,15 @@ impl TypeChecker {
                     span: param.span,
                 });
             }
-            self.define(&param.name, param.ty.clone(), false);
+            if self.collect_symbols {
+                self.symbol_table.definitions.push(SymbolDef {
+                    name: param.name.clone(),
+                    kind: SymbolKind::Parameter,
+                    type_desc: format!("{}: {}", param.name, param.ty),
+                    span: param.span,
+                });
+            }
+            self.define_with_span(&param.name, param.ty.clone(), false, param.span);
         }
 
         // Bind "result" for ensures clauses
@@ -685,7 +811,20 @@ impl TypeChecker {
                         });
                     }
                 }
-                self.define(&s.name, s.ty.clone(), s.is_mut);
+                if self.collect_symbols {
+                    self.symbol_table.definitions.push(SymbolDef {
+                        name: s.name.clone(),
+                        kind: SymbolKind::Variable,
+                        type_desc: format!(
+                            "{}{}: {}",
+                            if s.is_mut { "let mut " } else { "let " },
+                            s.name,
+                            s.ty
+                        ),
+                        span: s.span,
+                    });
+                }
+                self.define_with_span(&s.name, s.ty.clone(), s.is_mut, s.span);
             }
 
             Stmt::Assign(s) => {
@@ -791,7 +930,7 @@ impl TypeChecker {
                 if let Some(iter_ty) = self.infer_expr(&s.iterable) {
                     if let Type::Array(inner) = iter_ty {
                         self.push_scope();
-                        self.define(&s.var_name, *inner, false);
+                        self.define_with_span(&s.var_name, *inner, false, s.span);
                         self.check_block(&s.body);
                         self.pop_scope();
                     } else {
@@ -892,7 +1031,17 @@ impl TypeChecker {
 
             ExprKind::Ident(name) => {
                 if let Some(info) = self.lookup(name) {
-                    Some(info.ty.clone())
+                    let ty = info.ty.clone();
+                    if self.collect_symbols {
+                        let def_span = info.def_span;
+                        self.symbol_table.references.push(SymbolRef {
+                            span: expr.span,
+                            resolved_type: format!("{}", ty),
+                            def_name: name.clone(),
+                            def_span: Some(def_span),
+                        });
+                    }
+                    Some(ty)
                 } else {
                     self.errors.push(TypeError {
                         message: format!("undefined variable '{}'", name),
@@ -1305,6 +1454,19 @@ impl TypeChecker {
                     }
 
                     if let Some(sig) = self.functions.get(name).cloned() {
+                        if self.collect_symbols {
+                            let def_span = if sig.span.line == 0 {
+                                None
+                            } else {
+                                Some(sig.span)
+                            };
+                            self.symbol_table.references.push(SymbolRef {
+                                span: callee.span,
+                                resolved_type: format!("{}", sig.ret),
+                                def_name: name.clone(),
+                                def_span,
+                            });
+                        }
                         // Enforce purity: pure functions cannot call impure functions
                         if self.current_fn_is_pure && !sig.is_pure {
                             self.errors.push(TypeError {
@@ -1641,7 +1803,7 @@ impl TypeChecker {
                             span: param.span,
                         });
                     }
-                    self.define(&param.name, param.ty.clone(), false);
+                    self.define_with_span(&param.name, param.ty.clone(), false, param.span);
                 }
                 let prev_ret = self.current_fn_ret.clone();
                 self.current_fn_ret = Some(closure.return_type.clone());
@@ -1833,7 +1995,27 @@ impl TypeChecker {
 
     fn define(&mut self, name: &str, ty: Type, is_mut: bool) {
         if let Some(scope) = self.scopes.last_mut() {
-            scope.insert(name.to_string(), VarInfo { ty, is_mut });
+            scope.insert(
+                name.to_string(),
+                VarInfo {
+                    ty,
+                    is_mut,
+                    def_span: Span::synthetic(),
+                },
+            );
+        }
+    }
+
+    fn define_with_span(&mut self, name: &str, ty: Type, is_mut: bool, span: Span) {
+        if let Some(scope) = self.scopes.last_mut() {
+            scope.insert(
+                name.to_string(),
+                VarInfo {
+                    ty,
+                    is_mut,
+                    def_span: span,
+                },
+            );
         }
     }
 

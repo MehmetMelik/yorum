@@ -1,4 +1,5 @@
 pub mod compiler;
+pub mod lsp;
 pub mod manifest;
 
 use compiler::codegen::Codegen;
@@ -6,7 +7,108 @@ use compiler::lexer::Lexer;
 use compiler::monomorphize::monomorphize;
 use compiler::ownership::OwnershipChecker;
 use compiler::parser::Parser;
+use compiler::span::Span;
 use compiler::typechecker::TypeChecker;
+
+// ═══════════════════════════════════════════════════════════════
+//  Diagnostics API (for LSP and tooling)
+// ═══════════════════════════════════════════════════════════════
+
+#[derive(Debug, Clone)]
+pub enum DiagnosticSeverity {
+    Error,
+    Warning,
+}
+
+#[derive(Debug, Clone)]
+pub struct CompilerDiagnostic {
+    pub message: String,
+    pub span: Span,
+    pub severity: DiagnosticSeverity,
+}
+
+/// Run lex → parse → typecheck → ownership check and return structured diagnostics.
+///
+/// Unlike `typecheck()`, this returns `Vec<CompilerDiagnostic>` with spans
+/// instead of a formatted error string. Always succeeds — errors are in the vec.
+pub fn check_diagnostics(source: &str) -> Vec<CompilerDiagnostic> {
+    let (diags, _) = check_with_symbols(source);
+    diags
+}
+
+/// Run the checking pipeline and also collect a symbol table for hover/go-to-def.
+///
+/// Returns diagnostics plus an optional symbol table (None if parsing failed
+/// before the typechecker could run).
+pub fn check_with_symbols(
+    source: &str,
+) -> (
+    Vec<CompilerDiagnostic>,
+    Option<compiler::typechecker::SymbolTable>,
+) {
+    let mut diagnostics = Vec::new();
+
+    // Phase 1: Lex
+    let mut lexer = Lexer::new(source);
+    let tokens = match lexer.tokenize() {
+        Ok(t) => t,
+        Err(e) => {
+            diagnostics.push(CompilerDiagnostic {
+                message: format!("{}", e),
+                span: Span::synthetic(),
+                severity: DiagnosticSeverity::Error,
+            });
+            return (diagnostics, None);
+        }
+    };
+
+    // Phase 2: Parse
+    let mut parser = Parser::new(tokens);
+    let program = match parser.parse_program() {
+        Ok(p) => p,
+        Err(e) => {
+            diagnostics.push(CompilerDiagnostic {
+                message: format!("{}", e),
+                span: Span::synthetic(),
+                severity: DiagnosticSeverity::Error,
+            });
+            return (diagnostics, None);
+        }
+    };
+
+    // Phase 3: Type check (with symbol collection)
+    let mut typechecker = TypeChecker::new_with_symbols();
+    let type_errors = typechecker.check_program(&program);
+    let symbols = typechecker.take_symbol_table();
+
+    if let Err(errs) = type_errors {
+        for e in errs {
+            diagnostics.push(CompilerDiagnostic {
+                message: e.message.clone(),
+                span: e.span,
+                severity: DiagnosticSeverity::Error,
+            });
+        }
+    }
+
+    // Phase 4: Ownership check (still provide symbols even if ownership fails)
+    let mut ownership = OwnershipChecker::new();
+    if let Err(errs) = ownership.check_program(&program) {
+        for e in errs {
+            diagnostics.push(CompilerDiagnostic {
+                message: e.message.clone(),
+                span: e.span,
+                severity: DiagnosticSeverity::Error,
+            });
+        }
+    }
+
+    (diagnostics, Some(symbols))
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  Existing public API
+// ═══════════════════════════════════════════════════════════════
 
 /// Compile Yorum source code to LLVM IR.
 pub fn compile_to_ir(source: &str) -> Result<String, String> {

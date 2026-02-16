@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 cargo build                          # dev build
 cargo build --release                # release build
-cargo test                           # all tests (336: 46 unit + 290 integration)
+cargo test                           # all tests (340: 46 unit + 294 integration)
 cargo test compiler::lexer           # tests in one module
 cargo test test_fibonacci_compiles   # single test by name
 cargo test -- --nocapture            # see stdout from tests
@@ -57,13 +57,14 @@ Multi-file projects (`yorum build`) add a front-end step: `ModuleResolver` disco
 - **`typechecker.rs`** — Two-pass: first registers all function signatures, struct layouts, and enum definitions; then checks function bodies. Uses a scope stack (`Vec<HashMap<String, VarInfo>>`) for lexical scoping. Built-in functions registered in `register_builtins()`: print (`print_int`, `print_float`, `print_bool`, `print_str`, `print_char`, `print_err`), string ops (`str_len`, `str_concat`, `str_eq`, `str_charAt`, `str_sub`, `str_from_char`), char classification (`char_is_alpha`, `char_is_digit`, `char_is_whitespace`), type casting (`int_to_str`, `str_to_int`, `char_to_int`, `int_to_char`, `int_to_float`, `float_to_int`), file I/O (`file_read`, `file_write`, `file_exists`, `file_append`), HashMap (`map_new`, `map_set`, `map_get`, `map_has`, `map_size`, `map_remove`, `map_keys`, `map_values`), math (`abs_int`, `abs_float`, `min_int`, `max_int`, `min_float`, `max_float`, `sqrt`, `pow`, `sin`, `cos`, `tan`, `floor`, `ceil`, `round`, `log`, `log10`, `exp`), string utilities (`str_contains`, `str_index_of`, `str_starts_with`, `str_ends_with`, `str_trim`, `str_replace`, `str_to_upper`, `str_to_lower`, `str_repeat`), collections (`contains_int`, `contains_str`, `sort_int`, `sort_str`), enhanced I/O (`read_line`, `print_flush`, `env_get`, `time_ms`), networking — TCP (`tcp_connect`, `tcp_listen`, `tcp_accept`, `tcp_send`, `tcp_recv`, `tcp_close`), UDP (`udp_socket`, `udp_bind`, `udp_send_to`, `udp_recv_from`), DNS (`dns_resolve`), HTTP (`http_request`, `http_get`, `http_post`). `len()`, `push()`, `pop()`, `args()`, `exit()`, `chan()`, `send()`, `recv()`, `slice()`, `concat_arrays()`, `reverse()`, `str_split()` are special-cased in Call handling. `spawn` type inference and `.join()` method handling are in `infer_expr`. Contract expressions are type-checked (must be `bool`). Purity enforcement: pure functions cannot call impure functions or use `spawn`
 - **`ownership.rs`** — Type-aware move checker. Tracks `VarInfo { state, ty, def_span }` per variable with `is_copy_type()` distinguishing copy types (`int`, `float`, `bool`, `char`, `string`, `unit`) from move types (structs, enums, arrays, etc.). `check_expr_move()` marks non-copy identifiers as `Moved`; `check_expr_use()` checks read-only contexts. Branch merging (`snapshot_states`/`restore_states`/`apply_merged_states`) for if/else and match ensures moves in any branch propagate conservatively. `loop_depth` tracking prevents moving outer-scope variables inside while/for loops. Enforces must-join for `Task` variables via `task_vars: Vec<HashSet<String>>` with real `def_span` on errors
 - **`monomorphize.rs`** — Eliminates generics before codegen. Collects all concrete instantiations of generic functions/structs/enums, clones declarations with type variables substituted, and rewrites call sites to use mangled names (`identity__int`, `Pair__int__float`). Also substitutes type vars in contract expressions
-- **`codegen.rs`** — Emits textual LLVM IR. Uses alloca/load/store pattern (LLVM's mem2reg promotes to SSA). Each expression emitter returns the LLVM SSA value name (e.g., `%t3`). Struct-typed and enum-typed let bindings reuse the alloca directly instead of store/load. Closures compile to `{ ptr, ptr }` pairs (fn_ptr + env_ptr) with deferred function emission. Arrays are heap-allocated fat pointers `{ ptr, i64, i64 }` (data, length, capacity) with runtime bounds checking and `realloc`-based growth for `push`. Aggregate types (structs, enums) in arrays use `memcpy` for push/pop/index/array-lit operations. `requires`/`ensures` emit conditional branches to `@__yorum_contract_fail`. `spawn` compiles to `pthread_create` with env capture (same pattern as closures). Channel helpers are emitted as LLVM IR functions using mutex/condvar. HashMap uses FNV-1a hashing with linear probing, emitted as LLVM IR helper functions
+- **`codegen.rs`** — Emits textual LLVM IR. Uses alloca/load/store pattern (LLVM's mem2reg promotes to SSA). Each expression emitter returns the LLVM SSA value name (e.g., `%t3`). Struct-typed, enum-typed, and unit-typed let bindings are special-cased (unit skips alloca/store entirely since `alloca void` is invalid IR). Closures compile to `{ ptr, ptr }` pairs (fn_ptr + env_ptr) with deferred function emission. Arrays are heap-allocated fat pointers `{ ptr, i64, i64 }` (data, length, capacity) with runtime bounds checking and `realloc`-based growth for `push`. Aggregate types (structs, enums) in arrays use `memcpy` for push/pop/index/array-lit operations. `requires`/`ensures` emit conditional branches to `@__yorum_contract_fail`. `spawn` compiles to `pthread_create` with env capture (same pattern as closures); env struct size is computed via LLVM sizeof idiom (`getelementptr %type, ptr null, i32 1` + `ptrtoint`) to account for alignment padding. Channel helpers are emitted as LLVM IR functions using mutex/condvar. HashMap uses FNV-1a hashing with linear probing (48-byte map struct with tombstone counter at offset 40), emitted as LLVM IR helper functions
 - **`module_resolver.rs`** — Discovers `.yrm` files under `src/`, maps filesystem paths to module names, parses each file, validates `module` declarations match paths
 - **`project.rs`** — Orchestrates multi-file compilation: reads `yorum.toml` manifest, resolves modules, merges `pub` declarations with name prefixing (`math__add`), rewrites call sites, runs standard pipeline
 
 ### Important codegen details
 
 - `fresh_temp()` and `fresh_label()` generate unique SSA names and labels per function
+- `emit_function` resets `temp_counter`, `label_counter`, `block_terminated`, and `current_block` to `"entry"` — all four must be reset to avoid cross-function label leakage in PHI nodes
 - `block_terminated` flag tracks whether a `ret`/`br` has been emitted — prevents emitting instructions after a terminator
 - Built-in print functions are emitted directly as LLVM IR definitions (not linked from a C runtime)
 - Format strings for printf are global constants with manually counted byte sizes — update sizes if changing format strings
@@ -76,8 +77,9 @@ Multi-file projects (`yorum build`) add a front-end step: `ModuleResolver` disco
 - `type_size(&str)` computes actual LLVM type sizes by summing struct field sizes recursively — needed for `memcpy` of aggregate array elements
 - String builtins (`str_len`, `str_concat`, `str_eq`) are emitted as LLVM IR function bodies that call C library functions (`strlen`, `strcpy`, `strcat`, `strcmp`, `malloc`)
 - Contract checks (`requires`/`ensures`): `requires` emits conditional branches at function entry after allocas; `ensures` wraps each `ret` — stores return value to `result` alloca, checks condition, reloads and returns. Failures call `@__yorum_contract_fail` (prints message, aborts)
-- Spawn uses the closure capture pattern: env struct with captured vars + result slot, wrapper function `@__spawn_N`, `pthread_create` to launch. Task control block is `{ pthread_t, env_ptr }`. `.join()` calls `pthread_join`
+- Spawn uses the closure capture pattern: env struct with captured vars + result slot, wrapper function `@__spawn_N`, `pthread_create` to launch. Env struct size is computed via LLVM sizeof idiom (`getelementptr %type, ptr null, i32 1` + `ptrtoint`) to account for alignment padding — do not use raw `llvm_type_size` sums. Task control block is `{ pthread_t, env_ptr }`. `.join()` calls `pthread_join`
 - Channel helpers (`@__yorum_chan_create`, `@__yorum_chan_send`, `@__yorum_chan_recv`) are emitted as LLVM IR functions using pthread mutex + condvar. `spawn_counter` tracks unique spawn IDs for wrapper function naming
+- Unit-typed let bindings and assignments skip alloca/store — `alloca void` and `store void` are invalid LLVM IR. The RHS is still evaluated for side effects
 
 ### Yorum language design choices
 
@@ -268,6 +270,24 @@ Stabilization release — no new language features or builtins. Focus on robustn
 - **ABI appendix:** `SPEC.md` Appendix A documents primitive layout, struct/enum/array representation, calling convention, name mangling, closure/concurrency/HashMap internals
 - **Effects clarification:** `SPEC.md` section 5.1 notes that `effects` is parsed but not enforced
 - **Test coverage:** 56 new integration tests (5 robustness, 15 parser errors, 7 module system, 7 control flow, 5 struct/trait, 17 example programs) — total 336 tests (46 unit + 290 integration)
+
+## Completed: v1.0.1 — Codegen Bug Fixes
+
+Four correctness bugs in `codegen.rs` identified by staff-engineer code review and fixed.
+
+### Bug fixes
+
+1. **Stale `current_block` in `emit_function`:** `emit_function` reset `temp_counter`, `label_counter`, `block_terminated` but not `current_block`. If the previous function ended on a label like `ifcont.5`, the next function's `and`/`or` PHI nodes would reference that stale label. Fix: reset `self.current_block = "entry".to_string()` after line 2561, matching `emit_closure_function` and `emit_spawn_function`.
+
+2. **HashMap tombstone infinite loop:** `__yorum_map_find_slot` only stops on `flag==0` (empty) or key match, skipping tombstones (`flag==2`). After insert/remove churn, all slots could become occupied+tombstoned with zero empty slots, causing infinite probe. Fix: added `tombstones` counter at offset 40 in the map struct (48 bytes total). `map_set` load factor check now uses `(size + tombstones) * 4 >= cap * 3`. `map_remove` increments tombstones. `__yorum_map_grow` resets tombstones to 0 after rehash.
+
+3. **Spawn env under-allocation:** `env_size` was computed by summing raw `llvm_type_size` values, ignoring struct alignment padding. For `{ i1, i64 }` this gave 9 bytes but LLVM struct requires 16 (alignment padding). GEP writes at offset 8 caused heap buffer overflow. Fix: replaced with LLVM sizeof idiom (`getelementptr %type, ptr null, i32 1` + `ptrtoint ptr to i64`).
+
+4. **Invalid LLVM IR for unit-typed let bindings:** `let x: unit = foo()` emitted `alloca void` and `store void void, ptr %x.addr`, both illegal in LLVM IR. Fix: `emit_let` early-returns for `Type::Unit` (evaluates RHS for side effects only), `emit_assign` skips the store when `slot.llvm_ty == "void"`.
+
+### Test coverage
+
+4 new integration tests — total 340 tests (46 unit + 294 integration).
 
 ## Git Workflow
 

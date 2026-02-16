@@ -381,7 +381,8 @@ let keys: [string] = map_keys(m); // ["key"]
 ```
 
 Maps use `string` keys and `int` values. Backed by a hash table with FNV-1a
-hashing and linear probing.
+hashing and linear probing. Tombstone-aware load factor prevents infinite probe
+loops after insert/remove churn.
 
 ### Structured Concurrency
 
@@ -705,7 +706,7 @@ diff gen1.ll gen2.ll    # identical — fixed-point achieved
 ## Testing
 
 ```bash
-cargo test                    # 336 tests (46 unit + 290 integration)
+cargo test                    # 340 tests (46 unit + 294 integration)
 cargo test compiler::lexer    # tests in one module
 cargo test test_fibonacci     # single test by name
 ```
@@ -729,6 +730,7 @@ cargo test test_fibonacci     # single test by name
 | **v0.8** | Ownership checker: type-aware move tracking, branch merging, loop safety | Done |
 | **v0.9** | Networking: TCP/UDP sockets, DNS resolution, HTTP client (14 builtins) | Done |
 | **v1.0** | Stable language specification and ABI, production-ready toolchain | Done |
+| **v1.0.1** | Codegen bug fixes: stale PHI labels, HashMap tombstone loop, spawn alignment, unit IR | Done |
 
 ## License
 

@@ -5,6 +5,7 @@
 //! Output is a Program with no generics — only concrete declarations.
 
 use crate::compiler::ast::*;
+use crate::compiler::span::Span;
 use std::collections::{HashMap, HashSet};
 
 pub fn monomorphize(program: Program) -> Program {
@@ -18,15 +19,19 @@ struct Monomorphizer {
     generic_fns: HashMap<String, FnDecl>,
     /// Generic struct declarations (name → decl)
     generic_structs: HashMap<String, StructDecl>,
+    /// Generic enum declarations (name → decl)
+    generic_enums: HashMap<String, EnumDecl>,
     /// Collected instantiations: (generic_name, concrete_type_args)
     fn_instantiations: HashSet<(String, Vec<Type>)>,
     struct_instantiations: HashSet<(String, Vec<Type>)>,
+    enum_instantiations: HashSet<(String, Vec<Type>)>,
 }
 
 impl Monomorphizer {
     fn new(program: &Program) -> Self {
         let mut generic_fns = HashMap::new();
         let mut generic_structs = HashMap::new();
+        let mut generic_enums = HashMap::new();
 
         for decl in &program.declarations {
             match decl {
@@ -35,6 +40,9 @@ impl Monomorphizer {
                 }
                 Declaration::Struct(s) if !s.type_params.is_empty() => {
                     generic_structs.insert(s.name.clone(), s.clone());
+                }
+                Declaration::Enum(e) if !e.type_params.is_empty() => {
+                    generic_enums.insert(e.name.clone(), e.clone());
                 }
                 Declaration::Impl(i) => {
                     for method in &i.methods {
@@ -48,11 +56,77 @@ impl Monomorphizer {
             }
         }
 
+        // Register prelude generic enums (Option<T>, Result<T, E>)
+        // These are not declared in the source, but need monomorphization.
+        if !generic_enums.contains_key("Option") {
+            generic_enums.insert(
+                "Option".to_string(),
+                EnumDecl {
+                    name: "Option".to_string(),
+                    is_pub: true,
+                    type_params: vec![TypeParam {
+                        name: "T".to_string(),
+                        bounds: Vec::new(),
+                        span: Span::synthetic(),
+                    }],
+                    variants: vec![
+                        Variant {
+                            name: "Some".to_string(),
+                            fields: vec![Type::TypeVar("T".to_string())],
+                            span: Span::synthetic(),
+                        },
+                        Variant {
+                            name: "None".to_string(),
+                            fields: vec![],
+                            span: Span::synthetic(),
+                        },
+                    ],
+                    span: Span::synthetic(),
+                },
+            );
+        }
+        if !generic_enums.contains_key("Result") {
+            generic_enums.insert(
+                "Result".to_string(),
+                EnumDecl {
+                    name: "Result".to_string(),
+                    is_pub: true,
+                    type_params: vec![
+                        TypeParam {
+                            name: "T".to_string(),
+                            bounds: Vec::new(),
+                            span: Span::synthetic(),
+                        },
+                        TypeParam {
+                            name: "E".to_string(),
+                            bounds: Vec::new(),
+                            span: Span::synthetic(),
+                        },
+                    ],
+                    variants: vec![
+                        Variant {
+                            name: "Ok".to_string(),
+                            fields: vec![Type::TypeVar("T".to_string())],
+                            span: Span::synthetic(),
+                        },
+                        Variant {
+                            name: "Err".to_string(),
+                            fields: vec![Type::TypeVar("E".to_string())],
+                            span: Span::synthetic(),
+                        },
+                    ],
+                    span: Span::synthetic(),
+                },
+            );
+        }
+
         Self {
             generic_fns,
             generic_structs,
+            generic_enums,
             fn_instantiations: HashSet::new(),
             struct_instantiations: HashSet::new(),
+            enum_instantiations: HashSet::new(),
         }
     }
 
@@ -61,11 +135,20 @@ impl Monomorphizer {
         for decl in &program.declarations {
             match decl {
                 Declaration::Function(f) if f.type_params.is_empty() => {
+                    // Collect from return type and parameter types
+                    self.collect_from_type(&f.return_type);
+                    for p in &f.params {
+                        self.collect_from_type(&p.ty);
+                    }
                     self.collect_from_block(&f.body);
                 }
                 Declaration::Impl(i) => {
                     for method in &i.methods {
                         if method.type_params.is_empty() {
+                            self.collect_from_type(&method.return_type);
+                            for p in &method.params {
+                                self.collect_from_type(&p.ty);
+                            }
                             self.collect_from_block(&method.body);
                         }
                     }
@@ -177,7 +260,7 @@ impl Monomorphizer {
                     self.collect_from_expr(&fi.value);
                 }
             }
-            ExprKind::ArrayLit(elements) => {
+            ExprKind::ArrayLit(elements) | ExprKind::TupleLit(elements) => {
                 for elem in elements {
                     self.collect_from_expr(elem);
                 }
@@ -201,6 +284,13 @@ impl Monomorphizer {
             if self.generic_structs.contains_key(name) {
                 self.struct_instantiations
                     .insert((name.clone(), args.clone()));
+            }
+            if self.generic_enums.contains_key(name) {
+                // Only collect if all type args are concrete (no TypeVars)
+                if args.iter().all(|a| !matches!(a, Type::TypeVar(_))) {
+                    self.enum_instantiations
+                        .insert((name.clone(), args.clone()));
+                }
             }
         }
     }
@@ -283,6 +373,34 @@ impl Monomorphizer {
             }
         }
 
+        // Emit monomorphized enums
+        for (name, type_args) in &self.enum_instantiations {
+            if let Some(generic_enum) = self.generic_enums.get(name) {
+                let mangled = mangle_name(name, type_args);
+                let subst = build_substitution(&generic_enum.type_params, type_args);
+                let mono_enum = EnumDecl {
+                    name: mangled,
+                    is_pub: generic_enum.is_pub,
+                    type_params: Vec::new(),
+                    variants: generic_enum
+                        .variants
+                        .iter()
+                        .map(|v| Variant {
+                            name: v.name.clone(),
+                            fields: v
+                                .fields
+                                .iter()
+                                .map(|f| substitute_type(f, &subst))
+                                .collect(),
+                            span: v.span,
+                        })
+                        .collect(),
+                    span: generic_enum.span,
+                };
+                new_decls.push(Declaration::Enum(mono_enum));
+            }
+        }
+
         // Emit monomorphized functions
         for (name, type_args) in &self.fn_instantiations {
             if let Some(generic_fn) = self.generic_fns.get(name) {
@@ -337,10 +455,25 @@ impl Monomorphizer {
         for decl in &mut program.declarations {
             match decl {
                 Declaration::Function(f) => {
+                    // Rewrite function return type if it's a generic enum
+                    if let Type::Generic(name, args) = &f.return_type {
+                        if self.generic_enums.contains_key(name) {
+                            f.return_type = Type::Named(mangle_name(name, args));
+                        }
+                    }
+                    // Rewrite parameter types if they're generic enums
+                    for p in &mut f.params {
+                        if let Type::Generic(name, args) = &p.ty {
+                            if self.generic_enums.contains_key(name) {
+                                p.ty = Type::Named(mangle_name(name, args));
+                            }
+                        }
+                    }
                     rewrite_types_in_block(
                         &mut f.body,
                         &self.generic_structs,
                         &self.struct_instantiations,
+                        &self.generic_enums,
                     );
                 }
                 Declaration::Impl(i) => {
@@ -349,6 +482,7 @@ impl Monomorphizer {
                             &mut method.body,
                             &self.generic_structs,
                             &self.struct_instantiations,
+                            &self.generic_enums,
                         );
                     }
                 }
@@ -398,6 +532,9 @@ fn substitute_type(ty: &Type, subst: &HashMap<String, Type>) -> Type {
             params.iter().map(|p| substitute_type(p, subst)).collect(),
             Box::new(substitute_type(ret, subst)),
         ),
+        Type::Tuple(types) => {
+            Type::Tuple(types.iter().map(|t| substitute_type(t, subst)).collect())
+        }
         Type::Generic(name, args) => {
             let new_args: Vec<Type> = args.iter().map(|a| substitute_type(a, subst)).collect();
             // If all args are now concrete, produce a mangled Named type
@@ -459,6 +596,7 @@ fn substitute_stmt(stmt: &Stmt, subst: &HashMap<String, Type>) -> Stmt {
             is_mut: s.is_mut,
             ty: substitute_type(&s.ty, subst),
             value: substitute_expr(&s.value, subst),
+            destructure: s.destructure.clone(),
             span: s.span,
         }),
         Stmt::Assign(s) => Stmt::Assign(AssignStmt {
@@ -560,6 +698,9 @@ fn substitute_expr(expr: &Expr, subst: &HashMap<String, Type>) -> Expr {
         }
         ExprKind::ArrayLit(elements) => {
             ExprKind::ArrayLit(elements.iter().map(|e| substitute_expr(e, subst)).collect())
+        }
+        ExprKind::TupleLit(elements) => {
+            ExprKind::TupleLit(elements.iter().map(|e| substitute_expr(e, subst)).collect())
         }
         ExprKind::Closure(c) => ExprKind::Closure(ClosureExpr {
             params: c
@@ -820,7 +961,7 @@ fn rewrite_expr(
                 );
             }
         }
-        ExprKind::ArrayLit(elements) => {
+        ExprKind::ArrayLit(elements) | ExprKind::TupleLit(elements) => {
             for elem in elements {
                 rewrite_expr(elem, generic_fns, _generic_structs, fn_insts, _struct_insts);
             }
@@ -862,23 +1003,46 @@ fn rewrite_types_in_block(
     block: &mut Block,
     generic_structs: &HashMap<String, StructDecl>,
     _struct_insts: &HashSet<(String, Vec<Type>)>,
+    generic_enums: &HashMap<String, EnumDecl>,
 ) {
     for stmt in &mut block.stmts {
-        if let Stmt::Let(s) = stmt {
-            if let Type::Generic(name, args) = &s.ty {
-                if generic_structs.contains_key(name) {
-                    let mangled = mangle_name(name, args);
-                    let name_clone = name.clone();
-                    s.ty = Type::Named(mangled.clone());
-                    if let ExprKind::StructInit(ref mut sname, _) = s.value.kind {
-                        if *sname == name_clone {
-                            *sname = mangled;
+        match stmt {
+            Stmt::Let(s) => {
+                if let Type::Generic(name, args) = &s.ty {
+                    if generic_structs.contains_key(name) {
+                        let mangled = mangle_name(name, args);
+                        let name_clone = name.clone();
+                        s.ty = Type::Named(mangled.clone());
+                        if let ExprKind::StructInit(ref mut sname, _) = s.value.kind {
+                            if *sname == name_clone {
+                                *sname = mangled;
+                            }
                         }
+                    } else if generic_enums.contains_key(name) {
+                        let mangled = mangle_name(name, args);
+                        s.ty = Type::Named(mangled);
                     }
                 }
             }
+            Stmt::Return(s) => {
+                // Rewrite return types aren't in the AST directly,
+                // but variant constructors in return expressions
+                // will be handled by the variant rewrite pass below
+                rewrite_variant_exprs_in_block_helper(&mut s.value, generic_enums);
+            }
+            _ => {}
         }
     }
+}
+
+/// Rewrite variant constructor calls to work with monomorphized enums.
+/// This is a no-op for now — variant names stay the same, codegen uses hints.
+fn rewrite_variant_exprs_in_block_helper(
+    _expr: &mut Expr,
+    _generic_enums: &HashMap<String, EnumDecl>,
+) {
+    // Variant names don't change during monomorphization.
+    // The codegen uses current_expected_enum to disambiguate.
 }
 
 fn infer_type_args_simple(generic_fn: &FnDecl, args: &[Expr]) -> Option<Vec<Type>> {

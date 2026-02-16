@@ -298,7 +298,7 @@ fn rewrite_expr_calls(expr: &mut Expr, name_map: &std::collections::HashMap<Stri
                 rewrite_expr_calls(&mut f.value, name_map);
             }
         }
-        ExprKind::ArrayLit(elements) => {
+        ExprKind::ArrayLit(elements) | ExprKind::TupleLit(elements) => {
             for elem in elements {
                 rewrite_expr_calls(elem, name_map);
             }

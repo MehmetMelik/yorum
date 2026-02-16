@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 cargo build                          # dev build
 cargo build --release                # release build
-cargo test                           # all tests (362: 46 unit + 316 integration)
+cargo test                           # all tests (390: 46 unit + 344 integration)
 cargo test compiler::lexer           # tests in one module
 cargo test test_fibonacci_compiles   # single test by name
 cargo test -- --nocapture            # see stdout from tests
@@ -54,9 +54,9 @@ Multi-file projects (`yorum build`) add a front-end step: `ModuleResolver` disco
 - **`lexer.rs`** — Hand-written char-by-char lexer. Supports nested `/* */` block comments. Returns `Vec<Token>`
 - **`ast.rs`** — Complete AST types. All nodes derive `Serialize`/`Deserialize` for JSON round-tripping. `Type` enum has `PartialEq`/`Eq` for type checking comparisons
 - **`parser.rs`** — Recursive descent parser with Pratt expression parsing (`parse_expr_bp`). Operator precedence is defined in `infix_binding_power()`. Struct init is disambiguated from blocks via 2-token lookahead in `is_struct_init_lookahead()`
-- **`typechecker.rs`** — Two-pass: first registers all function signatures, struct layouts, and enum definitions; then checks function bodies. Uses a scope stack (`Vec<HashMap<String, VarInfo>>`) for lexical scoping. Built-in functions registered in `register_builtins()`: print (`print_int`, `print_float`, `print_bool`, `print_str`, `print_char`, `print_err`), string ops (`str_len`, `str_concat`, `str_eq`, `str_charAt`, `str_sub`, `str_from_char`), char classification (`char_is_alpha`, `char_is_digit`, `char_is_whitespace`), type casting (`int_to_str`, `str_to_int`, `char_to_int`, `int_to_char`, `int_to_float`, `float_to_int`), file I/O (`file_read`, `file_write`, `file_exists`, `file_append`), HashMap (`map_new`, `map_set`, `map_get`, `map_has`, `map_size`, `map_remove`, `map_keys`, `map_values`), math (`abs_int`, `abs_float`, `min_int`, `max_int`, `min_float`, `max_float`, `sqrt`, `pow`, `sin`, `cos`, `tan`, `floor`, `ceil`, `round`, `log`, `log10`, `exp`), string utilities (`str_contains`, `str_index_of`, `str_starts_with`, `str_ends_with`, `str_trim`, `str_replace`, `str_to_upper`, `str_to_lower`, `str_repeat`), collections (`contains_int`, `contains_str`, `sort_int`, `sort_str`), enhanced I/O (`read_line`, `print_flush`, `env_get`, `time_ms`), networking — TCP (`tcp_connect`, `tcp_listen`, `tcp_accept`, `tcp_send`, `tcp_recv`, `tcp_close`), UDP (`udp_socket`, `udp_bind`, `udp_send_to`, `udp_recv_from`), DNS (`dns_resolve`), HTTP (`http_request`, `http_get`, `http_post`). `len()`, `push()`, `pop()`, `args()`, `exit()`, `chan()`, `send()`, `recv()`, `slice()`, `concat_arrays()`, `reverse()`, `str_split()` are special-cased in Call handling. `spawn` type inference and `.join()` method handling are in `infer_expr`. Contract expressions are type-checked (must be `bool`). Purity enforcement: pure functions cannot call impure functions or use `spawn`
+- **`typechecker.rs`** — Two-pass: first registers all function signatures, struct layouts, and enum definitions; then checks function bodies. Uses a scope stack (`Vec<HashMap<String, VarInfo>>`) for lexical scoping. Built-in functions registered in `register_builtins()`: print (`print_int`, `print_float`, `print_bool`, `print_str`, `print_char`, `print_err`), string ops (`str_len`, `str_concat`, `str_eq`, `str_charAt`, `str_sub`, `str_from_char`), char classification (`char_is_alpha`, `char_is_digit`, `char_is_whitespace`), type casting (`int_to_str`, `str_to_int`, `char_to_int`, `int_to_char`, `int_to_float`, `float_to_int`), string conversion (`float_to_str`, `bool_to_str`), file I/O (`file_read`, `file_write`, `file_exists`, `file_append`), HashMap (`map_new`, `map_set`, `map_get`, `map_has`, `map_size`, `map_remove`, `map_keys`, `map_values`), math (`abs_int`, `abs_float`, `min_int`, `max_int`, `min_float`, `max_float`, `sqrt`, `pow`, `sin`, `cos`, `tan`, `floor`, `ceil`, `round`, `log`, `log10`, `exp`), string utilities (`str_contains`, `str_index_of`, `str_starts_with`, `str_ends_with`, `str_trim`, `str_replace`, `str_to_upper`, `str_to_lower`, `str_repeat`), collections (`contains_int`, `contains_str`, `sort_int`, `sort_str`), enhanced I/O (`read_line`, `print_flush`, `env_get`, `time_ms`), networking — TCP (`tcp_connect`, `tcp_listen`, `tcp_accept`, `tcp_send`, `tcp_recv`, `tcp_close`), UDP (`udp_socket`, `udp_bind`, `udp_send_to`, `udp_recv_from`), DNS (`dns_resolve`), HTTP (`http_request`, `http_get`, `http_post`). `len()`, `push()`, `pop()`, `args()`, `exit()`, `chan()`, `send()`, `recv()`, `slice()`, `concat_arrays()`, `reverse()`, `str_split()`, `to_str()` are special-cased in Call handling. `spawn` type inference and `.join()` method handling are in `infer_expr`. Prelude types `Option<T>` and `Result<T, E>` are registered as generic enums with methods (`.unwrap()`, `.is_some()`, `.is_none()`, `.is_ok()`, `.is_err()`, `.unwrap_err()`). Contract expressions are type-checked (must be `bool`). Purity enforcement: pure functions cannot call impure functions or use `spawn`
 - **`ownership.rs`** — Type-aware move checker. Tracks `VarInfo { state, ty, def_span }` per variable with `is_copy_type()` distinguishing copy types (`int`, `float`, `bool`, `char`, `string`, `unit`) from move types (structs, enums, arrays, etc.). `check_expr_move()` marks non-copy identifiers as `Moved`; `check_expr_use()` checks read-only contexts. Branch merging (`snapshot_states`/`restore_states`/`apply_merged_states`) for if/else and match ensures moves in any branch propagate conservatively. `loop_depth` tracking prevents moving outer-scope variables inside while/for loops. Enforces must-join for `Task` variables via `task_vars: Vec<HashSet<String>>` with real `def_span` on errors
-- **`monomorphize.rs`** — Eliminates generics before codegen. Collects all concrete instantiations of generic functions/structs/enums, clones declarations with type variables substituted, and rewrites call sites to use mangled names (`identity__int`, `Pair__int__float`). Also substitutes type vars in contract expressions
+- **`monomorphize.rs`** — Eliminates generics before codegen. Collects all concrete instantiations of generic functions/structs/enums, clones declarations with type variables substituted, and rewrites call sites to use mangled names (`identity__int`, `Pair__int__float`). Also substitutes type vars in contract expressions. Handles generic enum monomorphization for prelude types (`Option__int`, `Result__int__string`) via `generic_enums`/`enum_instantiations` tracking
 - **`codegen.rs`** — Emits textual LLVM IR. Uses alloca/load/store pattern (LLVM's mem2reg promotes to SSA). Each expression emitter returns the LLVM SSA value name (e.g., `%t3`). Struct-typed, enum-typed, and unit-typed let bindings are special-cased (unit skips alloca/store entirely since `alloca void` is invalid IR). Closures compile to `{ ptr, ptr }` pairs (fn_ptr + env_ptr) with deferred function emission. Arrays are heap-allocated fat pointers `{ ptr, i64, i64 }` (data, length, capacity) with runtime bounds checking and `realloc`-based growth for `push`. Aggregate types (structs, enums) in arrays use `memcpy` for push/pop/index/array-lit operations. `requires`/`ensures` emit conditional branches to `@__yorum_contract_fail`. `spawn` compiles to `pthread_create` with env capture (same pattern as closures); env struct size is computed via LLVM sizeof idiom (`getelementptr %type, ptr null, i32 1` + `ptrtoint`) to account for alignment padding. Channel helpers are emitted as LLVM IR functions using mutex/condvar. HashMap uses FNV-1a hashing with linear probing (48-byte map struct with tombstone counter at offset 40), emitted as LLVM IR helper functions
 - **`module_resolver.rs`** — Discovers `.yrm` files under `src/`, maps filesystem paths to module names, parses each file, validates `module` declarations match paths
 - **`project.rs`** — Orchestrates multi-file compilation: reads `yorum.toml` manifest, resolves modules, merges `pub` declarations with name prefixing (`math__add`), rewrites call sites, runs standard pipeline
@@ -334,6 +334,68 @@ Counter-based for loops using range syntax.
 ### Test coverage
 
 22 new integration tests — total 362 tests (46 unit + 316 integration).
+
+## Completed: v1.2 — String Interpolation, Tuple Types, Option/Result
+
+Three features: string interpolation as an ergonomic paper cut fix, tuple types for lightweight grouping, and prelude Option/Result for real-world error handling.
+
+### Feature 1: String Interpolation
+
+`"hello {expr}"` syntax with `{{`/`}}` escapes. Desugars in the parser to `str_concat`/`to_str` chains.
+
+- **Token:** `InterpStringLit(Vec<InterpPart>)` with `InterpPart::Literal(String)` / `InterpPart::Expr(Vec<Token>)`
+- **Lexer:** Modified `lex_string()` to detect `{`/`}` and lex inner expressions, tracking brace depth
+- **Parser:** `InterpStringLit` desugars each part to `to_str(expr)` wrapped in `str_concat` left-fold
+- **Typechecker:** `to_str` special-cased to accept any type and return `string`. `float_to_str` and `bool_to_str` registered as builtins
+- **Codegen:** `to_str` dispatches to `int_to_str`/`float_to_str`/`bool_to_str`/`str_from_char`/identity based on LLVM type. `float_to_str` uses `snprintf(%g)`, `bool_to_str` branches on `i1`
+
+### Feature 2: Tuple Types
+
+`(int, string)` for types, `(1, "hello")` for values, `.0`/`.1` for access, `let (a, b) = t;` for destructuring.
+
+- **AST:** `Type::Tuple(Vec<Type>)`, `ExprKind::TupleLit(Vec<Expr>)`, `LetStmt.destructure: Option<Vec<String>>`
+- **Parser:** Tuple literals detected by comma after first expr. Type parsing handles `(T, U)`. Let parsing handles `(a, b)` destructure patterns
+- **Typechecker:** Infers element types, validates destructure arity, handles field access with numeric index
+- **Codegen:** Tuples compile to LLVM named structs (`%tuple.int.string = type { i64, ptr }`). `ensure_tuple_type()` lazily emits type defs. GEP for field access, alloca+GEP+store for destructuring
+- **Ownership:** Tuples are copy iff all elements are copy types. Destructuring defines each name
+
+### Feature 3: Option\<T\> & Result\<T, E\> Prelude Types
+
+Generic enums always available without declaration. Required adding generic enum monomorphization.
+
+- **Typechecker:** `EnumInfo.type_params` added. `Option<T>` and `Result<T, E>` registered in `register_builtins()`. Generic variant inference in Call handler (two-pass: non-generic first, then generic). Pattern matching uses `subject_enum_info()` to substitute type vars in variant fields. Methods: `.unwrap()`, `.is_some()`, `.is_none()`, `.is_ok()`, `.is_err()`, `.unwrap_err()`
+- **Monomorphizer:** `generic_enums`/`enum_instantiations` tracking. Prelude Option/Result registered as `EnumDecl`. Emits monomorphized enum declarations with mangled names (`Option__int`, `Result__int__string`). Rewrites `Type::Generic` to `Type::Named(mangled)`
+- **Codegen:** `current_expected_enum` hint for variant disambiguation. `expr_returns_ptr()` helper distinguishes alloca pointers from values. Fixed enum match to use alloca pointer for GEP. Fixed enum/struct return to load value before `ret`. Fixed enum/struct let from function calls to alloca+store
+
+### Bug fixes (pre-existing)
+
+- **Enum match codegen:** `emit_match` was loading enum struct value then using it as pointer for GEP — fixed to use `emit_expr_ptr` for enum subjects
+- **Enum/struct return:** Variant constructors return alloca pointers but `ret %Enum %ptr` is invalid — added load before ret
+- **Enum/struct let from function calls:** `emit_let` assumed RHS always returns pointer for aggregate types, but function calls return values — now checks `expr_returns_ptr()` and alloca+stores when needed
+
+### Test coverage
+
+23 new integration tests — total 385 tests (46 unit + 339 integration).
+
+## Completed: v1.2.1 — PR Review Bug Fixes
+
+Five bugs found in the v1.2 PR review: 3 codegen issues producing invalid LLVM IR, 1 type-safety regression, and 1 parser leniency issue.
+
+### Bug fixes
+
+1. **`to_str` missing from `fn_ret_types`:** `to_str` was special-cased in `emit_expr` but never registered in `fn_ret_types`. `expr_llvm_type` fell back to `"i64"` instead of `"ptr"`, making string interpolation emit `str_concat(ptr, i64)` — invalid IR. Fix: registered `to_str` → `Type::Str` in codegen init.
+
+2. **Tuple let binding assumes RHS is pointer:** Tuple path in `emit_let` always treated `emit_expr` result as an alloca pointer. Function calls returning tuples produce values, not pointers (same bug already fixed for structs/enums). Fix: added `expr_returns_ptr()` check with `alloca + store` fallback.
+
+3. **Tuple type naming inconsistency:** `expr_llvm_type` for `TupleLit` built names using LLVM types (`%tuple.i64.ptr`) while `emit_tuple_lit` and `tuple_type_name` used semantic names (`%tuple.int.string`). Downstream code referenced undefined types. Fix: extracted `llvm_to_semantic_name()` helper, used in both locations.
+
+4. **Generic argument mismatches accepted:** Compatibility checks in `Stmt::Let` and `Stmt::Return` only compared the base name of `Type::Generic`, ignoring type arguments. `Option<int>` would accept `Some("hello")`. Fix: compare type args pairwise, allowing `TypeVar` as wildcard (for unresolved params like `None` → `Option<T>`) but rejecting concrete mismatches.
+
+5. **Interpolation parser accepts trailing tokens:** `desugar_interp_string` called `parse_expr()` but didn't verify the token stream was exhausted. `"bad {1 2}"` silently dropped `2`. Fix: check `peek_kind() != EOF` after `parse_expr()`.
+
+### Test coverage
+
+5 new integration tests — total 390 tests (46 unit + 344 integration).
 
 ## Git Workflow
 

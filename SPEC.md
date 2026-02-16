@@ -80,6 +80,7 @@ and  or  not
 - **References:** `&T` (immutable), `&mut T` (mutable).
 - **Owned:** `own T` — explicit ownership marker.
 - **Function types:** `fn(T, U) -> V` — type of closures and function values.
+- **Tuples:** `(T, U)` — anonymous product types with positional field access (`.0`, `.1`, ...) and destructuring (`let (a, b) = t;`).
 - **Generic types:** `Name<T, U>` — parameterized struct/enum with concrete type arguments.
 
 ### 4.3 Self Type
@@ -324,6 +325,31 @@ removes and returns the last element; it aborts if the array is empty.
 Arrays are represented internally as `{ ptr, i64, i64 }` fat pointers (data
 pointer + length + capacity).
 
+### 7.5.2 Tuple Types
+
+Tuples are anonymous product types with positional fields:
+```
+let t: (int, string) = (42, "hello");
+let x: int = t.0;
+let s: string = t.1;
+```
+
+Tuple fields are accessed with `.0`, `.1`, `.2`, etc.  Tuples support destructuring
+in let bindings:
+```
+let (a, b): (int, string) = t;
+```
+
+The number of destructured names must match the tuple arity.  Tuples can be nested:
+```
+let t: (int, (bool, char)) = (1, (true, 'x'));
+let c: char = t.1.1;
+```
+
+Tuples are value types.  A single-element `(expr)` is parenthesized grouping, not
+a tuple — tuples require at least two elements.  Tuples compile to LLVM named
+struct types (e.g., `%tuple.int.string = type { i64, ptr }`).
+
 ### 7.6 For Loops
 For loops iterate over arrays or ranges:
 ```
@@ -390,7 +416,31 @@ nested loops, `break` and `continue` apply to the innermost loop only.
 
 Character literals use single quotes: `'a'`, `'\n'`, `'\t'`, `'\0'`, `'\\'`.
 
-### 7.7.1 Type Casting
+### 7.7.1 String Interpolation
+
+String interpolation embeds expressions inside string literals using `{expr}` syntax:
+```
+let name: string = "world";
+let msg: string = "hello {name}";       // "hello world"
+let sum: string = "2 + 3 = {2 + 3}";   // "2 + 3 = 5"
+```
+
+Escape sequences `{{` and `}}` produce literal `{` and `}` characters.
+
+Interpolation desugars in the parser to `str_concat`/`to_str` chains.  Each
+interpolated expression is wrapped in `to_str()`, which accepts `int`, `float`,
+`bool`, `char`, or `string` and returns a `string`.  The parts are concatenated
+left-to-right with `str_concat`.
+
+Additional conversion builtins:
+
+| Function | Signature | Pure | Description |
+|---|---|---|---|
+| `float_to_str(f)` | `(float) -> string` | no | Converts float to string (`%g` format) |
+| `bool_to_str(b)` | `(bool) -> string` | no | Returns `"true"` or `"false"` |
+| `to_str(x)` | `(any) -> string` | no | Polymorphic: dispatches to the appropriate `*_to_str` based on argument type |
+
+### 7.7.2 Type Casting
 
 | Function | Signature | Pure | Description |
 |---|---|---|---|
@@ -464,8 +514,38 @@ let val: int = recv(ch);
 Channel operations are built-in functions, not methods.
 
 ### 7.11 No Implicit Null
-There is no `null`, `nil`, or `None` built into the language.  Optional values
-are modeled explicitly with enum types.
+There is no `null`, `nil`, or implicit null built into the language.  Optional
+values use the prelude `Option<T>` type; fallible operations use `Result<T, E>`.
+
+### 7.12 Prelude Types: Option and Result
+
+`Option<T>` and `Result<T, E>` are generic enum types always available without
+declaration or import:
+
+```
+// Option<T>: optional values
+let x: Option<int> = Some(42);
+let y: Option<int> = None;
+
+// Result<T, E>: fallible operations
+let r: Result<int, string> = Ok(42);
+let e: Result<int, string> = Err("not found");
+```
+
+These types support pattern matching and built-in methods:
+
+| Method | Type | Description |
+|---|---|---|
+| `.unwrap()` | `Option<T> -> T` / `Result<T,E> -> T` | Extract value, abort if wrong variant |
+| `.unwrap_err()` | `Result<T,E> -> E` | Extract error, abort if Ok |
+| `.is_some()` | `Option<T> -> bool` | True if Some |
+| `.is_none()` | `Option<T> -> bool` | True if None |
+| `.is_ok()` | `Result<T,E> -> bool` | True if Ok |
+| `.is_err()` | `Result<T,E> -> bool` | True if Err |
+
+User-defined enums with the same variant names (e.g., `enum MyOption { Some(int), None }`)
+take priority over the prelude types — the compiler resolves variant constructors by
+checking non-generic enums first.
 
 ## 8. Ownership Model
 
@@ -942,6 +1022,18 @@ HTTP/1.0 only (no TLS/HTTPS).
 - `break` and `continue` for `while` and `for` loops
 - Range expressions (`for i in 0..n`) — counter-based for loops
 - 22 new integration tests (362 total)
+
+### v1.2 (Done)
+- String interpolation: `"hello {expr}"` with `{{`/`}}` escapes, desugars to `str_concat`/`to_str` chains
+- New builtins: `float_to_str`, `bool_to_str`, polymorphic `to_str`
+- Tuple types: `(int, string)` with `.0` access, destructuring (`let (a, b) = t;`), nesting
+- Prelude `Option<T>` and `Result<T, E>` generic enum types (always available, no import)
+- Generic enum monomorphization in the monomorphizer
+- Option/Result methods: `.unwrap()`, `.unwrap_err()`, `.is_some()`, `.is_none()`, `.is_ok()`, `.is_err()`
+- Fixed enum match codegen: use alloca pointer (not loaded value) for GEP in match arms
+- Fixed enum/struct return from functions: load value from alloca before `ret`
+- Fixed enum/struct let from function calls: alloca + store when RHS is not a constructor
+- 23 new integration tests (385 total: 46 unit + 339 integration)
 
 ## Appendix A: Application Binary Interface (ABI)
 

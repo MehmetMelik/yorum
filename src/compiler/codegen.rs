@@ -239,6 +239,16 @@ impl Codegen {
             .insert("map_keys".to_string(), Type::Array(Box::new(Type::Str)));
         self.fn_ret_types
             .insert("map_values".to_string(), Type::Array(Box::new(Type::Int)));
+        // Enhanced I/O builtins
+        self.fn_ret_types
+            .insert("file_exists".to_string(), Type::Bool);
+        self.fn_ret_types
+            .insert("file_append".to_string(), Type::Bool);
+        self.fn_ret_types.insert("read_line".to_string(), Type::Str);
+        self.fn_ret_types
+            .insert("print_flush".to_string(), Type::Unit);
+        self.fn_ret_types.insert("env_get".to_string(), Type::Str);
+        self.fn_ret_types.insert("time_ms".to_string(), Type::Int);
 
         // Register function return types (including impl methods with mangled names)
         for decl in &program.declarations {
@@ -372,7 +382,15 @@ impl Codegen {
         // String utility externals
         self.globals.push_str("declare ptr @strstr(ptr, ptr)\n");
         self.globals
-            .push_str("declare i32 @strncmp(ptr, ptr, i64)\n\n");
+            .push_str("declare i32 @strncmp(ptr, ptr, i64)\n");
+        // Enhanced I/O externals
+        self.globals.push_str("declare i32 @access(ptr, i32)\n");
+        self.globals.push_str("declare ptr @getenv(ptr)\n");
+        self.globals.push_str("declare i32 @fflush(ptr)\n");
+        self.globals.push_str("declare ptr @fgets(ptr, i32, ptr)\n");
+        self.globals
+            .push_str("declare i32 @gettimeofday(ptr, ptr)\n");
+        self.globals.push_str("@stdin = external global ptr\n\n");
         // Globals for command-line arguments (stored by main)
         self.globals
             .push_str("@__yorum_argc = internal global i32 0\n");
@@ -408,6 +426,10 @@ impl Codegen {
             .push_str("@.str.w = private unnamed_addr constant [2 x i8] c\"w\\00\"\n");
         self.globals
             .push_str("@.str.newline = private unnamed_addr constant [1 x i8] c\"\\0A\"\n");
+        self.globals
+            .push_str("@.str.a = private unnamed_addr constant [2 x i8] c\"a\\00\"\n");
+        self.globals
+            .push_str("@.fmt.str = private unnamed_addr constant [3 x i8] c\"%s\\00\"\n");
         self.globals.push('\n');
     }
 
@@ -1732,6 +1754,111 @@ impl Codegen {
              finish:\n\
              \x20 store i64 %out_idx, ptr %fl\n\
              \x20 ret ptr %fat\n\
+             }\n\n",
+        );
+
+        // ── Enhanced I/O builtins ──
+
+        // file_exists — check if file exists using access()
+        self.body.push_str(
+            "define i1 @file_exists(ptr %path) {\n\
+             entry:\n\
+             \x20 %rc = call i32 @access(ptr %path, i32 0)\n\
+             \x20 %ok = icmp eq i32 %rc, 0\n\
+             \x20 ret i1 %ok\n\
+             }\n\n",
+        );
+        // file_append — append content to file
+        self.body.push_str(
+            "define i1 @file_append(ptr %path, ptr %content) {\n\
+             entry:\n\
+             \x20 %f = call ptr @fopen(ptr %path, ptr @.str.a)\n\
+             \x20 %is_null = icmp eq ptr %f, null\n\
+             \x20 br i1 %is_null, label %fail, label %opened\n\
+             fail:\n\
+             \x20 ret i1 0\n\
+             opened:\n\
+             \x20 %len = call i64 @strlen(ptr %content)\n\
+             \x20 %written = call i64 @fwrite(ptr %content, i64 1, i64 %len, ptr %f)\n\
+             \x20 call i32 @fclose(ptr %f)\n\
+             \x20 %ok = icmp eq i64 %written, %len\n\
+             \x20 ret i1 %ok\n\
+             }\n\n",
+        );
+        // read_line — read a line from stdin (up to 4096 chars)
+        self.body.push_str(
+            "define ptr @read_line() {\n\
+             entry:\n\
+             \x20 %buf = call ptr @malloc(i64 4096)\n\
+             \x20 %sin = load ptr, ptr @stdin\n\
+             \x20 %result = call ptr @fgets(ptr %buf, i32 4096, ptr %sin)\n\
+             \x20 %is_null = icmp eq ptr %result, null\n\
+             \x20 br i1 %is_null, label %eof, label %got_line\n\
+             eof:\n\
+             \x20 store i8 0, ptr %buf\n\
+             \x20 ret ptr %buf\n\
+             got_line:\n\
+             \x20 ; strip trailing newline if present\n\
+             \x20 %len = call i64 @strlen(ptr %buf)\n\
+             \x20 %has_len = icmp sgt i64 %len, 0\n\
+             \x20 br i1 %has_len, label %check_nl, label %done\n\
+             check_nl:\n\
+             \x20 %last_idx = sub i64 %len, 1\n\
+             \x20 %last_p = getelementptr i8, ptr %buf, i64 %last_idx\n\
+             \x20 %last_c = load i8, ptr %last_p\n\
+             \x20 %is_nl = icmp eq i8 %last_c, 10\n\
+             \x20 br i1 %is_nl, label %strip_nl, label %done\n\
+             strip_nl:\n\
+             \x20 store i8 0, ptr %last_p\n\
+             \x20 br label %done\n\
+             done:\n\
+             \x20 ret ptr %buf\n\
+             }\n\n",
+        );
+        // print_flush — print string without newline and flush
+        self.body.push_str(
+            "define void @print_flush(ptr %s) {\n\
+             entry:\n\
+             \x20 call i32 (ptr, ...) @printf(ptr @.fmt.str, ptr %s)\n\
+             \x20 call i32 @fflush(ptr null)\n\
+             \x20 ret void\n\
+             }\n\n",
+        );
+        // env_get — get environment variable, returns "" if not set
+        self.body.push_str(
+            "define ptr @env_get(ptr %name) {\n\
+             entry:\n\
+             \x20 %val = call ptr @getenv(ptr %name)\n\
+             \x20 %is_null = icmp eq ptr %val, null\n\
+             \x20 br i1 %is_null, label %not_set, label %found\n\
+             not_set:\n\
+             \x20 %empty = call ptr @malloc(i64 1)\n\
+             \x20 store i8 0, ptr %empty\n\
+             \x20 ret ptr %empty\n\
+             found:\n\
+             \x20 ; copy the value to a heap buffer (getenv result is not ours to keep)\n\
+             \x20 %len = call i64 @strlen(ptr %val)\n\
+             \x20 %buf_sz = add i64 %len, 1\n\
+             \x20 %buf = call ptr @malloc(i64 %buf_sz)\n\
+             \x20 call ptr @strcpy(ptr %buf, ptr %val)\n\
+             \x20 ret ptr %buf\n\
+             }\n\n",
+        );
+        // time_ms — get current time in milliseconds using gettimeofday
+        // gettimeofday fills a { i64 sec, i64 usec } struct (on 64-bit)
+        self.body.push_str(
+            "define i64 @time_ms() {\n\
+             entry:\n\
+             \x20 %tv = alloca { i64, i64 }\n\
+             \x20 call i32 @gettimeofday(ptr %tv, ptr null)\n\
+             \x20 %sec_p = getelementptr { i64, i64 }, ptr %tv, i32 0, i32 0\n\
+             \x20 %sec = load i64, ptr %sec_p\n\
+             \x20 %usec_p = getelementptr { i64, i64 }, ptr %tv, i32 0, i32 1\n\
+             \x20 %usec = load i64, ptr %usec_p\n\
+             \x20 %ms_sec = mul i64 %sec, 1000\n\
+             \x20 %ms_usec = sdiv i64 %usec, 1000\n\
+             \x20 %ms = add i64 %ms_sec, %ms_usec\n\
+             \x20 ret i64 %ms\n\
              }\n\n",
         );
     }

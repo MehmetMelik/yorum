@@ -2266,3 +2266,104 @@ fn test_collection_ir_definitions() {
     assert!(ir.contains("define ptr @map_keys"));
     assert!(ir.contains("define ptr @map_values"));
 }
+
+// ═══════════════════════════════════════════════════════════════
+//  v0.6 Standard Library — Enhanced I/O builtins
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn test_file_exists_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let b: bool = file_exists(\"test.txt\");\n\
+         \x20 print_bool(b);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call i1 @file_exists"));
+}
+
+#[test]
+fn test_file_append_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let ok: bool = file_append(\"log.txt\", \"hello\\n\");\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call i1 @file_append"));
+}
+
+#[test]
+fn test_read_line_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let s: string = read_line();\n\
+         \x20 print_str(s);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call ptr @read_line"));
+}
+
+#[test]
+fn test_print_flush_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 print_flush(\"prompt> \");\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call void @print_flush"));
+}
+
+#[test]
+fn test_env_get_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let home: string = env_get(\"HOME\");\n\
+         \x20 print_str(home);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call ptr @env_get"));
+}
+
+#[test]
+fn test_time_ms_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let t: int = time_ms();\n\
+         \x20 print_int(t);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call i64 @time_ms"));
+}
+
+#[test]
+fn test_io_builtins_impure() {
+    // All enhanced I/O builtins are impure
+    let result = yorum::typecheck("pure fn f() -> bool { return file_exists(\"x\"); }");
+    assert!(result.is_err());
+    let result = yorum::typecheck("pure fn f() -> string { return read_line(); }");
+    assert!(result.is_err());
+    let result = yorum::typecheck("pure fn f() -> int { return time_ms(); }");
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_io_ir_definitions() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let b: bool = file_exists(\"x\");\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("define i1 @file_exists"));
+    assert!(ir.contains("define i1 @file_append"));
+    assert!(ir.contains("define ptr @read_line"));
+    assert!(ir.contains("define void @print_flush"));
+    assert!(ir.contains("define ptr @env_get"));
+    assert!(ir.contains("define i64 @time_ms"));
+}

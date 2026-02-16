@@ -387,6 +387,27 @@ impl TypeChecker {
             "map_values".to_string(),
             builtin(vec![Type::Map], Type::Array(Box::new(Type::Int)), false),
         );
+        // Enhanced I/O builtins
+        self.functions.insert(
+            "file_exists".to_string(),
+            builtin(vec![Type::Str], Type::Bool, false),
+        );
+        self.functions.insert(
+            "file_append".to_string(),
+            builtin(vec![Type::Str, Type::Str], Type::Bool, false),
+        );
+        self.functions
+            .insert("read_line".to_string(), builtin(vec![], Type::Str, false));
+        self.functions.insert(
+            "print_flush".to_string(),
+            builtin(vec![Type::Str], Type::Unit, false),
+        );
+        self.functions.insert(
+            "env_get".to_string(),
+            builtin(vec![Type::Str], Type::Str, false),
+        );
+        self.functions
+            .insert("time_ms".to_string(), builtin(vec![], Type::Int, false));
     }
 
     /// Type-check an entire program. Returns Ok(()) or collected errors.

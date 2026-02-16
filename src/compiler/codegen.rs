@@ -1763,11 +1763,7 @@ impl Codegen {
                 // Handle struct types like %Token
                 if let Some(name) = llvm_ty.strip_prefix('%') {
                     if let Some(layout) = self.struct_layouts.get(name) {
-                        return layout
-                            .fields
-                            .iter()
-                            .map(|(_, t)| self.type_size(t))
-                            .sum();
+                        return layout.fields.iter().map(|(_, t)| self.type_size(t)).sum();
                     }
                 }
                 8
@@ -1988,10 +1984,7 @@ impl Codegen {
                                 elem_gep, val, elem_size
                             ));
                         } else {
-                            self.emit_line(&format!(
-                                "store {} {}, ptr {}",
-                                elem_ty, val, elem_gep
-                            ));
+                            self.emit_line(&format!("store {} {}, ptr {}", elem_ty, val, elem_gep));
                         }
                         let new_len = self.fresh_temp();
                         self.emit_line(&format!("{} = add i64 {}, 1", new_len, len_val));
@@ -2059,10 +2052,7 @@ impl Codegen {
                         if Self::is_aggregate_type(&elem_ty) {
                             // For aggregate types, copy to a local alloca and return pointer
                             let tmp_alloca = self.fresh_temp();
-                            self.emit_line(&format!(
-                                "{} = alloca {}",
-                                tmp_alloca, elem_ty
-                            ));
+                            self.emit_line(&format!("{} = alloca {}", tmp_alloca, elem_ty));
                             let sz = self.llvm_type_size(&elem_ty);
                             self.emit_line(&format!(
                                 "call ptr @memcpy(ptr {}, ptr {}, i64 {})",
@@ -2405,10 +2395,7 @@ impl Codegen {
                     Ok(tmp_alloca)
                 } else {
                     let val = self.fresh_temp();
-                    self.emit_line(&format!(
-                        "{} = load {}, ptr {}",
-                        val, elem_ty, elem_gep
-                    ));
+                    self.emit_line(&format!("{} = load {}, ptr {}", val, elem_ty, elem_gep));
                     Ok(val)
                 }
             }
@@ -3503,10 +3490,8 @@ impl Codegen {
             ExprKind::Call(callee, _) => {
                 // Function call: look up return type from function signatures
                 if let ExprKind::Ident(fn_name) = &callee.kind {
-                    if let Some(ret_ty) = self.fn_ret_types.get(fn_name) {
-                        if let Type::Named(name) = ret_ty {
-                            return Ok(name.clone());
-                        }
+                    if let Some(Type::Named(name)) = self.fn_ret_types.get(fn_name) {
+                        return Ok(name.clone());
                     }
                 }
                 Err(CodegenError {

@@ -647,6 +647,43 @@ All built-in functions are available without imports.
 | `int_to_float(n)` | `(int) -> float` | yes | Convert integer to float |
 | `float_to_int(f)` | `(float) -> int` | yes | Truncate float to integer |
 
+**String utilities (v0.6):**
+
+| Function | Signature | Pure | Description |
+|---|---|---|---|
+| `str_contains(s, sub)` | `(string, string) -> bool` | yes | Check if string contains substring |
+| `str_index_of(s, sub)` | `(string, string) -> int` | yes | Find index of substring, -1 if not found |
+| `str_starts_with(s, prefix)` | `(string, string) -> bool` | yes | Check if string starts with prefix |
+| `str_ends_with(s, suffix)` | `(string, string) -> bool` | yes | Check if string ends with suffix |
+| `str_trim(s)` | `(string) -> string` | no | Trim leading/trailing whitespace |
+| `str_replace(s, from, to)` | `(string, string, string) -> string` | no | Replace all occurrences |
+| `str_split(s, delim)` | `(string, string) -> [string]` | no | Split string by delimiter |
+| `str_to_upper(s)` | `(string) -> string` | no | Convert to uppercase |
+| `str_to_lower(s)` | `(string) -> string` | no | Convert to lowercase |
+| `str_repeat(s, n)` | `(string, int) -> string` | no | Repeat string n times |
+
+**Math (v0.6):**
+
+| Function | Signature | Pure | Description |
+|---|---|---|---|
+| `abs_int(x)` | `(int) -> int` | yes | Absolute value of integer |
+| `abs_float(x)` | `(float) -> float` | yes | Absolute value of float |
+| `min_int(a, b)` | `(int, int) -> int` | yes | Minimum of two integers |
+| `max_int(a, b)` | `(int, int) -> int` | yes | Maximum of two integers |
+| `min_float(a, b)` | `(float, float) -> float` | yes | Minimum of two floats |
+| `max_float(a, b)` | `(float, float) -> float` | yes | Maximum of two floats |
+| `sqrt(x)` | `(float) -> float` | yes | Square root |
+| `pow(base, exp)` | `(float, float) -> float` | yes | Exponentiation |
+| `sin(x)` | `(float) -> float` | yes | Sine (radians) |
+| `cos(x)` | `(float) -> float` | yes | Cosine (radians) |
+| `tan(x)` | `(float) -> float` | yes | Tangent (radians) |
+| `floor(x)` | `(float) -> float` | yes | Round down |
+| `ceil(x)` | `(float) -> float` | yes | Round up |
+| `round(x)` | `(float) -> float` | yes | Round to nearest |
+| `log(x)` | `(float) -> float` | yes | Natural logarithm |
+| `log10(x)` | `(float) -> float` | yes | Base-10 logarithm |
+| `exp(x)` | `(float) -> float` | yes | Exponential (e^x) |
+
 **Array operations:**
 
 | Function | Signature | Pure | Description |
@@ -654,6 +691,13 @@ All built-in functions are available without imports.
 | `len(arr)` | `([T]) -> int` | yes | Return the length of an array |
 | `push(arr, val)` | `([T], T) -> unit` | no | Append element, growing buffer if needed |
 | `pop(arr)` | `([T]) -> T` | no | Remove and return last element (aborts if empty) |
+| `slice(arr, start, end)` | `([T], int, int) -> [T]` | no | Extract sub-array [start, end) |
+| `concat_arrays(a, b)` | `([T], [T]) -> [T]` | no | Concatenate two arrays |
+| `reverse(arr)` | `([T]) -> [T]` | no | Return new reversed array |
+| `contains_int(arr, val)` | `([int], int) -> bool` | yes | Linear search in int array |
+| `contains_str(arr, val)` | `([string], string) -> bool` | yes | Linear search in string array |
+| `sort_int(arr)` | `([int]) -> [int]` | no | Return sorted copy of int array |
+| `sort_str(arr)` | `([string]) -> [string]` | no | Return sorted copy of string array |
 
 **File I/O:**
 
@@ -661,13 +705,19 @@ All built-in functions are available without imports.
 |---|---|---|---|
 | `file_read(path)` | `(string) -> string` | no | Read entire file to string |
 | `file_write(path, content)` | `(string, string) -> bool` | no | Write string to file, returns success |
+| `file_exists(path)` | `(string) -> bool` | no | Check if file exists |
+| `file_append(path, content)` | `(string, string) -> bool` | no | Append string to file |
 
-**Process interaction:**
+**Process and environment:**
 
 | Function | Signature | Pure | Description |
 |---|---|---|---|
 | `args()` | `() -> [string]` | no | Return command-line arguments |
 | `exit(code)` | `(int) -> unit` | no | Terminate with exit code |
+| `env_get(name)` | `(string) -> string` | no | Get environment variable (empty if unset) |
+| `read_line()` | `() -> string` | no | Read a line from stdin |
+| `print_flush(s)` | `(string) -> unit` | no | Print without newline, flush stdout |
+| `time_ms()` | `() -> int` | no | Current time in milliseconds |
 
 **HashMap:**
 
@@ -677,6 +727,10 @@ All built-in functions are available without imports.
 | `map_set(m, key, val)` | `(Map, string, int) -> unit` | no | Insert or update a key-value pair |
 | `map_get(m, key)` | `(Map, string) -> int` | yes | Look up a key (aborts if not found) |
 | `map_has(m, key)` | `(Map, string) -> bool` | yes | Check if a key exists |
+| `map_size(m)` | `(Map) -> int` | yes | Return number of entries |
+| `map_remove(m, key)` | `(Map, string) -> bool` | no | Remove key, returns true if found |
+| `map_keys(m)` | `(Map) -> [string]` | no | Collect all keys into an array |
+| `map_values(m)` | `(Map) -> [int]` | no | Collect all values into an array |
 
 **Concurrency:**
 
@@ -688,7 +742,9 @@ All built-in functions are available without imports.
 
 `len`, `push`, `pop`, `args`, and `exit` are special-cased in the type checker —
 they are handled directly in call expression checking rather than being
-registered as normal functions.
+registered as normal functions. `slice`, `concat_arrays`, and `reverse` are
+also special-cased to preserve the array element type. `str_split` is
+special-cased because it returns `[string]`.
 
 `chan`, `send`, and `recv` are also special-cased in the type checker.  The
 channel element type for `chan()` defaults to `int` when not otherwise
@@ -724,14 +780,17 @@ constrained by the binding context.
 - HashMap (`map_new`, `map_set`, `map_get`, `map_has`)
 - Self-hosting compiler (5,226 lines of Yorum, bootstrap fixed-point achieved)
 
-### v0.6
-- Standard library (io, collections, math, networking)
+### v0.6 (Done)
+- Standard library builtins: math (17 functions), string utilities (10), collection operations (11), enhanced I/O (6)
 
 ### v0.7
 - LSP server for editor integration
 
 ### v0.8
 - Formal verification of the ownership checker
+
+### v0.9
+- Networking (TCP/UDP sockets, HTTP client)
 
 ### v1.0
 - Stable language specification and ABI

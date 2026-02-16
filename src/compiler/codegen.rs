@@ -202,6 +202,26 @@ impl Codegen {
         self.fn_ret_types.insert("log".to_string(), Type::Float);
         self.fn_ret_types.insert("log10".to_string(), Type::Float);
         self.fn_ret_types.insert("exp".to_string(), Type::Float);
+        // String utility builtins
+        self.fn_ret_types
+            .insert("str_contains".to_string(), Type::Bool);
+        self.fn_ret_types
+            .insert("str_index_of".to_string(), Type::Int);
+        self.fn_ret_types
+            .insert("str_starts_with".to_string(), Type::Bool);
+        self.fn_ret_types
+            .insert("str_ends_with".to_string(), Type::Bool);
+        self.fn_ret_types.insert("str_trim".to_string(), Type::Str);
+        self.fn_ret_types
+            .insert("str_replace".to_string(), Type::Str);
+        self.fn_ret_types
+            .insert("str_to_upper".to_string(), Type::Str);
+        self.fn_ret_types
+            .insert("str_to_lower".to_string(), Type::Str);
+        self.fn_ret_types
+            .insert("str_repeat".to_string(), Type::Str);
+        self.fn_ret_types
+            .insert("str_split".to_string(), Type::Array(Box::new(Type::Str)));
 
         // Register function return types (including impl methods with mangled names)
         for decl in &program.declarations {
@@ -331,7 +351,11 @@ impl Codegen {
         self.globals.push_str("declare double @tan(double)\n");
         self.globals.push_str("declare double @log(double)\n");
         self.globals.push_str("declare double @log10(double)\n");
-        self.globals.push_str("declare double @exp(double)\n\n");
+        self.globals.push_str("declare double @exp(double)\n");
+        // String utility externals
+        self.globals.push_str("declare ptr @strstr(ptr, ptr)\n");
+        self.globals
+            .push_str("declare i32 @strncmp(ptr, ptr, i64)\n\n");
         // Globals for command-line arguments (stored by main)
         self.globals
             .push_str("@__yorum_argc = internal global i32 0\n");
@@ -1038,6 +1062,341 @@ impl Codegen {
              entry:\n\
              \x20 %result = call double @llvm.round.f64(double %x)\n\
              \x20 ret double %result\n\
+             }\n\n",
+        );
+
+        // ── String utility builtins ──
+
+        // str_contains — check if substring exists
+        self.body.push_str(
+            "define i1 @str_contains(ptr %s, ptr %sub) {\n\
+             entry:\n\
+             \x20 %p = call ptr @strstr(ptr %s, ptr %sub)\n\
+             \x20 %found = icmp ne ptr %p, null\n\
+             \x20 ret i1 %found\n\
+             }\n\n",
+        );
+        // str_index_of — find index of substring, returns -1 if not found
+        self.body.push_str(
+            "define i64 @str_index_of(ptr %s, ptr %sub) {\n\
+             entry:\n\
+             \x20 %p = call ptr @strstr(ptr %s, ptr %sub)\n\
+             \x20 %is_null = icmp eq ptr %p, null\n\
+             \x20 br i1 %is_null, label %not_found, label %found\n\
+             not_found:\n\
+             \x20 ret i64 -1\n\
+             found:\n\
+             \x20 %si = ptrtoint ptr %s to i64\n\
+             \x20 %pi = ptrtoint ptr %p to i64\n\
+             \x20 %idx = sub i64 %pi, %si\n\
+             \x20 ret i64 %idx\n\
+             }\n\n",
+        );
+        // str_starts_with — check if string starts with prefix
+        self.body.push_str(
+            "define i1 @str_starts_with(ptr %s, ptr %prefix) {\n\
+             entry:\n\
+             \x20 %plen = call i64 @strlen(ptr %prefix)\n\
+             \x20 %cmp = call i32 @strncmp(ptr %s, ptr %prefix, i64 %plen)\n\
+             \x20 %eq = icmp eq i32 %cmp, 0\n\
+             \x20 ret i1 %eq\n\
+             }\n\n",
+        );
+        // str_ends_with — check if string ends with suffix
+        self.body.push_str(
+            "define i1 @str_ends_with(ptr %s, ptr %suffix) {\n\
+             entry:\n\
+             \x20 %slen = call i64 @strlen(ptr %s)\n\
+             \x20 %suflen = call i64 @strlen(ptr %suffix)\n\
+             \x20 %too_short = icmp slt i64 %slen, %suflen\n\
+             \x20 br i1 %too_short, label %no, label %check\n\
+             no:\n\
+             \x20 ret i1 0\n\
+             check:\n\
+             \x20 %offset = sub i64 %slen, %suflen\n\
+             \x20 %tail = getelementptr i8, ptr %s, i64 %offset\n\
+             \x20 %cmp = call i32 @strcmp(ptr %tail, ptr %suffix)\n\
+             \x20 %eq = icmp eq i32 %cmp, 0\n\
+             \x20 ret i1 %eq\n\
+             }\n\n",
+        );
+        // str_trim — trim leading and trailing whitespace
+        self.body.push_str(
+            "define ptr @str_trim(ptr %s) {\n\
+             entry:\n\
+             \x20 %len = call i64 @strlen(ptr %s)\n\
+             \x20 br label %skip_leading\n\
+             skip_leading:\n\
+             \x20 %i = phi i64 [ 0, %entry ], [ %i_next, %leading_cont ]\n\
+             \x20 %done_l = icmp sge i64 %i, %len\n\
+             \x20 br i1 %done_l, label %empty, label %check_leading\n\
+             check_leading:\n\
+             \x20 %cp = getelementptr i8, ptr %s, i64 %i\n\
+             \x20 %c = load i8, ptr %cp\n\
+             \x20 %is_sp = icmp eq i8 %c, 32\n\
+             \x20 %is_tab = icmp eq i8 %c, 9\n\
+             \x20 %is_nl = icmp eq i8 %c, 10\n\
+             \x20 %is_cr = icmp eq i8 %c, 13\n\
+             \x20 %w1 = or i1 %is_sp, %is_tab\n\
+             \x20 %w2 = or i1 %w1, %is_nl\n\
+             \x20 %is_ws = or i1 %w2, %is_cr\n\
+             \x20 br i1 %is_ws, label %leading_cont, label %find_end\n\
+             leading_cont:\n\
+             \x20 %i_next = add i64 %i, 1\n\
+             \x20 br label %skip_leading\n\
+             empty:\n\
+             \x20 %e = call ptr @malloc(i64 1)\n\
+             \x20 store i8 0, ptr %e\n\
+             \x20 ret ptr %e\n\
+             find_end:\n\
+             \x20 %start = phi i64 [ %i, %check_leading ]\n\
+             \x20 %last_init = sub i64 %len, 1\n\
+             \x20 br label %skip_trailing\n\
+             skip_trailing:\n\
+             \x20 %j = phi i64 [ %last_init, %find_end ], [ %j_prev, %trailing_cont ]\n\
+             \x20 %done_t = icmp slt i64 %j, %start\n\
+             \x20 br i1 %done_t, label %empty, label %check_trailing\n\
+             check_trailing:\n\
+             \x20 %cp2 = getelementptr i8, ptr %s, i64 %j\n\
+             \x20 %c2 = load i8, ptr %cp2\n\
+             \x20 %is_sp2 = icmp eq i8 %c2, 32\n\
+             \x20 %is_tab2 = icmp eq i8 %c2, 9\n\
+             \x20 %is_nl2 = icmp eq i8 %c2, 10\n\
+             \x20 %is_cr2 = icmp eq i8 %c2, 13\n\
+             \x20 %w3 = or i1 %is_sp2, %is_tab2\n\
+             \x20 %w4 = or i1 %w3, %is_nl2\n\
+             \x20 %is_ws2 = or i1 %w4, %is_cr2\n\
+             \x20 br i1 %is_ws2, label %trailing_cont, label %copy\n\
+             trailing_cont:\n\
+             \x20 %j_prev = sub i64 %j, 1\n\
+             \x20 br label %skip_trailing\n\
+             copy:\n\
+             \x20 %end = phi i64 [ %j, %check_trailing ]\n\
+             \x20 %new_len = sub i64 %end, %start\n\
+             \x20 %new_len1 = add i64 %new_len, 1\n\
+             \x20 %buf_sz = add i64 %new_len1, 1\n\
+             \x20 %buf = call ptr @malloc(i64 %buf_sz)\n\
+             \x20 %src = getelementptr i8, ptr %s, i64 %start\n\
+             \x20 call ptr @memcpy(ptr %buf, ptr %src, i64 %new_len1)\n\
+             \x20 %term = getelementptr i8, ptr %buf, i64 %new_len1\n\
+             \x20 store i8 0, ptr %term\n\
+             \x20 ret ptr %buf\n\
+             }\n\n",
+        );
+        // str_replace — replace all occurrences of 'from' with 'to'
+        self.body.push_str(
+            "define ptr @str_replace(ptr %s, ptr %from, ptr %to) {\n\
+             entry:\n\
+             \x20 %slen = call i64 @strlen(ptr %s)\n\
+             \x20 %flen = call i64 @strlen(ptr %from)\n\
+             \x20 %tlen = call i64 @strlen(ptr %to)\n\
+             \x20 ; allocate generous buffer: slen * (tlen+1) + 1\n\
+             \x20 %max1 = add i64 %tlen, 1\n\
+             \x20 %max2 = add i64 %slen, 1\n\
+             \x20 %max3 = mul i64 %max2, %max1\n\
+             \x20 %buf_sz = add i64 %max3, 1\n\
+             \x20 %buf = call ptr @malloc(i64 %buf_sz)\n\
+             \x20 store i8 0, ptr %buf\n\
+             \x20 %is_empty_from = icmp eq i64 %flen, 0\n\
+             \x20 br i1 %is_empty_from, label %just_copy, label %loop\n\
+             just_copy:\n\
+             \x20 call ptr @strcpy(ptr %buf, ptr %s)\n\
+             \x20 ret ptr %buf\n\
+             loop:\n\
+             \x20 %cur = phi ptr [ %s, %entry ], [ %after, %replace ], [ %cur, %no_match ]\n\
+             \x20 %found = call ptr @strstr(ptr %cur, ptr %from)\n\
+             \x20 %is_null = icmp eq ptr %found, null\n\
+             \x20 br i1 %is_null, label %done, label %replace\n\
+             replace:\n\
+             \x20 ; append chars before match\n\
+             \x20 %ci = ptrtoint ptr %cur to i64\n\
+             \x20 %fi = ptrtoint ptr %found to i64\n\
+             \x20 %prefix_len = sub i64 %fi, %ci\n\
+             \x20 %blen = call i64 @strlen(ptr %buf)\n\
+             \x20 %dst = getelementptr i8, ptr %buf, i64 %blen\n\
+             \x20 call ptr @memcpy(ptr %dst, ptr %cur, i64 %prefix_len)\n\
+             \x20 %dst_end = getelementptr i8, ptr %dst, i64 %prefix_len\n\
+             \x20 store i8 0, ptr %dst_end\n\
+             \x20 ; append replacement\n\
+             \x20 call ptr @strcat(ptr %buf, ptr %to)\n\
+             \x20 %after = getelementptr i8, ptr %found, i64 %flen\n\
+             \x20 br label %loop\n\
+             no_match:\n\
+             \x20 br label %done\n\
+             done:\n\
+             \x20 ; append remaining string\n\
+             \x20 %final_cur = phi ptr [ %cur, %loop ]\n\
+             \x20 call ptr @strcat(ptr %buf, ptr %final_cur)\n\
+             \x20 ret ptr %buf\n\
+             }\n\n",
+        );
+        // str_split — split string by delimiter, returns array of strings
+        self.body.push_str(
+            "define ptr @str_split(ptr %s, ptr %delim) {\n\
+             entry:\n\
+             \x20 %dlen = call i64 @strlen(ptr %delim)\n\
+             \x20 ; allocate fat pointer { ptr, i64, i64 }\n\
+             \x20 %fat = call ptr @malloc(i64 24)\n\
+             \x20 ; initial capacity 8\n\
+             \x20 %data = call ptr @malloc(i64 64)\n\
+             \x20 %d_gep = getelementptr { ptr, i64, i64 }, ptr %fat, i32 0, i32 0\n\
+             \x20 store ptr %data, ptr %d_gep\n\
+             \x20 %l_gep = getelementptr { ptr, i64, i64 }, ptr %fat, i32 0, i32 1\n\
+             \x20 store i64 0, ptr %l_gep\n\
+             \x20 %c_gep = getelementptr { ptr, i64, i64 }, ptr %fat, i32 0, i32 2\n\
+             \x20 store i64 8, ptr %c_gep\n\
+             \x20 %is_empty_delim = icmp eq i64 %dlen, 0\n\
+             \x20 br i1 %is_empty_delim, label %whole, label %split_loop\n\
+             whole:\n\
+             \x20 ; empty delimiter: return array with original string\n\
+             \x20 %sdup = call i64 @strlen(ptr %s)\n\
+             \x20 %sdup_sz = add i64 %sdup, 1\n\
+             \x20 %sdup_buf = call ptr @malloc(i64 %sdup_sz)\n\
+             \x20 call ptr @strcpy(ptr %sdup_buf, ptr %s)\n\
+             \x20 store ptr %sdup_buf, ptr %data\n\
+             \x20 store i64 1, ptr %l_gep\n\
+             \x20 ret ptr %fat\n\
+             split_loop:\n\
+             \x20 %cur = phi ptr [ %s, %entry ], [ %next, %add_part ]\n\
+             \x20 %found = call ptr @strstr(ptr %cur, ptr %delim)\n\
+             \x20 %is_null = icmp eq ptr %found, null\n\
+             \x20 br i1 %is_null, label %last_part, label %add_part\n\
+             add_part:\n\
+             \x20 %ci = ptrtoint ptr %cur to i64\n\
+             \x20 %fi = ptrtoint ptr %found to i64\n\
+             \x20 %plen = sub i64 %fi, %ci\n\
+             \x20 %pbuf_sz = add i64 %plen, 1\n\
+             \x20 %pbuf = call ptr @malloc(i64 %pbuf_sz)\n\
+             \x20 call ptr @memcpy(ptr %pbuf, ptr %cur, i64 %plen)\n\
+             \x20 %pterm = getelementptr i8, ptr %pbuf, i64 %plen\n\
+             \x20 store i8 0, ptr %pterm\n\
+             \x20 ; push to array (grow if needed)\n\
+             \x20 %len1 = load i64, ptr %l_gep\n\
+             \x20 %cap1 = load i64, ptr %c_gep\n\
+             \x20 %need1 = icmp eq i64 %len1, %cap1\n\
+             \x20 br i1 %need1, label %grow1, label %store1\n\
+             grow1:\n\
+             \x20 %nc1 = shl i64 %cap1, 1\n\
+             \x20 %nb1 = mul i64 %nc1, 8\n\
+             \x20 %d1 = load ptr, ptr %d_gep\n\
+             \x20 %nd1 = call ptr @realloc(ptr %d1, i64 %nb1)\n\
+             \x20 store ptr %nd1, ptr %d_gep\n\
+             \x20 store i64 %nc1, ptr %c_gep\n\
+             \x20 br label %store1\n\
+             store1:\n\
+             \x20 %d2 = load ptr, ptr %d_gep\n\
+             \x20 %slot1 = getelementptr ptr, ptr %d2, i64 %len1\n\
+             \x20 store ptr %pbuf, ptr %slot1\n\
+             \x20 %nl1 = add i64 %len1, 1\n\
+             \x20 store i64 %nl1, ptr %l_gep\n\
+             \x20 %next = getelementptr i8, ptr %found, i64 %dlen\n\
+             \x20 br label %split_loop\n\
+             last_part:\n\
+             \x20 %last_cur = phi ptr [ %cur, %split_loop ]\n\
+             \x20 %llen = call i64 @strlen(ptr %last_cur)\n\
+             \x20 %lbuf_sz = add i64 %llen, 1\n\
+             \x20 %lbuf = call ptr @malloc(i64 %lbuf_sz)\n\
+             \x20 call ptr @strcpy(ptr %lbuf, ptr %last_cur)\n\
+             \x20 ; push last part\n\
+             \x20 %len2 = load i64, ptr %l_gep\n\
+             \x20 %cap2 = load i64, ptr %c_gep\n\
+             \x20 %need2 = icmp eq i64 %len2, %cap2\n\
+             \x20 br i1 %need2, label %grow2, label %store2\n\
+             grow2:\n\
+             \x20 %nc2 = shl i64 %cap2, 1\n\
+             \x20 %nb2 = mul i64 %nc2, 8\n\
+             \x20 %d3 = load ptr, ptr %d_gep\n\
+             \x20 %nd2 = call ptr @realloc(ptr %d3, i64 %nb2)\n\
+             \x20 store ptr %nd2, ptr %d_gep\n\
+             \x20 store i64 %nc2, ptr %c_gep\n\
+             \x20 br label %store2\n\
+             store2:\n\
+             \x20 %d4 = load ptr, ptr %d_gep\n\
+             \x20 %slot2 = getelementptr ptr, ptr %d4, i64 %len2\n\
+             \x20 store ptr %lbuf, ptr %slot2\n\
+             \x20 %nl2 = add i64 %len2, 1\n\
+             \x20 store i64 %nl2, ptr %l_gep\n\
+             \x20 ret ptr %fat\n\
+             }\n\n",
+        );
+        // str_to_upper — convert string to uppercase
+        self.body.push_str(
+            "define ptr @str_to_upper(ptr %s) {\n\
+             entry:\n\
+             \x20 %len = call i64 @strlen(ptr %s)\n\
+             \x20 %buf_sz = add i64 %len, 1\n\
+             \x20 %buf = call ptr @malloc(i64 %buf_sz)\n\
+             \x20 br label %loop\n\
+             loop:\n\
+             \x20 %i = phi i64 [ 0, %entry ], [ %i_next, %cont ]\n\
+             \x20 %done = icmp sge i64 %i, %buf_sz\n\
+             \x20 br i1 %done, label %end, label %body\n\
+             body:\n\
+             \x20 %sp = getelementptr i8, ptr %s, i64 %i\n\
+             \x20 %c = load i8, ptr %sp\n\
+             \x20 %ge_a = icmp sge i8 %c, 97\n\
+             \x20 %le_z = icmp sle i8 %c, 122\n\
+             \x20 %is_lower = and i1 %ge_a, %le_z\n\
+             \x20 %upper = sub i8 %c, 32\n\
+             \x20 %out = select i1 %is_lower, i8 %upper, i8 %c\n\
+             \x20 %dp = getelementptr i8, ptr %buf, i64 %i\n\
+             \x20 store i8 %out, ptr %dp\n\
+             cont:\n\
+             \x20 %i_next = add i64 %i, 1\n\
+             \x20 br label %loop\n\
+             end:\n\
+             \x20 ret ptr %buf\n\
+             }\n\n",
+        );
+        // str_to_lower — convert string to lowercase
+        self.body.push_str(
+            "define ptr @str_to_lower(ptr %s) {\n\
+             entry:\n\
+             \x20 %len = call i64 @strlen(ptr %s)\n\
+             \x20 %buf_sz = add i64 %len, 1\n\
+             \x20 %buf = call ptr @malloc(i64 %buf_sz)\n\
+             \x20 br label %loop\n\
+             loop:\n\
+             \x20 %i = phi i64 [ 0, %entry ], [ %i_next, %cont ]\n\
+             \x20 %done = icmp sge i64 %i, %buf_sz\n\
+             \x20 br i1 %done, label %end, label %body\n\
+             body:\n\
+             \x20 %sp = getelementptr i8, ptr %s, i64 %i\n\
+             \x20 %c = load i8, ptr %sp\n\
+             \x20 %ge_A = icmp sge i8 %c, 65\n\
+             \x20 %le_Z = icmp sle i8 %c, 90\n\
+             \x20 %is_upper = and i1 %ge_A, %le_Z\n\
+             \x20 %lower = add i8 %c, 32\n\
+             \x20 %out = select i1 %is_upper, i8 %lower, i8 %c\n\
+             \x20 %dp = getelementptr i8, ptr %buf, i64 %i\n\
+             \x20 store i8 %out, ptr %dp\n\
+             cont:\n\
+             \x20 %i_next = add i64 %i, 1\n\
+             \x20 br label %loop\n\
+             end:\n\
+             \x20 ret ptr %buf\n\
+             }\n\n",
+        );
+        // str_repeat — repeat string n times
+        self.body.push_str(
+            "define ptr @str_repeat(ptr %s, i64 %n) {\n\
+             entry:\n\
+             \x20 %len = call i64 @strlen(ptr %s)\n\
+             \x20 %total = mul i64 %len, %n\n\
+             \x20 %buf_sz = add i64 %total, 1\n\
+             \x20 %buf = call ptr @malloc(i64 %buf_sz)\n\
+             \x20 store i8 0, ptr %buf\n\
+             \x20 br label %loop\n\
+             loop:\n\
+             \x20 %i = phi i64 [ 0, %entry ], [ %i_next, %loop ]\n\
+             \x20 %done = icmp sge i64 %i, %n\n\
+             \x20 br i1 %done, label %end, label %cat\n\
+             cat:\n\
+             \x20 call ptr @strcat(ptr %buf, ptr %s)\n\
+             \x20 %i_next = add i64 %i, 1\n\
+             \x20 br label %loop\n\
+             end:\n\
+             \x20 ret ptr %buf\n\
              }\n\n",
         );
     }

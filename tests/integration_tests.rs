@@ -1934,3 +1934,143 @@ fn test_math_ir_definitions() {
     assert!(ir.contains("declare double @log10"));
     assert!(ir.contains("declare double @exp"));
 }
+
+// ═══════════════════════════════════════════════════════════════
+//  v0.6 Standard Library — String utility builtins
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn test_str_contains_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let b: bool = str_contains(\"hello world\", \"world\");\n\
+         \x20 print_bool(b);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call i1 @str_contains"));
+}
+
+#[test]
+fn test_str_index_of_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let i: int = str_index_of(\"hello\", \"ll\");\n\
+         \x20 print_int(i);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call i64 @str_index_of"));
+}
+
+#[test]
+fn test_str_starts_ends_with() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let a: bool = str_starts_with(\"hello\", \"hel\");\n\
+         \x20 let b: bool = str_ends_with(\"hello\", \"llo\");\n\
+         \x20 print_bool(a);\n\
+         \x20 print_bool(b);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call i1 @str_starts_with"));
+    assert!(ir.contains("call i1 @str_ends_with"));
+}
+
+#[test]
+fn test_str_trim_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let s: string = str_trim(\"  hello  \");\n\
+         \x20 print_str(s);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call ptr @str_trim"));
+}
+
+#[test]
+fn test_str_replace_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let s: string = str_replace(\"hello world\", \"world\", \"yorum\");\n\
+         \x20 print_str(s);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call ptr @str_replace"));
+}
+
+#[test]
+fn test_str_split_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let parts: [string] = str_split(\"a,b,c\", \",\");\n\
+         \x20 print_int(len(parts));\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call ptr @str_split"));
+}
+
+#[test]
+fn test_str_to_upper_lower() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let a: string = str_to_upper(\"hello\");\n\
+         \x20 let b: string = str_to_lower(\"HELLO\");\n\
+         \x20 print_str(a);\n\
+         \x20 print_str(b);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call ptr @str_to_upper"));
+    assert!(ir.contains("call ptr @str_to_lower"));
+}
+
+#[test]
+fn test_str_repeat_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let s: string = str_repeat(\"ab\", 3);\n\
+         \x20 print_str(s);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call ptr @str_repeat"));
+}
+
+#[test]
+fn test_str_contains_pure() {
+    // str_contains is pure
+    parse_and_check("pure fn f(s: string) -> bool { return str_contains(s, \"x\"); }\n");
+}
+
+#[test]
+fn test_str_split_impure() {
+    // str_split is impure (allocates array)
+    let result =
+        yorum::typecheck("pure fn f(s: string) -> [string] { return str_split(s, \",\"); }");
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_str_utility_ir_definitions() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let b: bool = str_contains(\"a\", \"b\");\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("define i1 @str_contains"));
+    assert!(ir.contains("define i64 @str_index_of"));
+    assert!(ir.contains("define i1 @str_starts_with"));
+    assert!(ir.contains("define i1 @str_ends_with"));
+    assert!(ir.contains("define ptr @str_trim"));
+    assert!(ir.contains("define ptr @str_replace"));
+    assert!(ir.contains("define ptr @str_split"));
+    assert!(ir.contains("define ptr @str_to_upper"));
+    assert!(ir.contains("define ptr @str_to_lower"));
+    assert!(ir.contains("define ptr @str_repeat"));
+}

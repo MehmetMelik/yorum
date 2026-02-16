@@ -300,6 +300,43 @@ impl TypeChecker {
             "exp".to_string(),
             builtin(vec![Type::Float], Type::Float, true),
         );
+        // String utility builtins
+        self.functions.insert(
+            "str_contains".to_string(),
+            builtin(vec![Type::Str, Type::Str], Type::Bool, true),
+        );
+        self.functions.insert(
+            "str_index_of".to_string(),
+            builtin(vec![Type::Str, Type::Str], Type::Int, true),
+        );
+        self.functions.insert(
+            "str_starts_with".to_string(),
+            builtin(vec![Type::Str, Type::Str], Type::Bool, true),
+        );
+        self.functions.insert(
+            "str_ends_with".to_string(),
+            builtin(vec![Type::Str, Type::Str], Type::Bool, true),
+        );
+        self.functions.insert(
+            "str_trim".to_string(),
+            builtin(vec![Type::Str], Type::Str, false),
+        );
+        self.functions.insert(
+            "str_replace".to_string(),
+            builtin(vec![Type::Str, Type::Str, Type::Str], Type::Str, false),
+        );
+        self.functions.insert(
+            "str_to_upper".to_string(),
+            builtin(vec![Type::Str], Type::Str, false),
+        );
+        self.functions.insert(
+            "str_to_lower".to_string(),
+            builtin(vec![Type::Str], Type::Str, false),
+        );
+        self.functions.insert(
+            "str_repeat".to_string(),
+            builtin(vec![Type::Str, Type::Int], Type::Str, false),
+        );
     }
 
     /// Type-check an entire program. Returns Ok(()) or collected errors.
@@ -925,6 +962,41 @@ impl TypeChecker {
                             }
                         }
                         return None;
+                    }
+
+                    // Built-in str_split() — returns [string]
+                    if name == "str_split" {
+                        if args.len() != 2 {
+                            self.errors.push(TypeError {
+                                message: format!(
+                                    "'str_split' expects 2 arguments, found {}",
+                                    args.len()
+                                ),
+                                span: expr.span,
+                            });
+                            return None;
+                        }
+                        if self.current_fn_is_pure {
+                            self.errors.push(TypeError {
+                                message: "pure function cannot call impure function 'str_split'"
+                                    .to_string(),
+                                span: expr.span,
+                            });
+                        }
+                        for arg in args {
+                            if let Some(ty) = self.infer_expr(arg) {
+                                if ty != Type::Str {
+                                    self.errors.push(TypeError {
+                                        message: format!(
+                                            "str_split: expected string argument, found '{}'",
+                                            ty
+                                        ),
+                                        span: arg.span,
+                                    });
+                                }
+                            }
+                        }
+                        return Some(Type::Array(Box::new(Type::Str)));
                     }
 
                     // Built-in args() — returns command-line arguments

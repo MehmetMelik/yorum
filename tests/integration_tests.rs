@@ -4180,3 +4180,121 @@ fn test_spawn_with_captures() {
     assert!(ir.contains("@__spawn_"));
     assert!(ir.contains("call i32 @pthread_create"));
 }
+
+// ═══════════════════════════════════════════════════════════════
+//  Codegen P1 bug fix tests
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn test_short_circuit_phi_after_branching_function() {
+    // Bug 1: emit_function didn't reset current_block, so the first and/or
+    // PHI in the second function could reference a label from the first function.
+    let ir = compile(
+        "fn branchy(x: int) -> int {\n\
+         \x20   if x > 0 {\n\
+         \x20       return 1;\n\
+         \x20   } else {\n\
+         \x20       return 0;\n\
+         \x20   }\n\
+         }\n\
+         fn main() -> int {\n\
+         \x20   let a: bool = true and false;\n\
+         \x20   print_bool(a);\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    // Extract main function body
+    let main_start = ir.find("define i64 @main(").expect("main not found");
+    let main_ir = &ir[main_start..];
+    // Every PHI predecessor in main must reference labels within main (e.g., entry, and.rhs, and.merge)
+    // and NOT labels from branchy (e.g., ifcont, then, else)
+    for line in main_ir.lines() {
+        if line.contains("phi ") {
+            assert!(
+                !line.contains("ifcont") && !line.contains("%then") && !line.contains("%else"),
+                "PHI in main references label from branchy: {}",
+                line
+            );
+        }
+    }
+}
+
+#[test]
+fn test_map_tombstone_churn() {
+    // Bug 2: Without tombstone tracking in load factor, insert/remove churn
+    // could fill all slots with tombstones, causing infinite probe in find_slot.
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let m: Map = map_new();\n\
+         \x20   map_set(m, \"a\", 1);\n\
+         \x20   map_remove(m, \"a\");\n\
+         \x20   map_set(m, \"b\", 2);\n\
+         \x20   map_remove(m, \"b\");\n\
+         \x20   map_set(m, \"c\", 3);\n\
+         \x20   let v: int = map_get(m, \"c\");\n\
+         \x20   print_int(v);\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    // map struct is now 48 bytes (was 40) to hold tombstone counter at offset 40
+    assert!(
+        ir.contains("call ptr @malloc(i64 48)"),
+        "map_new should allocate 48 bytes for map struct"
+    );
+    // map_remove should increment tombstone counter at offset 40
+    assert!(
+        ir.contains("getelementptr i8, ptr %map, i64 40"),
+        "tombstone counter should be tracked at offset 40"
+    );
+}
+
+#[test]
+fn test_spawn_env_alignment() {
+    // Bug 3: Spawn env malloc used sum of raw field sizes, ignoring alignment.
+    // For { i1, i64 } this gave 9 bytes but LLVM struct is 16.
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let flag: bool = true;\n\
+         \x20   let t: Task<unit> = spawn {\n\
+         \x20       print_bool(flag);\n\
+         \x20   };\n\
+         \x20   t.join();\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    // Should use LLVM sizeof idiom (getelementptr from null + ptrtoint)
+    // instead of hardcoded byte count
+    assert!(
+        ir.contains("getelementptr %__spawn_env_"),
+        "spawn env should use LLVM sizeof idiom with named struct type"
+    );
+    assert!(
+        ir.contains("ptrtoint ptr"),
+        "spawn env should use ptrtoint for size calculation"
+    );
+}
+
+#[test]
+fn test_unit_let_binding_no_invalid_ir() {
+    // Unit-typed let bindings must not emit `alloca void` or `store void`,
+    // which are invalid LLVM IR.
+    let ir = compile(
+        "fn do_nothing() -> unit {\n\
+         \x20   return;\n\
+         }\n\
+         fn main() -> int {\n\
+         \x20   let x: unit = do_nothing();\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(
+        !ir.contains("alloca void"),
+        "unit let binding must not emit alloca void"
+    );
+    assert!(
+        !ir.contains("store void"),
+        "unit let binding must not emit store void"
+    );
+    // The void call should still be emitted for side effects
+    assert!(ir.contains("call void @do_nothing()"));
+}

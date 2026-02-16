@@ -940,6 +940,8 @@ impl Codegen {
              \x20 store ptr %new_vals, ptr %vals_p\n\
              \x20 store ptr %new_flags, ptr %flags_p\n\
              \x20 store i64 %new_cap, ptr %cap_p\n\
+             \x20 %tomb_p = getelementptr i8, ptr %map, i64 40\n\
+             \x20 store i64 0, ptr %tomb_p\n\
              \x20 br label %rehash_loop\n\
              rehash_loop:\n\
              \x20 %i = phi i64 [ 0, %entry ], [ %i_next, %rehash_cont ]\n\
@@ -975,10 +977,17 @@ impl Codegen {
         );
 
         // map_new — allocate and initialize a new hash map (capacity 16)
+        // Map struct layout (48 bytes):
+        //   offset 0:  ptr   keys
+        //   offset 8:  ptr   vals
+        //   offset 16: ptr   flags
+        //   offset 24: i64   capacity
+        //   offset 32: i64   size (occupied count)
+        //   offset 40: i64   tombstones
         self.body.push_str(
             "define ptr @map_new() {\n\
              entry:\n\
-             \x20 %map = call ptr @malloc(i64 40)\n\
+             \x20 %map = call ptr @malloc(i64 48)\n\
              \x20 %keys = call ptr @malloc(i64 128)\n\
              \x20 %vals = call ptr @malloc(i64 128)\n\
              \x20 %flags = call ptr @malloc(i64 16)\n\
@@ -992,21 +1001,27 @@ impl Codegen {
              \x20 store i64 16, ptr %cp\n\
              \x20 %sp = getelementptr i8, ptr %map, i64 32\n\
              \x20 store i64 0, ptr %sp\n\
+             \x20 %tp = getelementptr i8, ptr %map, i64 40\n\
+             \x20 store i64 0, ptr %tp\n\
              \x20 ret ptr %map\n\
              }\n\n",
         );
 
         // map_set — insert or update key-value pair
         // Accepts empty (flag==0) or tombstone (flag==2) slots for insertion.
+        // Load factor check includes tombstones to prevent infinite probe loops.
         self.body.push_str(
             "define void @map_set(ptr %map, ptr %key, i64 %val) {\n\
              entry:\n\
-             \x20 ; check load factor: size*4 >= cap*3 → grow\n\
+             \x20 ; check load factor: (size + tombstones)*4 >= cap*3 → grow\n\
              \x20 %sp = getelementptr i8, ptr %map, i64 32\n\
              \x20 %size = load i64, ptr %sp\n\
+             \x20 %tp = getelementptr i8, ptr %map, i64 40\n\
+             \x20 %tombs = load i64, ptr %tp\n\
+             \x20 %used = add i64 %size, %tombs\n\
              \x20 %cap_p = getelementptr i8, ptr %map, i64 24\n\
              \x20 %cap = load i64, ptr %cap_p\n\
-             \x20 %s4 = mul i64 %size, 4\n\
+             \x20 %s4 = mul i64 %used, 4\n\
              \x20 %c3 = mul i64 %cap, 3\n\
              \x20 %need_grow = icmp sge i64 %s4, %c3\n\
              \x20 br i1 %need_grow, label %grow, label %find\n\
@@ -1729,6 +1744,10 @@ impl Codegen {
              \x20 %size = load i64, ptr %sp\n\
              \x20 %new_size = sub i64 %size, 1\n\
              \x20 store i64 %new_size, ptr %sp\n\
+             \x20 %tomb_p = getelementptr i8, ptr %map, i64 40\n\
+             \x20 %tombs = load i64, ptr %tomb_p\n\
+             \x20 %new_tombs = add i64 %tombs, 1\n\
+             \x20 store i64 %new_tombs, ptr %tomb_p\n\
              \x20 ; free the key string\n\
              \x20 %keys_p = load ptr, ptr %map\n\
              \x20 %kp = getelementptr ptr, ptr %keys_p, i64 %slot\n\
@@ -2559,6 +2578,7 @@ impl Codegen {
         self.temp_counter = 0;
         self.label_counter = 0;
         self.block_terminated = false;
+        self.current_block = "entry".to_string();
         self.current_fn_contracts = f.contracts.clone();
         self.current_fn_name = f.name.clone();
 
@@ -2768,6 +2788,13 @@ impl Codegen {
     fn emit_let(&mut self, s: &LetStmt) -> Result<(), CodegenError> {
         let ty = self.llvm_type(&s.ty);
 
+        // Unit-typed let bindings: evaluate the RHS for side effects only.
+        // `alloca void` and `store void` are invalid LLVM IR.
+        if s.ty == Type::Unit {
+            self.emit_expr(&s.value)?;
+            return Ok(());
+        }
+
         // For struct-typed variables, StructInit already creates an alloca and
         // fills in the fields.  Use that alloca directly as the variable slot
         // instead of trying to store a whole struct as a value.
@@ -2819,6 +2846,11 @@ impl Codegen {
                     })?
                     .clone();
                 let val = self.emit_expr(&s.value)?;
+                // Unit-typed assignment: evaluate RHS for side effects only.
+                // `store void` is invalid LLVM IR.
+                if slot.llvm_ty == "void" {
+                    return Ok(());
+                }
                 self.emit_line(&format!("store {} {}, ptr {}", slot.llvm_ty, val, slot.ptr));
                 Ok(())
             }
@@ -4715,9 +4747,16 @@ impl Codegen {
         )?;
 
         // At spawn site: malloc env, fill captures
+        // Use LLVM sizeof idiom to get struct size with proper alignment padding
         let env_ptr = self.fresh_temp();
-        let env_size: usize = env_field_types.iter().map(|t| self.llvm_type_size(t)).sum();
-        self.emit_line(&format!("{} = call ptr @malloc(i64 {})", env_ptr, env_size));
+        let size_ptr = self.fresh_temp();
+        let size_val = self.fresh_temp();
+        self.emit_line(&format!(
+            "{} = getelementptr %{}, ptr null, i32 1",
+            size_ptr, env_type_name
+        ));
+        self.emit_line(&format!("{} = ptrtoint ptr {} to i64", size_val, size_ptr));
+        self.emit_line(&format!("{} = call ptr @malloc(i64 {})", env_ptr, size_val));
 
         for (i, (_cap_name, cap_slot)) in captures.iter().enumerate() {
             let gep = self.fresh_temp();

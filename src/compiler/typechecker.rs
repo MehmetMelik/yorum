@@ -231,6 +231,75 @@ impl TypeChecker {
             "map_has".to_string(),
             builtin(vec![Type::Map, Type::Str], Type::Bool, true),
         );
+        // Math builtins
+        self.functions.insert(
+            "abs_int".to_string(),
+            builtin(vec![Type::Int], Type::Int, true),
+        );
+        self.functions.insert(
+            "abs_float".to_string(),
+            builtin(vec![Type::Float], Type::Float, true),
+        );
+        self.functions.insert(
+            "min_int".to_string(),
+            builtin(vec![Type::Int, Type::Int], Type::Int, true),
+        );
+        self.functions.insert(
+            "max_int".to_string(),
+            builtin(vec![Type::Int, Type::Int], Type::Int, true),
+        );
+        self.functions.insert(
+            "min_float".to_string(),
+            builtin(vec![Type::Float, Type::Float], Type::Float, true),
+        );
+        self.functions.insert(
+            "max_float".to_string(),
+            builtin(vec![Type::Float, Type::Float], Type::Float, true),
+        );
+        self.functions.insert(
+            "sqrt".to_string(),
+            builtin(vec![Type::Float], Type::Float, true),
+        );
+        self.functions.insert(
+            "pow".to_string(),
+            builtin(vec![Type::Float, Type::Float], Type::Float, true),
+        );
+        self.functions.insert(
+            "sin".to_string(),
+            builtin(vec![Type::Float], Type::Float, true),
+        );
+        self.functions.insert(
+            "cos".to_string(),
+            builtin(vec![Type::Float], Type::Float, true),
+        );
+        self.functions.insert(
+            "tan".to_string(),
+            builtin(vec![Type::Float], Type::Float, true),
+        );
+        self.functions.insert(
+            "floor".to_string(),
+            builtin(vec![Type::Float], Type::Float, true),
+        );
+        self.functions.insert(
+            "ceil".to_string(),
+            builtin(vec![Type::Float], Type::Float, true),
+        );
+        self.functions.insert(
+            "round".to_string(),
+            builtin(vec![Type::Float], Type::Float, true),
+        );
+        self.functions.insert(
+            "log".to_string(),
+            builtin(vec![Type::Float], Type::Float, true),
+        );
+        self.functions.insert(
+            "log10".to_string(),
+            builtin(vec![Type::Float], Type::Float, true),
+        );
+        self.functions.insert(
+            "exp".to_string(),
+            builtin(vec![Type::Float], Type::Float, true),
+        );
     }
 
     /// Type-check an entire program. Returns Ok(()) or collected errors.

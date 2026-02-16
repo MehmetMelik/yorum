@@ -1769,3 +1769,168 @@ fn test_map_ir_contains_helpers() {
     assert!(ir.contains("define i64 @map_get"));
     assert!(ir.contains("define i1 @map_has"));
 }
+
+// ═══════════════════════════════════════════════════════════════
+//  v0.6 Standard Library — Math builtins
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn test_math_abs_int() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let x: int = abs_int(-5);\n\
+         \x20 print_int(x);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call i64 @abs_int"));
+}
+
+#[test]
+fn test_math_abs_float() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let x: float = abs_float(-3.14);\n\
+         \x20 print_float(x);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call double @abs_float"));
+}
+
+#[test]
+fn test_math_min_max_int() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let a: int = min_int(3, 7);\n\
+         \x20 let b: int = max_int(3, 7);\n\
+         \x20 print_int(a);\n\
+         \x20 print_int(b);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call i64 @min_int"));
+    assert!(ir.contains("call i64 @max_int"));
+}
+
+#[test]
+fn test_math_min_max_float() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let a: float = min_float(1.5, 2.5);\n\
+         \x20 let b: float = max_float(1.5, 2.5);\n\
+         \x20 print_float(a);\n\
+         \x20 print_float(b);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call double @min_float"));
+    assert!(ir.contains("call double @max_float"));
+}
+
+#[test]
+fn test_math_sqrt_pow() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let s: float = sqrt(16.0);\n\
+         \x20 let p: float = pow(2.0, 10.0);\n\
+         \x20 print_float(s);\n\
+         \x20 print_float(p);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call double @sqrt"));
+    assert!(ir.contains("call double @pow"));
+}
+
+#[test]
+fn test_math_trig() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let a: float = sin(0.0);\n\
+         \x20 let b: float = cos(0.0);\n\
+         \x20 let c: float = tan(0.0);\n\
+         \x20 print_float(a);\n\
+         \x20 print_float(b);\n\
+         \x20 print_float(c);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call double @sin"));
+    assert!(ir.contains("call double @cos"));
+    assert!(ir.contains("call double @tan"));
+}
+
+#[test]
+fn test_math_floor_ceil_round() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let a: float = floor(3.7);\n\
+         \x20 let b: float = ceil(3.2);\n\
+         \x20 let c: float = round(3.5);\n\
+         \x20 print_float(a);\n\
+         \x20 print_float(b);\n\
+         \x20 print_float(c);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call double @floor"));
+    assert!(ir.contains("call double @ceil"));
+    assert!(ir.contains("call double @round"));
+}
+
+#[test]
+fn test_math_log_exp() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let a: float = log(2.718);\n\
+         \x20 let b: float = log10(100.0);\n\
+         \x20 let c: float = exp(1.0);\n\
+         \x20 print_float(a);\n\
+         \x20 print_float(b);\n\
+         \x20 print_float(c);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call double @log"));
+    assert!(ir.contains("call double @log10"));
+    assert!(ir.contains("call double @exp"));
+}
+
+#[test]
+fn test_math_pure_in_pure_fn() {
+    // Math builtins are pure, so they should work in pure functions
+    parse_and_check(
+        "pure fn f(x: int) -> int { return abs_int(x); }\n\
+         pure fn g(x: float) -> float { return sqrt(x); }\n\
+         pure fn h(a: int, b: int) -> int { return min_int(a, b); }\n",
+    );
+}
+
+#[test]
+fn test_math_ir_definitions() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let x: int = abs_int(1);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("define i64 @abs_int"));
+    assert!(ir.contains("define double @abs_float"));
+    assert!(ir.contains("define i64 @min_int"));
+    assert!(ir.contains("define i64 @max_int"));
+    assert!(ir.contains("define double @min_float"));
+    assert!(ir.contains("define double @max_float"));
+    assert!(ir.contains("define double @sqrt"));
+    assert!(ir.contains("define double @pow"));
+    assert!(ir.contains("define double @floor"));
+    assert!(ir.contains("define double @ceil"));
+    assert!(ir.contains("define double @round"));
+    // sin, cos, tan, log, log10, exp are external declarations, not definitions
+    assert!(ir.contains("declare double @sin"));
+    assert!(ir.contains("declare double @cos"));
+    assert!(ir.contains("declare double @tan"));
+    assert!(ir.contains("declare double @log(double)"));
+    assert!(ir.contains("declare double @log10"));
+    assert!(ir.contains("declare double @exp"));
+}

@@ -181,6 +181,27 @@ impl Codegen {
         self.fn_ret_types.insert("map_set".to_string(), Type::Unit);
         self.fn_ret_types.insert("map_get".to_string(), Type::Int);
         self.fn_ret_types.insert("map_has".to_string(), Type::Bool);
+        // Math builtins
+        self.fn_ret_types.insert("abs_int".to_string(), Type::Int);
+        self.fn_ret_types
+            .insert("abs_float".to_string(), Type::Float);
+        self.fn_ret_types.insert("min_int".to_string(), Type::Int);
+        self.fn_ret_types.insert("max_int".to_string(), Type::Int);
+        self.fn_ret_types
+            .insert("min_float".to_string(), Type::Float);
+        self.fn_ret_types
+            .insert("max_float".to_string(), Type::Float);
+        self.fn_ret_types.insert("sqrt".to_string(), Type::Float);
+        self.fn_ret_types.insert("pow".to_string(), Type::Float);
+        self.fn_ret_types.insert("sin".to_string(), Type::Float);
+        self.fn_ret_types.insert("cos".to_string(), Type::Float);
+        self.fn_ret_types.insert("tan".to_string(), Type::Float);
+        self.fn_ret_types.insert("floor".to_string(), Type::Float);
+        self.fn_ret_types.insert("ceil".to_string(), Type::Float);
+        self.fn_ret_types.insert("round".to_string(), Type::Float);
+        self.fn_ret_types.insert("log".to_string(), Type::Float);
+        self.fn_ret_types.insert("log10".to_string(), Type::Float);
+        self.fn_ret_types.insert("exp".to_string(), Type::Float);
 
         // Register function return types (including impl methods with mangled names)
         for decl in &program.declarations {
@@ -287,7 +308,30 @@ impl Codegen {
         self.globals.push_str("declare i64 @write(i32, ptr, i64)\n");
         self.globals.push_str("declare void @exit(i32)\n");
         self.globals
-            .push_str("declare ptr @memset(ptr, i32, i64)\n\n");
+            .push_str("declare ptr @memset(ptr, i32, i64)\n");
+        // Math intrinsics/libm
+        self.globals
+            .push_str("declare double @llvm.fabs.f64(double)\n");
+        self.globals
+            .push_str("declare double @llvm.sqrt.f64(double)\n");
+        self.globals
+            .push_str("declare double @llvm.pow.f64(double, double)\n");
+        self.globals
+            .push_str("declare double @llvm.floor.f64(double)\n");
+        self.globals
+            .push_str("declare double @llvm.ceil.f64(double)\n");
+        self.globals
+            .push_str("declare double @llvm.round.f64(double)\n");
+        self.globals
+            .push_str("declare double @llvm.minnum.f64(double, double)\n");
+        self.globals
+            .push_str("declare double @llvm.maxnum.f64(double, double)\n");
+        self.globals.push_str("declare double @sin(double)\n");
+        self.globals.push_str("declare double @cos(double)\n");
+        self.globals.push_str("declare double @tan(double)\n");
+        self.globals.push_str("declare double @log(double)\n");
+        self.globals.push_str("declare double @log10(double)\n");
+        self.globals.push_str("declare double @exp(double)\n\n");
         // Globals for command-line arguments (stored by main)
         self.globals
             .push_str("@__yorum_argc = internal global i32 0\n");
@@ -895,6 +939,105 @@ impl Codegen {
              \x20 %flag = load i8, ptr %fp\n\
              \x20 %found = icmp eq i8 %flag, 1\n\
              \x20 ret i1 %found\n\
+             }\n\n",
+        );
+
+        // ── Math builtins ──
+
+        // abs_int — absolute value of int
+        self.body.push_str(
+            "define i64 @abs_int(i64 %x) {\n\
+             entry:\n\
+             \x20 %neg = icmp slt i64 %x, 0\n\
+             \x20 %pos = sub i64 0, %x\n\
+             \x20 %result = select i1 %neg, i64 %pos, i64 %x\n\
+             \x20 ret i64 %result\n\
+             }\n\n",
+        );
+        // abs_float — absolute value of float
+        self.body.push_str(
+            "define double @abs_float(double %x) {\n\
+             entry:\n\
+             \x20 %result = call double @llvm.fabs.f64(double %x)\n\
+             \x20 ret double %result\n\
+             }\n\n",
+        );
+        // min_int
+        self.body.push_str(
+            "define i64 @min_int(i64 %a, i64 %b) {\n\
+             entry:\n\
+             \x20 %cmp = icmp slt i64 %a, %b\n\
+             \x20 %result = select i1 %cmp, i64 %a, i64 %b\n\
+             \x20 ret i64 %result\n\
+             }\n\n",
+        );
+        // max_int
+        self.body.push_str(
+            "define i64 @max_int(i64 %a, i64 %b) {\n\
+             entry:\n\
+             \x20 %cmp = icmp sgt i64 %a, %b\n\
+             \x20 %result = select i1 %cmp, i64 %a, i64 %b\n\
+             \x20 ret i64 %result\n\
+             }\n\n",
+        );
+        // min_float
+        self.body.push_str(
+            "define double @min_float(double %a, double %b) {\n\
+             entry:\n\
+             \x20 %result = call double @llvm.minnum.f64(double %a, double %b)\n\
+             \x20 ret double %result\n\
+             }\n\n",
+        );
+        // max_float
+        self.body.push_str(
+            "define double @max_float(double %a, double %b) {\n\
+             entry:\n\
+             \x20 %result = call double @llvm.maxnum.f64(double %a, double %b)\n\
+             \x20 ret double %result\n\
+             }\n\n",
+        );
+        // sqrt
+        self.body.push_str(
+            "define double @sqrt(double %x) {\n\
+             entry:\n\
+             \x20 %result = call double @llvm.sqrt.f64(double %x)\n\
+             \x20 ret double %result\n\
+             }\n\n",
+        );
+        // pow
+        self.body.push_str(
+            "define double @pow(double %base, double %exp) {\n\
+             entry:\n\
+             \x20 %result = call double @llvm.pow.f64(double %base, double %exp)\n\
+             \x20 ret double %result\n\
+             }\n\n",
+        );
+        // sin, cos, tan, log, log10, exp — these are just external libm
+        // declarations (already in emit_builtin_decls), called directly by the
+        // standard call dispatch path. No wrapper functions needed.
+
+        // floor — wraps LLVM intrinsic
+        self.body.push_str(
+            "define double @floor(double %x) {\n\
+             entry:\n\
+             \x20 %result = call double @llvm.floor.f64(double %x)\n\
+             \x20 ret double %result\n\
+             }\n\n",
+        );
+        // ceil — wraps LLVM intrinsic
+        self.body.push_str(
+            "define double @ceil(double %x) {\n\
+             entry:\n\
+             \x20 %result = call double @llvm.ceil.f64(double %x)\n\
+             \x20 ret double %result\n\
+             }\n\n",
+        );
+        // round — wraps LLVM intrinsic
+        self.body.push_str(
+            "define double @round(double %x) {\n\
+             entry:\n\
+             \x20 %result = call double @llvm.round.f64(double %x)\n\
+             \x20 ret double %result\n\
              }\n\n",
         );
     }

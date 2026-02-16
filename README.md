@@ -94,11 +94,13 @@ exactly one owner.
 | `float` | 64-bit IEEE 754 double | `double` |
 | `bool` | Boolean | `i1` |
 | `string` | UTF-8 string | `ptr` |
+| `char` | 8-bit character | `i8` |
 | `unit` | No value | `void` |
 | `&T` | Immutable reference | `ptr` |
 | `&mut T` | Mutable reference | `ptr` |
 | `own T` | Explicit ownership | `ptr` |
-| `[T]` | Array (heap-allocated) | `{ ptr, i64 }` |
+| `[T]` | Dynamic array (heap-allocated) | `{ ptr, i64, i64 }` |
+| `Map` | Hash map (`string -> int`) | `ptr` |
 | `Task<T>` | Concurrent task handle | `ptr` |
 | `Chan<T>` | Synchronous channel | `ptr` |
 | `fn(T) -> U` | Function type (closures) | `ptr` |
@@ -224,7 +226,7 @@ Closures capture variables from their enclosing scope. They compile to
 and the function takes the environment as its first argument. Closures can be
 passed to higher-order functions via `fn(T) -> U` types.
 
-### Arrays and For Loops
+### Dynamic Arrays and For Loops
 
 ```
 fn sum_array(nums: [int]) -> int {
@@ -242,25 +244,60 @@ fn main() -> int {
     print_int(sum_array(nums));    // 150
 
     let mut arr: [int] = [1, 2, 3];
+    push(arr, 4);                  // [1, 2, 3, 4]
+    let last: int = pop(arr);     // 4, arr is [1, 2, 3]
     arr[0] = 100;
     print_int(arr[0]);             // 100
     return 0;
 }
 ```
 
-Arrays are heap-allocated fat pointers (`{ ptr, i64 }` — data pointer + length).
-`len(arr)` returns the length. Index access includes runtime bounds checking.
+Arrays are heap-allocated fat pointers (`{ ptr, i64, i64 }` — data pointer +
+length + capacity). `len(arr)` returns the length. `push(arr, val)` appends an
+element (growing the buffer via `realloc` when needed). `pop(arr)` removes and
+returns the last element. Index access includes runtime bounds checking.
 `for x in arr { ... }` iterates over array elements.
 
-### String Operations
+### Char Type and String Operations
 
 ```
-let n: int = str_len("hello");                    // 5
+let c: char = 'A';
+let n: int = char_to_int(c);                      // 65
+let alpha: bool = char_is_alpha(c);               // true
+
 let s: string = str_concat("hello", " world");    // "hello world"
+let ch: char = str_charAt(s, 0);                  // 'h'
+let sub: string = str_sub(s, 0, 5);              // "hello"
 let eq: bool = str_eq("abc", "abc");              // true
 ```
 
-Built-in string functions: `str_len`, `str_concat`, `str_eq`.
+Built-in string functions: `str_len`, `str_concat`, `str_eq`, `str_charAt`,
+`str_sub`, `str_from_char`. Character classification: `char_is_alpha`,
+`char_is_digit`, `char_is_whitespace`. Type casting: `char_to_int`,
+`int_to_char`, `int_to_str`, `str_to_int`, `int_to_float`, `float_to_int`.
+
+### File I/O and Process
+
+```
+let content: string = file_read("input.txt");
+file_write("output.txt", content);
+print_err("error message");       // writes to stderr
+
+let argv: [string] = args();      // command-line arguments
+exit(1);                           // terminate with exit code
+```
+
+### HashMap
+
+```
+let m: Map = map_new();
+map_set(m, "key", 42);
+let v: int = map_get(m, "key");   // 42
+let ok: bool = map_has(m, "key"); // true
+```
+
+Maps use `string` keys and `int` values. Backed by a hash table with FNV-1a
+hashing and linear probing.
 
 ### Structured Concurrency
 
@@ -527,13 +564,37 @@ source.yrm
 | Module Resolver | `src/compiler/module_resolver.rs` | Discovers `.yrm` files, maps filesystem paths to module names |
 | Project Builder | `src/compiler/project.rs` | Reads `yorum.toml`, merges modules, runs compilation pipeline |
 
-The compiler is ~8,900 lines of Rust with `serde`, `serde_json`, and `toml` as
-dependencies.
+The Rust compiler is ~9,600 lines of Rust with `serde`, `serde_json`, and `toml`
+as dependencies.
+
+## Self-Hosting
+
+The Yorum compiler is **self-hosting** — the compiler is written in Yorum itself
+(`yorum-in-yorum/src/main.yrm`, 5,226 lines). It implements a bootstrap subset
+of the language (no generics, closures, traits, ownership checking, or multi-file
+support) using arena-based AST pools with integer index references.
+
+```bash
+# Build the self-hosted compiler with the Rust compiler
+cd yorum-in-yorum
+cargo run -- build -o yorumc.ll
+clang -x ir yorumc.ll -o yorumc -Wno-override-module
+
+# Use it to compile programs
+./yorumc examples/fibonacci.yrm -o fib.ll
+clang -x ir fib.ll -o fib -Wno-override-module
+
+# Bootstrap: yorumc compiles itself
+./yorumc src/main.yrm -o gen1.ll
+clang -x ir gen1.ll -o yorumc_gen1 -Wno-override-module
+./yorumc_gen1 src/main.yrm -o gen2.ll
+diff gen1.ll gen2.ll    # identical — fixed-point achieved
+```
 
 ## Testing
 
 ```bash
-cargo test                    # 104 tests (34 unit + 70 integration)
+cargo test                    # 120 tests (34 unit + 86 integration)
 cargo test compiler::lexer    # tests in one module
 cargo test test_fibonacci     # single test by name
 ```
@@ -551,7 +612,7 @@ cargo test test_fibonacci     # single test by name
 | **v0.2** | Generics, closures, `impl` blocks, trait system | Done |
 | **v0.3** | Arrays, string operations, `for` loops, nested pattern matching | Done |
 | **v0.4** | Structured concurrency, runtime contract verification, multi-file compilation | Done |
-| **v0.5** | Self-hosting compiler | |
+| **v0.5** | Self-hosting compiler, char type, dynamic arrays, file I/O, HashMap | Done |
 | **v0.6** | Standard library (io, collections, math, networking) | |
 | **v0.7** | LSP server for editor integration | |
 | **v0.8** | Formal verification of the ownership checker | |

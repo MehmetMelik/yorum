@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 cargo build                          # dev build
 cargo build --release                # release build
-cargo test                           # all tests (104: 34 unit + 70 integration)
+cargo test                           # all tests (120: 34 unit + 86 integration)
 cargo test compiler::lexer           # tests in one module
 cargo test test_fibonacci_compiles   # single test by name
 cargo test -- --nocapture            # see stdout from tests
@@ -34,7 +34,7 @@ clang -x ir out.ll -o binary -lpthread -Wno-override-module   # if using spawn/c
 
 ## Architecture
 
-This is a compiler for the Yorum language — an LLM-first, statically typed language that emits textual LLVM IR. No LLVM library dependency; the compiler is pure Rust with only `serde`/`serde_json`/`toml`.
+This is a compiler for the Yorum language — an LLM-first, statically typed language that emits textual LLVM IR. No LLVM library dependency; the compiler is pure Rust with only `serde`/`serde_json`/`toml`. The compiler is **self-hosting** — `yorum-in-yorum/src/main.yrm` is the compiler written in Yorum itself (5,226 lines), achieving bootstrap fixed-point.
 
 ### Compilation pipeline
 
@@ -53,10 +53,10 @@ Multi-file projects (`yorum build`) add a front-end step: `ModuleResolver` disco
 - **`lexer.rs`** — Hand-written char-by-char lexer. Supports nested `/* */` block comments. Returns `Vec<Token>`
 - **`ast.rs`** — Complete AST types. All nodes derive `Serialize`/`Deserialize` for JSON round-tripping. `Type` enum has `PartialEq`/`Eq` for type checking comparisons
 - **`parser.rs`** — Recursive descent parser with Pratt expression parsing (`parse_expr_bp`). Operator precedence is defined in `infix_binding_power()`. Struct init is disambiguated from blocks via 2-token lookahead in `is_struct_init_lookahead()`
-- **`typechecker.rs`** — Two-pass: first registers all function signatures, struct layouts, and enum definitions; then checks function bodies. Uses a scope stack (`Vec<HashMap<String, VarInfo>>`) for lexical scoping. Built-in functions (`print_int`, `print_float`, `print_bool`, `print_str`, `str_len`, `str_concat`, `str_eq`) are registered in `register_builtins()`. `len()`, `chan()`, `send()`, `recv()` are special-cased in Call handling. `spawn` type inference and `.join()` method handling are in `infer_expr`. Contract expressions are type-checked (must be `bool`). Purity enforcement: pure functions cannot call impure functions or use `spawn`
+- **`typechecker.rs`** — Two-pass: first registers all function signatures, struct layouts, and enum definitions; then checks function bodies. Uses a scope stack (`Vec<HashMap<String, VarInfo>>`) for lexical scoping. Built-in functions registered in `register_builtins()`: print (`print_int`, `print_float`, `print_bool`, `print_str`, `print_char`, `print_err`), string ops (`str_len`, `str_concat`, `str_eq`, `str_charAt`, `str_sub`, `str_from_char`), char classification (`char_is_alpha`, `char_is_digit`, `char_is_whitespace`), type casting (`int_to_str`, `str_to_int`, `char_to_int`, `int_to_char`, `int_to_float`, `float_to_int`), file I/O (`file_read`, `file_write`), HashMap (`map_new`, `map_set`, `map_get`, `map_has`). `len()`, `push()`, `pop()`, `args()`, `exit()`, `chan()`, `send()`, `recv()` are special-cased in Call handling. `spawn` type inference and `.join()` method handling are in `infer_expr`. Contract expressions are type-checked (must be `bool`). Purity enforcement: pure functions cannot call impure functions or use `spawn`
 - **`ownership.rs`** — Simplified move checker. Tracks `Owned`/`Moved`/`Borrowed` state per variable. Prevents use-after-move. Enforces must-join for `Task` variables via `task_vars: Vec<HashSet<String>>` — tasks must be `.join()`'d before scope exit
 - **`monomorphize.rs`** — Eliminates generics before codegen. Collects all concrete instantiations of generic functions/structs/enums, clones declarations with type variables substituted, and rewrites call sites to use mangled names (`identity__int`, `Pair__int__float`). Also substitutes type vars in contract expressions
-- **`codegen.rs`** — Emits textual LLVM IR. Uses alloca/load/store pattern (LLVM's mem2reg promotes to SSA). Each expression emitter returns the LLVM SSA value name (e.g., `%t3`). Struct-typed and enum-typed let bindings reuse the alloca directly instead of store/load. Closures compile to `{ ptr, ptr }` pairs (fn_ptr + env_ptr) with deferred function emission. Arrays are heap-allocated fat pointers `{ ptr, i64 }` with runtime bounds checking. `requires`/`ensures` emit conditional branches to `@__yorum_contract_fail`. `spawn` compiles to `pthread_create` with env capture (same pattern as closures). Channel helpers are emitted as LLVM IR functions using mutex/condvar
+- **`codegen.rs`** — Emits textual LLVM IR. Uses alloca/load/store pattern (LLVM's mem2reg promotes to SSA). Each expression emitter returns the LLVM SSA value name (e.g., `%t3`). Struct-typed and enum-typed let bindings reuse the alloca directly instead of store/load. Closures compile to `{ ptr, ptr }` pairs (fn_ptr + env_ptr) with deferred function emission. Arrays are heap-allocated fat pointers `{ ptr, i64, i64 }` (data, length, capacity) with runtime bounds checking and `realloc`-based growth for `push`. Aggregate types (structs, enums) in arrays use `memcpy` for push/pop/index/array-lit operations. `requires`/`ensures` emit conditional branches to `@__yorum_contract_fail`. `spawn` compiles to `pthread_create` with env capture (same pattern as closures). Channel helpers are emitted as LLVM IR functions using mutex/condvar. HashMap uses FNV-1a hashing with linear probing, emitted as LLVM IR helper functions
 - **`module_resolver.rs`** — Discovers `.yrm` files under `src/`, maps filesystem paths to module names, parses each file, validates `module` declarations match paths
 - **`project.rs`** — Orchestrates multi-file compilation: reads `yorum.toml` manifest, resolves modules, merges `pub` declarations with name prefixing (`math__add`), rewrites call sites, runs standard pipeline
 
@@ -68,8 +68,11 @@ Multi-file projects (`yorum build`) add a front-end step: `ModuleResolver` disco
 - Format strings for printf are global constants with manually counted byte sizes — update sizes if changing format strings
 - Structs map to LLVM struct types (`%Name = type { ... }`), accessed via `getelementptr`
 - Enums without data are `{ i32 }`; enums with data are `{ i32, [N x i8] }` tagged unions. Enum variant constructors (e.g., `Some(42)`) are detected in Call handling and emit alloca + tag + payload store
-- Arrays use reference semantics in codegen: `emit_expr` on an array Ident returns the alloca pointer directly (not a load), and `expr_llvm_type` returns `"ptr"` for array idents. Array function parameters are passed as `ptr` (opaque pointer to `{ ptr, i64 }`)
-- `array_elem_types: HashMap<String, String>` tracks the LLVM element type per array variable, used by Index, For, and assignment codegen
+- Arrays use reference semantics in codegen: `emit_expr` on an array Ident returns the alloca pointer directly (not a load), and `expr_llvm_type` returns `"ptr"` for array idents. Array function parameters are passed as `ptr` (opaque pointer to `{ ptr, i64, i64 }`)
+- `array_elem_types: HashMap<String, String>` tracks the LLVM element type per array variable, used by Index, For, push, pop, and assignment codegen
+- `push(arr, val)` checks if `len == cap`, doubles capacity via `realloc` when needed, then stores the element. For aggregate types (structs, enums), uses `memcpy` instead of `store`
+- `pop(arr)` checks `len > 0`, decrements length, loads element (or `memcpy` for aggregates). Aborts on empty array
+- `type_size(&str)` computes actual LLVM type sizes by summing struct field sizes recursively — needed for `memcpy` of aggregate array elements
 - String builtins (`str_len`, `str_concat`, `str_eq`) are emitted as LLVM IR function bodies that call C library functions (`strlen`, `strcpy`, `strcat`, `strcmp`, `malloc`)
 - Contract checks (`requires`/`ensures`): `requires` emits conditional branches at function entry after allocas; `ensures` wraps each `ret` — stores return value to `result` alloca, checks condition, reloads and returns. Failures call `@__yorum_contract_fail` (prints message, aborts)
 - Spawn uses the closure capture pattern: env struct with captured vars + result slot, wrapper function `@__spawn_N`, `pthread_create` to launch. Task control block is `{ pthread_t, env_ptr }`. `.join()` calls `pthread_join`
@@ -96,74 +99,48 @@ Multi-file projects (`yorum build`) add a front-end step: `ModuleResolver` disco
 
 `examples/*.yrm` — all compile to native binaries and run correctly. Use these as references for valid Yorum syntax.
 
-## Current Work: v0.5 — Self-hosting Compiler
+## Completed: v0.5 — Self-hosting Compiler
 
-**Branch:** `feature/self-hosting-compiler`
+The self-hosting compiler is complete. `yorum-in-yorum/src/main.yrm` (5,226 lines) is the Yorum compiler written in Yorum itself, achieving bootstrap fixed-point (gen1.ll == gen2.ll).
 
-**Goal:** Write the Yorum compiler in Yorum itself. The current compiler is ~8,900 lines of Rust. The self-hosting compiler must read `.yrm` source files and emit LLVM IR, matching the Rust compiler's output.
+### Self-hosted compiler architecture
 
-### Strategy
+The self-hosted compiler is a single file (`yorum-in-yorum/src/main.yrm`) that implements a bootstrap subset of Yorum — no generics, closures, traits, ownership checking, or multi-file support.
 
-Self-hosting requires two phases:
-1. **Language extensions** — add missing features to the Rust compiler so Yorum is expressive enough to write a compiler
-2. **Yorum compiler in Yorum** — rewrite the compiler as a Yorum project, bootstrap via the Rust compiler
+**Key design decisions:**
+- **Arena-based AST** — No recursive types in Yorum (no `Box<T>`). AST nodes stored in flat global arrays, referenced by integer index
+- **`idx_lists: [int]`** — Shared pool for variable-length child lists (call args, array elements, block stmts, struct fields, match arms). Uses batch-push pattern to prevent interleaving during nested parsing
+- **Map workaround** — `Map` only supports `string -> int`. Symbol tables use integer indices into pool arrays as values
+- **Single file** — Multi-file project system can't resolve cross-imports between non-main modules. Single file avoids this
 
-### Phase 1: Language extensions needed
+**Components (all in main.yrm):**
+- Lexer (~400 lines): ~50 token kind constants, char-by-char tokenization, nested `/* */` comments
+- Parser (~800 lines): Recursive descent + Pratt expression parsing, arena pool structs
+- Type checker (~600 lines): Two-pass (register signatures → check bodies), scope stack using `[Map]`
+- Code generator (~1,500 lines): LLVM IR string emission, alloca/load/store pattern, ~30 builtin helper functions
+- CLI (~100 lines): `./yorumc file.yrm [-o output.ll]`
 
-The following features must be added to the Rust compiler (each touching token.rs → ast.rs → parser.rs → typechecker.rs → ownership.rs → monomorphize.rs → codegen.rs):
+**Bootstrap chain:**
+```bash
+cd yorum-in-yorum
+cargo run --manifest-path ../Cargo.toml -- build -o yorumc.ll    # Rust compiler → yorumc.ll
+clang -x ir yorumc.ll -o yorumc -Wno-override-module             # yorumc.ll → yorumc (native)
+./yorumc src/main.yrm -o gen1.ll                                  # yorumc compiles itself → gen1
+clang -x ir gen1.ll -o yorumc_gen1 -Wno-override-module
+./yorumc_gen1 src/main.yrm -o gen2.ll                             # gen1 compiles itself → gen2
+diff gen1.ll gen2.ll                                               # identical (fixed-point)
+```
 
-**P1a: Core type system additions**
-- `char` type — 8-bit character, literals `'a'`, `'\n'`. LLVM: `i8`. Needed for lexing
-- Type casting builtins — `int_to_str`, `str_to_int`, `char_to_int`, `int_to_char`, `float_to_int`, `int_to_float`
+### Phase 1 language extensions (all complete)
 
-**P1b: String/char operations**
-- `str_charAt(s, i) -> char` — index into string (bounds-checked)
-- `str_sub(s, start, len) -> string` — substring extraction
-- `str_from_char(c) -> string` — char to single-char string
-- `char_is_alpha(c) -> bool`, `char_is_digit(c) -> bool`, `char_is_whitespace(c) -> bool` — classification
+These features were added to the Rust compiler for self-hosting:
 
-**P1c: Dynamic arrays (Vec)**
-- `push(arr, val)` — append element, growing backing buffer
-- `pop(arr) -> T` — remove last element
-- Arrays must become resizable (realloc-based). Current arrays are fixed-size after creation
-
-**P1d: File I/O**
-- `file_read(path: string) -> string` — read entire file to string
-- `file_write(path: string, content: string) -> bool` — write string to file
-- `print_err(s: string)` — write to stderr
-
-**P1e: Process interaction**
-- `args() -> [string]` — command-line arguments
-- `exit(code: int)` — terminate with exit code
-
-**P1f: HashMap** (can be implemented in Yorum once the above exist, or as a builtin)
-- Needed for symbol tables, keyword lookup, type environments
-- Could be a hash table backed by arrays + hashing builtins, or a native builtin type
-
-### Phase 2: Self-hosting compiler in Yorum
-
-Write as a multi-file Yorum project (`yorum-in-yorum/`) with modules:
-- `lexer` — char-by-char tokenization using `str_charAt`, `char_is_*`
-- `token` — token types as enums
-- `parser` — recursive descent + Pratt parsing
-- `ast` — AST types as structs/enums
-- `typechecker` — two-pass type checking with scope stack
-- `ownership` — move checker
-- `codegen` — LLVM IR string emission via `str_concat`
-- `main` — CLI entry point using `args()`
-
-Bootstrap chain: Rust compiler compiles Yorum compiler → Yorum compiler compiles itself → compare output.
-
-### What already works (no changes needed)
-
-- Generics with monomorphization
-- Structs, enums, pattern matching
-- Closures with capture
-- Fixed-size arrays, for loops
-- Ownership/move checking
-- Traits with static dispatch
-- Multi-file compilation (`yorum build`)
-- Contracts (`requires`/`ensures`)
+- **P1a:** `char` type (i8), char literals (`'a'`, `'\n'`), type casting builtins (`int_to_str`, `str_to_int`, `char_to_int`, `int_to_char`, `float_to_int`, `int_to_float`)
+- **P1b:** String/char ops (`str_charAt`, `str_sub`, `str_from_char`, `char_is_alpha`, `char_is_digit`, `char_is_whitespace`)
+- **P1c:** Dynamic arrays with `push(arr, val)` and `pop(arr)` — realloc-based growth, `{ ptr, i64, i64 }` fat pointers
+- **P1d:** File I/O (`file_read`, `file_write`, `print_err`)
+- **P1e:** Process builtins (`args()`, `exit()`)
+- **P1f:** HashMap (`map_new`, `map_set`, `map_get`, `map_has`) — FNV-1a hash, linear probing
 
 ## Git Workflow
 

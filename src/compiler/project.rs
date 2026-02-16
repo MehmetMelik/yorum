@@ -219,18 +219,7 @@ fn rewrite_stmt_calls(stmt: &mut Stmt, name_map: &std::collections::HashMap<Stri
             rewrite_expr_calls(&mut s.value, name_map);
         }
         Stmt::If(s) => {
-            rewrite_expr_calls(&mut s.condition, name_map);
-            rewrite_block_calls(&mut s.then_block, name_map);
-            if let Some(else_branch) = &mut s.else_branch {
-                match else_branch.as_mut() {
-                    ElseBranch::ElseIf(elif) => {
-                        rewrite_stmt_calls(&mut Stmt::If(elif.clone()), name_map);
-                    }
-                    ElseBranch::Else(block) => {
-                        rewrite_block_calls(block, name_map);
-                    }
-                }
-            }
+            rewrite_if_stmt_calls(s, name_map);
         }
         Stmt::While(s) => {
             rewrite_expr_calls(&mut s.condition, name_map);
@@ -248,6 +237,21 @@ fn rewrite_stmt_calls(stmt: &mut Stmt, name_map: &std::collections::HashMap<Stri
         }
         Stmt::Expr(s) => {
             rewrite_expr_calls(&mut s.expr, name_map);
+        }
+    }
+}
+
+fn rewrite_if_stmt_calls(s: &mut IfStmt, name_map: &std::collections::HashMap<String, String>) {
+    rewrite_expr_calls(&mut s.condition, name_map);
+    rewrite_block_calls(&mut s.then_block, name_map);
+    if let Some(else_branch) = &mut s.else_branch {
+        match else_branch.as_mut() {
+            ElseBranch::ElseIf(elif) => {
+                rewrite_if_stmt_calls(elif, name_map);
+            }
+            ElseBranch::Else(block) => {
+                rewrite_block_calls(block, name_map);
+            }
         }
     }
 }

@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 cargo build                          # dev build
 cargo build --release                # release build
-cargo test                           # all tests (326: 46 unit + 280 integration)
+cargo test                           # all tests (336: 46 unit + 290 integration)
 cargo test compiler::lexer           # tests in one module
 cargo test test_fibonacci_compiles   # single test by name
 cargo test -- --nocapture            # see stdout from tests
@@ -267,7 +267,7 @@ Stabilization release — no new language features or builtins. Focus on robustn
 - **Dynamic versioning:** `src/main.rs` and `src/lsp/server.rs` use `env!("CARGO_PKG_VERSION")` instead of hardcoded strings
 - **ABI appendix:** `SPEC.md` Appendix A documents primitive layout, struct/enum/array representation, calling convention, name mangling, closure/concurrency/HashMap internals
 - **Effects clarification:** `SPEC.md` section 5.1 notes that `effects` is parsed but not enforced
-- **Test coverage:** 56 new integration tests (5 robustness, 15 parser errors, 7 module system, 7 control flow, 5 struct/trait, 17 example programs) — total 326 tests (46 unit + 280 integration)
+- **Test coverage:** 56 new integration tests (5 robustness, 15 parser errors, 7 module system, 7 control flow, 5 struct/trait, 17 example programs) — total 336 tests (46 unit + 290 integration)
 
 ## Git Workflow
 

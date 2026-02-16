@@ -87,6 +87,7 @@ pub struct Codegen {
     // State within a function
     current_fn_ret_ty: Option<String>,
     block_terminated: bool,
+    current_block: String,
 
     // Contract support
     current_fn_contracts: Vec<Contract>,
@@ -121,6 +122,7 @@ impl Codegen {
             array_elem_types: HashMap::new(),
             current_fn_ret_ty: None,
             block_terminated: false,
+            current_block: "entry".to_string(),
             current_fn_contracts: Vec::new(),
             current_fn_name: String::new(),
         }
@@ -876,6 +878,7 @@ impl Codegen {
 
         // __yorum_map_find_slot — find slot for key (used by set/get/has)
         // Returns index of matching slot or first empty slot.
+        // Continues probing past tombstones (flag==2) to maintain chain integrity.
         // %map = ptr to map struct, %key = ptr to C string
         // Also takes %cap = capacity for convenience.
         self.body.push_str(
@@ -893,7 +896,10 @@ impl Codegen {
              \x20 %fp = getelementptr i8, ptr %flags_p, i64 %idx\n\
              \x20 %flag = load i8, ptr %fp\n\
              \x20 %is_empty = icmp eq i8 %flag, 0\n\
-             \x20 br i1 %is_empty, label %done, label %check_key\n\
+             \x20 br i1 %is_empty, label %done, label %check_tombstone\n\
+             check_tombstone:\n\
+             \x20 %is_tomb = icmp eq i8 %flag, 2\n\
+             \x20 br i1 %is_tomb, label %advance, label %check_key\n\
              check_key:\n\
              \x20 %kp = getelementptr ptr, ptr %keys_p, i64 %idx\n\
              \x20 %k = load ptr, ptr %kp\n\
@@ -991,6 +997,7 @@ impl Codegen {
         );
 
         // map_set — insert or update key-value pair
+        // Accepts empty (flag==0) or tombstone (flag==2) slots for insertion.
         self.body.push_str(
             "define void @map_set(ptr %map, ptr %key, i64 %val) {\n\
              entry:\n\
@@ -1009,13 +1016,13 @@ impl Codegen {
              find:\n\
              \x20 %cap2 = load i64, ptr %cap_p\n\
              \x20 %slot = call i64 @__yorum_map_find_slot(ptr %map, ptr %key, i64 %cap2)\n\
-             \x20 ; check if slot is occupied (update) or empty (insert)\n\
+             \x20 ; check if slot is occupied (flag==1 → update) or empty/tombstone (insert)\n\
              \x20 %flags_pp = getelementptr i8, ptr %map, i64 16\n\
              \x20 %flags_p = load ptr, ptr %flags_pp\n\
              \x20 %fslot = getelementptr i8, ptr %flags_p, i64 %slot\n\
              \x20 %flag = load i8, ptr %fslot\n\
-             \x20 %is_new = icmp eq i8 %flag, 0\n\
-             \x20 br i1 %is_new, label %insert, label %update\n\
+             \x20 %is_occupied = icmp eq i8 %flag, 1\n\
+             \x20 br i1 %is_occupied, label %update, label %insert\n\
              insert:\n\
              \x20 ; copy key string\n\
              \x20 %klen = call i64 @strlen(ptr %key)\n\
@@ -1702,7 +1709,8 @@ impl Codegen {
              \x20 ret i64 %size\n\
              }\n\n",
         );
-        // map_remove — find and clear slot, decrement size
+        // map_remove — find and mark slot as tombstone (flag=2), decrement size
+        // Uses tombstone to preserve linear probing chains.
         self.body.push_str(
             "define i1 @map_remove(ptr %map, ptr %key) {\n\
              entry:\n\
@@ -1716,7 +1724,7 @@ impl Codegen {
              \x20 %found = icmp eq i8 %flag, 1\n\
              \x20 br i1 %found, label %remove, label %done\n\
              remove:\n\
-             \x20 store i8 0, ptr %fp\n\
+             \x20 store i8 2, ptr %fp\n\
              \x20 %sp = getelementptr i8, ptr %map, i64 32\n\
              \x20 %size = load i64, ptr %sp\n\
              \x20 %new_size = sub i64 %size, 1\n\
@@ -3376,6 +3384,54 @@ impl Codegen {
             }
 
             ExprKind::Binary(lhs, op, rhs) => {
+                // Short-circuit evaluation for `and` and `or`
+                if *op == BinOp::And {
+                    let l = self.emit_expr(lhs)?;
+                    let rhs_label = self.fresh_label("and_rhs");
+                    let merge_label = self.fresh_label("and_merge");
+                    let lhs_block = self.current_block_label();
+                    self.emit_line(&format!(
+                        "br i1 {}, label %{}, label %{}",
+                        l, rhs_label, merge_label
+                    ));
+                    self.emit_label(&rhs_label);
+                    self.block_terminated = false;
+                    let r = self.emit_expr(rhs)?;
+                    let rhs_block = self.current_block_label();
+                    self.emit_line(&format!("br label %{}", merge_label));
+                    self.emit_label(&merge_label);
+                    self.block_terminated = false;
+                    let result = self.fresh_temp();
+                    self.emit_line(&format!(
+                        "{} = phi i1 [ false, %{} ], [ {}, %{} ]",
+                        result, lhs_block, r, rhs_block
+                    ));
+                    return Ok(result);
+                }
+                if *op == BinOp::Or {
+                    let l = self.emit_expr(lhs)?;
+                    let rhs_label = self.fresh_label("or_rhs");
+                    let merge_label = self.fresh_label("or_merge");
+                    let lhs_block = self.current_block_label();
+                    self.emit_line(&format!(
+                        "br i1 {}, label %{}, label %{}",
+                        l, merge_label, rhs_label
+                    ));
+                    self.emit_label(&rhs_label);
+                    self.block_terminated = false;
+                    let r = self.emit_expr(rhs)?;
+                    let rhs_block = self.current_block_label();
+                    self.emit_line(&format!("br label %{}", merge_label));
+                    self.emit_label(&merge_label);
+                    self.block_terminated = false;
+                    let result = self.fresh_temp();
+                    self.emit_line(&format!(
+                        "{} = phi i1 [ true, %{} ], [ {}, %{} ]",
+                        result, lhs_block, r, rhs_block
+                    ));
+                    return Ok(result);
+                }
+
                 let l = self.emit_expr(lhs)?;
                 let r = self.emit_expr(rhs)?;
                 let tmp = self.fresh_temp();
@@ -3409,8 +3465,7 @@ impl Codegen {
                     (BinOp::LtEq, true) => format!("{} = fcmp ole double {}, {}", tmp, l, r),
                     (BinOp::GtEq, false) => format!("{} = icmp sge {} {}, {}", tmp, ity, l, r),
                     (BinOp::GtEq, true) => format!("{} = fcmp oge double {}, {}", tmp, l, r),
-                    (BinOp::And, _) => format!("{} = and i1 {}, {}", tmp, l, r),
-                    (BinOp::Or, _) => format!("{} = or i1 {}, {}", tmp, l, r),
+                    (BinOp::And, _) | (BinOp::Or, _) => unreachable!(),
                 };
                 self.emit_line(&instr);
                 Ok(tmp)
@@ -4307,13 +4362,29 @@ impl Codegen {
     fn emit_contract_string(&mut self, msg: &str) -> String {
         let id = self.contract_string_counter;
         self.contract_string_counter += 1;
-        let len = msg.len() + 1; // +1 for null terminator
+        let escaped = self.escape_llvm_string(msg);
+        // Count actual bytes after escaping: each \XX escape is 1 byte
+        let byte_len = self.count_escaped_bytes(&escaped) + 1; // +1 for null terminator
         let global_name = format!("@.str.contract.{}", id);
         self.globals.push_str(&format!(
             "{} = private unnamed_addr constant [{} x i8] c\"{}\\00\"\n",
-            global_name, len, msg
+            global_name, byte_len, escaped
         ));
         global_name
+    }
+
+    fn count_escaped_bytes(&self, escaped: &str) -> usize {
+        let mut count = 0;
+        let mut chars = escaped.chars();
+        while let Some(c) = chars.next() {
+            count += 1;
+            if c == '\\' {
+                // Skip the two hex digits of the escape sequence
+                chars.next();
+                chars.next();
+            }
+        }
+        count
     }
 
     fn emit_requires_checks(
@@ -4383,6 +4454,7 @@ impl Codegen {
                 "false".to_string()
             }),
             Literal::Char(c) => Ok((*c as u8).to_string()),
+            Literal::Unit => Ok("void".to_string()),
             Literal::String(s) => {
                 // Emit as a global constant
                 let id = self.string_counter;
@@ -4528,6 +4600,7 @@ impl Codegen {
         let saved_temp = self.temp_counter;
         let saved_label = self.label_counter;
         let saved_terminated = self.block_terminated;
+        let saved_block = std::mem::replace(&mut self.current_block, "entry".to_string());
         let saved_ret_ty = self.current_fn_ret_ty.take();
         let saved_vars = std::mem::take(&mut self.vars);
 
@@ -4601,6 +4674,7 @@ impl Codegen {
         self.temp_counter = saved_temp;
         self.label_counter = saved_label;
         self.block_terminated = saved_terminated;
+        self.current_block = saved_block;
         self.current_fn_ret_ty = saved_ret_ty;
         self.vars = saved_vars;
 
@@ -4642,7 +4716,7 @@ impl Codegen {
 
         // At spawn site: malloc env, fill captures
         let env_ptr = self.fresh_temp();
-        let env_size = env_field_types.len() * 8; // approximation
+        let env_size: usize = env_field_types.iter().map(|t| self.llvm_type_size(t)).sum();
         self.emit_line(&format!("{} = call ptr @malloc(i64 {})", env_ptr, env_size));
 
         for (i, (_cap_name, cap_slot)) in captures.iter().enumerate() {
@@ -4698,6 +4772,7 @@ impl Codegen {
         let saved_temp = self.temp_counter;
         let saved_label = self.label_counter;
         let saved_terminated = self.block_terminated;
+        let saved_block = std::mem::replace(&mut self.current_block, "entry".to_string());
         let saved_ret_ty = self.current_fn_ret_ty.take();
         let saved_vars = std::mem::take(&mut self.vars);
         let saved_contracts = std::mem::take(&mut self.current_fn_contracts);
@@ -4706,7 +4781,7 @@ impl Codegen {
         self.temp_counter = 0;
         self.label_counter = 0;
         self.block_terminated = false;
-        self.current_fn_ret_ty = Some("i64".to_string());
+        self.current_fn_ret_ty = Some("ptr".to_string());
         self.current_fn_contracts = Vec::new();
         self.current_fn_name = wrapper_fn_name.to_string();
 
@@ -4758,6 +4833,7 @@ impl Codegen {
         self.temp_counter = saved_temp;
         self.label_counter = saved_label;
         self.block_terminated = saved_terminated;
+        self.current_block = saved_block;
         self.current_fn_ret_ty = saved_ret_ty;
         self.vars = saved_vars;
         self.current_fn_contracts = saved_contracts;
@@ -5152,6 +5228,7 @@ impl Codegen {
             ExprKind::Literal(Literal::Bool(_)) => false,
             ExprKind::Literal(Literal::Char(_)) => false,
             ExprKind::Literal(Literal::String(_)) => false,
+            ExprKind::Literal(Literal::Unit) => false,
             ExprKind::Ident(name) => {
                 if let Some(slot) = self.lookup_var(name) {
                     slot.llvm_ty == "double"
@@ -5253,6 +5330,7 @@ impl Codegen {
             ExprKind::Literal(Literal::Bool(_)) => "i1".to_string(),
             ExprKind::Literal(Literal::Char(_)) => "i8".to_string(),
             ExprKind::Literal(Literal::String(_)) => "ptr".to_string(),
+            ExprKind::Literal(Literal::Unit) => "void".to_string(),
             ExprKind::Ident(name) => {
                 if let Some(slot) = self.lookup_var(name) {
                     // Array idents are returned as raw pointers by emit_expr (reference semantics)
@@ -5477,6 +5555,11 @@ impl Codegen {
         self.body.push_str(label);
         self.body.push_str(":\n");
         self.block_terminated = false;
+        self.current_block = label.to_string();
+    }
+
+    fn current_block_label(&self) -> String {
+        self.current_block.clone()
     }
 
     fn fresh_temp(&mut self) -> String {

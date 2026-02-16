@@ -111,6 +111,7 @@ impl LspServer {
                 text_document_sync: 1, // Full sync
                 hover_provider: Some(true),
                 definition_provider: Some(true),
+                position_encoding: Some("utf-32".to_string()),
             },
             server_info: ServerInfo {
                 name: "yorum-lsp".to_string(),
@@ -157,7 +158,7 @@ impl LspServer {
 
     fn handle_did_close(&mut self, msg: &JsonRpcMessage) {
         if let Some(params) = &msg.params {
-            if let Ok(p) = serde_json::from_value::<DidOpenTextDocumentParams>(params.clone()) {
+            if let Ok(p) = serde_json::from_value::<DidCloseTextDocumentParams>(params.clone()) {
                 self.documents.remove(&p.text_document.uri);
             }
         }

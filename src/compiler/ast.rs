@@ -359,6 +359,7 @@ pub enum Literal {
     Bool(bool),
     Char(char),
     String(String),
+    Unit,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

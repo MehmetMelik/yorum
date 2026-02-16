@@ -1,6 +1,6 @@
 # Yorum Language Specification
 
-**Version:** 0.5.0
+**Version:** 0.8.0
 
 ## 1. Overview
 
@@ -399,14 +399,25 @@ are modeled explicitly with enum types.
 - Every value has exactly one owner.
 - Assignment **moves** ownership for non-primitive types.
 - Using a moved value is a compile-time error.
-- Primitive types (`int`, `float`, `bool`) are implicitly copyable.
+- Copy types (`int`, `float`, `bool`, `char`, `string`, `unit`) are implicitly copyable — assigning or returning them does not move.
+- Named types (structs, enums), arrays, maps, tasks, and channels are move types.
 
-### 8.2 References
+### 8.2 Move Semantics (v0.8)
+- `let b: Foo = a;` moves `a` — subsequent use of `a` is a compile-time error.
+- `a = Foo { ... };` re-owns `a` — it can be used again after reassignment.
+- Function arguments are **not** moved: `foo(x)` does not consume `x`.
+- Field access (`a.x`), method calls (`a.method()`), and array indexing (`a[i]`) are reads, not moves.
+
+### 8.3 Branch and Loop Safety (v0.8)
+- **Conservative branch merging:** if a variable is moved in *any* branch of an `if`/`else` or `match`, it is considered moved after the control flow statement.
+- **Loop move safety:** moving an outer-scope non-copy variable inside a `while` or `for` loop is always an error, even if the loop body only executes once. Variables defined *within* the loop body are fresh each iteration and can be freely moved.
+
+### 8.4 References
 - `&T` creates an immutable borrow.
 - `&mut T` creates a mutable borrow.
 - A value cannot be moved while it is borrowed.
 
-### 8.3 Explicit Ownership
+### 8.5 Explicit Ownership
 The `own T` type annotation makes ownership transfer explicit in function
 signatures, improving readability for AI agents performing refactoring.
 
@@ -788,8 +799,12 @@ constrained by the binding context.
 - JSON-RPC 2.0 over stdin/stdout, no new dependencies
 - VS Code extension with syntax highlighting
 
-### v0.8
-- Formal verification of the ownership checker
+### v0.8 (Done)
+- Type-aware move tracking: copy vs. move distinction based on variable types
+- Use-after-move detection for struct, enum, array, map, task, and channel types
+- Conservative branch merging for if/else-if/else and match arms
+- Loop move safety: prevents moving outer-scope variables inside while/for loops
+- Task must-join errors now report real source spans
 
 ### v0.9
 - Networking (TCP/UDP sockets, HTTP client)

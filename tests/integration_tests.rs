@@ -2530,3 +2530,402 @@ fn test_check_diagnostics_with_type_errors_still_returns_symbols() {
     let sym = symbols.expect("should have symbol table even with errors");
     assert!(!sym.definitions.is_empty());
 }
+
+// ═══════════════════════════════════════════════════════════════
+//  Ownership checker tests (v0.8)
+// ═══════════════════════════════════════════════════════════════
+
+/// Helper: compile_to_ir should fail with a specific ownership error message
+fn expect_ownership_error(source: &str, expected_msg: &str) {
+    let result = yorum::compile_to_ir(source);
+    assert!(
+        result.is_err(),
+        "expected ownership error but compilation succeeded"
+    );
+    let err = result.unwrap_err();
+    assert!(
+        err.contains(expected_msg),
+        "expected error containing '{}', got: {}",
+        expected_msg,
+        err
+    );
+}
+
+// ── Move tracking ────────────────────────────────────────────
+
+#[test]
+fn test_use_after_move_struct() {
+    expect_ownership_error(
+        "struct Foo { x: int }\n\
+         fn f() -> int {\n\
+         \x20   let a: Foo = Foo { x: 1 };\n\
+         \x20   let b: Foo = a;\n\
+         \x20   return a.x;\n\
+         }\n",
+        "use of moved variable 'a'",
+    );
+}
+
+#[test]
+fn test_double_move() {
+    expect_ownership_error(
+        "struct Foo { x: int }\n\
+         fn f() -> int {\n\
+         \x20   let a: Foo = Foo { x: 1 };\n\
+         \x20   let b: Foo = a;\n\
+         \x20   let c: Foo = a;\n\
+         \x20   return 0;\n\
+         }\n",
+        "use of moved variable 'a'",
+    );
+}
+
+#[test]
+fn test_copy_types_freely_reusable() {
+    // int, float, bool, char, string are copy — reuse is fine
+    compile(
+        "fn f(x: int) -> int {\n\
+         \x20   let a: int = x;\n\
+         \x20   let b: int = x;\n\
+         \x20   return x;\n\
+         }\n",
+    );
+}
+
+#[test]
+fn test_string_is_copy() {
+    compile(
+        "fn f(s: string) -> string {\n\
+         \x20   let a: string = s;\n\
+         \x20   let b: string = s;\n\
+         \x20   return s;\n\
+         }\n",
+    );
+}
+
+#[test]
+fn test_reassign_after_move() {
+    compile(
+        "struct Foo { x: int }\n\
+         fn f() -> int {\n\
+         \x20   let mut a: Foo = Foo { x: 1 };\n\
+         \x20   let b: Foo = a;\n\
+         \x20   a = Foo { x: 2 };\n\
+         \x20   return a.x;\n\
+         }\n",
+    );
+}
+
+#[test]
+fn test_move_in_return() {
+    // Returning a moved variable should error
+    expect_ownership_error(
+        "struct Foo { x: int }\n\
+         fn f() -> Foo {\n\
+         \x20   let a: Foo = Foo { x: 1 };\n\
+         \x20   let b: Foo = a;\n\
+         \x20   return a;\n\
+         }\n",
+        "use of moved variable 'a'",
+    );
+}
+
+#[test]
+fn test_move_in_assign() {
+    // Assigning from a moved variable should error
+    expect_ownership_error(
+        "struct Foo { x: int }\n\
+         fn f() -> int {\n\
+         \x20   let a: Foo = Foo { x: 1 };\n\
+         \x20   let b: Foo = a;\n\
+         \x20   let mut c: Foo = Foo { x: 3 };\n\
+         \x20   c = a;\n\
+         \x20   return 0;\n\
+         }\n",
+        "use of moved variable 'a'",
+    );
+}
+
+// ── Branch merging ───────────────────────────────────────────
+
+#[test]
+fn test_move_in_both_if_branches() {
+    expect_ownership_error(
+        "struct Foo { x: int }\n\
+         fn f(cond: bool) -> int {\n\
+         \x20   let a: Foo = Foo { x: 1 };\n\
+         \x20   if cond {\n\
+         \x20       let b: Foo = a;\n\
+         \x20   } else {\n\
+         \x20       let c: Foo = a;\n\
+         \x20   }\n\
+         \x20   return a.x;\n\
+         }\n",
+        "use of moved variable 'a'",
+    );
+}
+
+#[test]
+fn test_move_in_one_branch_only() {
+    // Conservative: moved in one branch = moved after the if
+    expect_ownership_error(
+        "struct Foo { x: int }\n\
+         fn f(cond: bool) -> int {\n\
+         \x20   let a: Foo = Foo { x: 1 };\n\
+         \x20   if cond {\n\
+         \x20       let b: Foo = a;\n\
+         \x20   } else {\n\
+         \x20       let x: int = 0;\n\
+         \x20   }\n\
+         \x20   return a.x;\n\
+         }\n",
+        "use of moved variable 'a'",
+    );
+}
+
+#[test]
+fn test_no_move_in_either_branch() {
+    compile(
+        "struct Foo { x: int }\n\
+         fn f(cond: bool) -> int {\n\
+         \x20   let a: Foo = Foo { x: 1 };\n\
+         \x20   if cond {\n\
+         \x20       let x: int = 1;\n\
+         \x20   } else {\n\
+         \x20       let y: int = 2;\n\
+         \x20   }\n\
+         \x20   return a.x;\n\
+         }\n",
+    );
+}
+
+#[test]
+fn test_move_in_if_no_else() {
+    // Conservative: conditional move = moved
+    expect_ownership_error(
+        "struct Foo { x: int }\n\
+         fn f(cond: bool) -> int {\n\
+         \x20   let a: Foo = Foo { x: 1 };\n\
+         \x20   if cond {\n\
+         \x20       let b: Foo = a;\n\
+         \x20   }\n\
+         \x20   return a.x;\n\
+         }\n",
+        "use of moved variable 'a'",
+    );
+}
+
+#[test]
+fn test_match_arm_move_tracking() {
+    expect_ownership_error(
+        "struct Foo { x: int }\n\
+         enum Choice { A, B }\n\
+         fn f(c: Choice) -> int {\n\
+         \x20   let a: Foo = Foo { x: 1 };\n\
+         \x20   match c {\n\
+         \x20       A => { let b: Foo = a; }\n\
+         \x20       B => { let x: int = 0; }\n\
+         \x20   }\n\
+         \x20   return a.x;\n\
+         }\n",
+        "use of moved variable 'a'",
+    );
+}
+
+// ── Loop safety ──────────────────────────────────────────────
+
+#[test]
+fn test_move_outer_var_in_while_loop() {
+    expect_ownership_error(
+        "struct Foo { x: int }\n\
+         fn f() -> int {\n\
+         \x20   let a: Foo = Foo { x: 1 };\n\
+         \x20   let mut i: int = 0;\n\
+         \x20   while i < 3 {\n\
+         \x20       let b: Foo = a;\n\
+         \x20       i = i + 1;\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+        "cannot move 'a' inside a loop",
+    );
+}
+
+#[test]
+fn test_move_outer_var_in_for_loop() {
+    expect_ownership_error(
+        "struct Foo { x: int }\n\
+         fn f() -> int {\n\
+         \x20   let a: Foo = Foo { x: 1 };\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   for x in arr {\n\
+         \x20       let b: Foo = a;\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+        "cannot move 'a' inside a loop",
+    );
+}
+
+#[test]
+fn test_move_loop_local_var_ok() {
+    // Variables defined inside the loop body are fresh each iteration
+    compile(
+        "struct Foo { x: int }\n\
+         fn f() -> int {\n\
+         \x20   let mut i: int = 0;\n\
+         \x20   while i < 3 {\n\
+         \x20       let a: Foo = Foo { x: i };\n\
+         \x20       let b: Foo = a;\n\
+         \x20       i = i + 1;\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+}
+
+#[test]
+fn test_copy_type_in_loop_ok() {
+    // Copy types are fine to use repeatedly in loops
+    compile(
+        "fn f() -> int {\n\
+         \x20   let x: int = 42;\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   let mut i: int = 0;\n\
+         \x20   while i < 3 {\n\
+         \x20       sum = sum + x;\n\
+         \x20       i = i + 1;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+}
+
+// ── Non-moving contexts ──────────────────────────────────────
+
+#[test]
+fn test_method_calls_dont_move() {
+    compile(
+        "struct Point { x: int, y: int }\n\
+         impl Point {\n\
+         \x20   fn get_x(self: &Point) -> int { return self.x; }\n\
+         \x20   fn get_y(self: &Point) -> int { return self.y; }\n\
+         }\n\
+         fn main() -> int {\n\
+         \x20   let p: Point = Point { x: 3, y: 4 };\n\
+         \x20   let a: int = p.get_x();\n\
+         \x20   let b: int = p.get_y();\n\
+         \x20   return a + b;\n\
+         }\n",
+    );
+}
+
+#[test]
+fn test_field_access_doesnt_move() {
+    compile(
+        "struct Point { x: int, y: int }\n\
+         fn main() -> int {\n\
+         \x20   let p: Point = Point { x: 3, y: 4 };\n\
+         \x20   let a: int = p.x;\n\
+         \x20   let b: int = p.y;\n\
+         \x20   return a + b;\n\
+         }\n",
+    );
+}
+
+#[test]
+fn test_array_indexing_doesnt_move() {
+    compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [10, 20, 30];\n\
+         \x20   let a: int = arr[0];\n\
+         \x20   let b: int = arr[1];\n\
+         \x20   let c: int = arr[2];\n\
+         \x20   return a + b + c;\n\
+         }\n",
+    );
+}
+
+#[test]
+fn test_function_args_dont_move() {
+    compile(
+        "struct Foo { x: int }\n\
+         fn use_foo(f: Foo) -> int { return f.x; }\n\
+         fn main() -> int {\n\
+         \x20   let a: Foo = Foo { x: 42 };\n\
+         \x20   let b: int = use_foo(a);\n\
+         \x20   return a.x;\n\
+         }\n",
+    );
+}
+
+#[test]
+fn test_enum_use_after_move() {
+    expect_ownership_error(
+        "enum Option { Some(int), None }\n\
+         fn f() -> int {\n\
+         \x20   let a: Option = Some(42);\n\
+         \x20   let b: Option = a;\n\
+         \x20   let c: Option = a;\n\
+         \x20   return 0;\n\
+         }\n",
+        "use of moved variable 'a'",
+    );
+}
+
+#[test]
+fn test_closure_doesnt_move_outer() {
+    compile(
+        "fn main() -> int {\n\
+         \x20   let x: int = 42;\n\
+         \x20   let f: fn(int) -> int = |y: int| -> int { return y + x; };\n\
+         \x20   return f(0) + x;\n\
+         }\n",
+    );
+}
+
+#[test]
+fn test_spawn_doesnt_move_outer() {
+    compile(
+        "fn main() -> int {\n\
+         \x20   let x: int = 10;\n\
+         \x20   let t: Task<int> = spawn { return x; };\n\
+         \x20   let r: int = t.join();\n\
+         \x20   return r + x;\n\
+         }\n",
+    );
+}
+
+#[test]
+fn test_task_must_join_with_span() {
+    // Task must-join error should have a real span, not synthetic 0:0
+    let result = yorum::compile_to_ir(
+        "fn main() -> int {\n\
+         \x20   let t: Task<int> = spawn { return 42; };\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(err.contains("must be joined"));
+    // The span should not be 0:0 (synthetic)
+    assert!(
+        !err.contains("0:0"),
+        "task error should have real span, not synthetic 0:0"
+    );
+}
+
+#[test]
+fn test_multiple_moves_different_vars() {
+    // Moving different variables is fine
+    compile(
+        "struct Foo { x: int }\n\
+         fn f() -> int {\n\
+         \x20   let a: Foo = Foo { x: 1 };\n\
+         \x20   let b: Foo = Foo { x: 2 };\n\
+         \x20   let c: Foo = a;\n\
+         \x20   let d: Foo = b;\n\
+         \x20   return c.x + d.x;\n\
+         }\n",
+    );
+}

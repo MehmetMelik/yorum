@@ -19,7 +19,7 @@ fn main() {
         "lsp" => cmd_lsp(),
         "help" | "--help" | "-h" => print_usage(),
         "version" | "--version" | "-v" => {
-            println!("yorum 0.7.0");
+            println!("yorum 0.8.0");
         }
         other => {
             // If it ends with .yrm, treat it as an implicit compile

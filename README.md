@@ -276,6 +276,52 @@ Built-in string functions: `str_len`, `str_concat`, `str_eq`, `str_charAt`,
 `char_is_digit`, `char_is_whitespace`. Type casting: `char_to_int`,
 `int_to_char`, `int_to_str`, `str_to_int`, `int_to_float`, `float_to_int`.
 
+### Standard Library (v0.6)
+
+**Math:** `abs_int`, `abs_float`, `min_int`, `max_int`, `min_float`, `max_float`,
+`sqrt`, `pow`, `sin`, `cos`, `tan`, `floor`, `ceil`, `round`, `log`, `log10`, `exp`
+— all pure, backed by LLVM intrinsics and libm.
+
+```
+let x: float = sqrt(16.0);          // 4.0
+let y: float = pow(2.0, 10.0);      // 1024.0
+let a: int = abs_int(-5);           // 5
+let m: int = min_int(3, 7);         // 3
+```
+
+**String utilities:** `str_contains`, `str_index_of`, `str_starts_with`,
+`str_ends_with`, `str_trim`, `str_replace`, `str_split`, `str_to_upper`,
+`str_to_lower`, `str_repeat`.
+
+```
+let parts: [string] = str_split("a,b,c", ",");  // ["a", "b", "c"]
+let upper: string = str_to_upper("hello");       // "HELLO"
+let found: bool = str_contains("hello", "ell");  // true
+let idx: int = str_index_of("hello", "ll");      // 2
+```
+
+**Collection operations:** `slice`, `concat_arrays`, `reverse`, `contains_int`,
+`contains_str`, `sort_int`, `sort_str`, `map_keys`, `map_values`, `map_size`,
+`map_remove`.
+
+```
+let arr: [int] = [3, 1, 2];
+let sorted: [int] = sort_int(arr);               // [1, 2, 3]
+let rev: [int] = reverse(arr);                    // [2, 1, 3]
+let sub: [int] = slice(arr, 0, 2);               // [3, 1]
+let found: bool = contains_int(arr, 2);           // true
+```
+
+**Enhanced I/O:** `file_exists`, `file_append`, `read_line`, `print_flush`,
+`env_get`, `time_ms`.
+
+```
+print_flush("Enter name: ");
+let name: string = read_line();
+let home: string = env_get("HOME");
+let t: int = time_ms();
+```
+
 ### File I/O and Process
 
 ```
@@ -294,6 +340,8 @@ let m: Map = map_new();
 map_set(m, "key", 42);
 let v: int = map_get(m, "key");   // 42
 let ok: bool = map_has(m, "key"); // true
+let n: int = map_size(m);         // 1
+let keys: [string] = map_keys(m); // ["key"]
 ```
 
 Maps use `string` keys and `int` values. Backed by a hash table with FNV-1a
@@ -613,9 +661,10 @@ cargo test test_fibonacci     # single test by name
 | **v0.3** | Arrays, string operations, `for` loops, nested pattern matching | Done |
 | **v0.4** | Structured concurrency, runtime contract verification, multi-file compilation | Done |
 | **v0.5** | Self-hosting compiler, char type, dynamic arrays, file I/O, HashMap | Done |
-| **v0.6** | Standard library (io, collections, math, networking) | |
+| **v0.6** | Standard library builtins: math, string utilities, collections, enhanced I/O | Done |
 | **v0.7** | LSP server for editor integration | |
 | **v0.8** | Formal verification of the ownership checker | |
+| **v0.9** | Networking (TCP/UDP sockets, HTTP client) | |
 | **v1.0** | Stable language specification and ABI | |
 
 ## License

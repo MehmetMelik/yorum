@@ -231,6 +231,183 @@ impl TypeChecker {
             "map_has".to_string(),
             builtin(vec![Type::Map, Type::Str], Type::Bool, true),
         );
+        // Math builtins
+        self.functions.insert(
+            "abs_int".to_string(),
+            builtin(vec![Type::Int], Type::Int, true),
+        );
+        self.functions.insert(
+            "abs_float".to_string(),
+            builtin(vec![Type::Float], Type::Float, true),
+        );
+        self.functions.insert(
+            "min_int".to_string(),
+            builtin(vec![Type::Int, Type::Int], Type::Int, true),
+        );
+        self.functions.insert(
+            "max_int".to_string(),
+            builtin(vec![Type::Int, Type::Int], Type::Int, true),
+        );
+        self.functions.insert(
+            "min_float".to_string(),
+            builtin(vec![Type::Float, Type::Float], Type::Float, true),
+        );
+        self.functions.insert(
+            "max_float".to_string(),
+            builtin(vec![Type::Float, Type::Float], Type::Float, true),
+        );
+        self.functions.insert(
+            "sqrt".to_string(),
+            builtin(vec![Type::Float], Type::Float, true),
+        );
+        self.functions.insert(
+            "pow".to_string(),
+            builtin(vec![Type::Float, Type::Float], Type::Float, true),
+        );
+        self.functions.insert(
+            "sin".to_string(),
+            builtin(vec![Type::Float], Type::Float, true),
+        );
+        self.functions.insert(
+            "cos".to_string(),
+            builtin(vec![Type::Float], Type::Float, true),
+        );
+        self.functions.insert(
+            "tan".to_string(),
+            builtin(vec![Type::Float], Type::Float, true),
+        );
+        self.functions.insert(
+            "floor".to_string(),
+            builtin(vec![Type::Float], Type::Float, true),
+        );
+        self.functions.insert(
+            "ceil".to_string(),
+            builtin(vec![Type::Float], Type::Float, true),
+        );
+        self.functions.insert(
+            "round".to_string(),
+            builtin(vec![Type::Float], Type::Float, true),
+        );
+        self.functions.insert(
+            "log".to_string(),
+            builtin(vec![Type::Float], Type::Float, true),
+        );
+        self.functions.insert(
+            "log10".to_string(),
+            builtin(vec![Type::Float], Type::Float, true),
+        );
+        self.functions.insert(
+            "exp".to_string(),
+            builtin(vec![Type::Float], Type::Float, true),
+        );
+        // String utility builtins
+        self.functions.insert(
+            "str_contains".to_string(),
+            builtin(vec![Type::Str, Type::Str], Type::Bool, true),
+        );
+        self.functions.insert(
+            "str_index_of".to_string(),
+            builtin(vec![Type::Str, Type::Str], Type::Int, true),
+        );
+        self.functions.insert(
+            "str_starts_with".to_string(),
+            builtin(vec![Type::Str, Type::Str], Type::Bool, true),
+        );
+        self.functions.insert(
+            "str_ends_with".to_string(),
+            builtin(vec![Type::Str, Type::Str], Type::Bool, true),
+        );
+        self.functions.insert(
+            "str_trim".to_string(),
+            builtin(vec![Type::Str], Type::Str, false),
+        );
+        self.functions.insert(
+            "str_replace".to_string(),
+            builtin(vec![Type::Str, Type::Str, Type::Str], Type::Str, false),
+        );
+        self.functions.insert(
+            "str_to_upper".to_string(),
+            builtin(vec![Type::Str], Type::Str, false),
+        );
+        self.functions.insert(
+            "str_to_lower".to_string(),
+            builtin(vec![Type::Str], Type::Str, false),
+        );
+        self.functions.insert(
+            "str_repeat".to_string(),
+            builtin(vec![Type::Str, Type::Int], Type::Str, false),
+        );
+        // Collection utility builtins (type-specific)
+        self.functions.insert(
+            "contains_int".to_string(),
+            builtin(
+                vec![Type::Array(Box::new(Type::Int)), Type::Int],
+                Type::Bool,
+                true,
+            ),
+        );
+        self.functions.insert(
+            "contains_str".to_string(),
+            builtin(
+                vec![Type::Array(Box::new(Type::Str)), Type::Str],
+                Type::Bool,
+                true,
+            ),
+        );
+        self.functions.insert(
+            "sort_int".to_string(),
+            builtin(
+                vec![Type::Array(Box::new(Type::Int))],
+                Type::Array(Box::new(Type::Int)),
+                false,
+            ),
+        );
+        self.functions.insert(
+            "sort_str".to_string(),
+            builtin(
+                vec![Type::Array(Box::new(Type::Str))],
+                Type::Array(Box::new(Type::Str)),
+                false,
+            ),
+        );
+        // Map utility builtins
+        self.functions.insert(
+            "map_size".to_string(),
+            builtin(vec![Type::Map], Type::Int, true),
+        );
+        self.functions.insert(
+            "map_remove".to_string(),
+            builtin(vec![Type::Map, Type::Str], Type::Bool, false),
+        );
+        self.functions.insert(
+            "map_keys".to_string(),
+            builtin(vec![Type::Map], Type::Array(Box::new(Type::Str)), false),
+        );
+        self.functions.insert(
+            "map_values".to_string(),
+            builtin(vec![Type::Map], Type::Array(Box::new(Type::Int)), false),
+        );
+        // Enhanced I/O builtins
+        self.functions.insert(
+            "file_exists".to_string(),
+            builtin(vec![Type::Str], Type::Bool, false),
+        );
+        self.functions.insert(
+            "file_append".to_string(),
+            builtin(vec![Type::Str, Type::Str], Type::Bool, false),
+        );
+        self.functions
+            .insert("read_line".to_string(), builtin(vec![], Type::Str, false));
+        self.functions.insert(
+            "print_flush".to_string(),
+            builtin(vec![Type::Str], Type::Unit, false),
+        );
+        self.functions.insert(
+            "env_get".to_string(),
+            builtin(vec![Type::Str], Type::Str, false),
+        );
+        self.functions
+            .insert("time_ms".to_string(), builtin(vec![], Type::Int, false));
     }
 
     /// Type-check an entire program. Returns Ok(()) or collected errors.
@@ -858,6 +1035,41 @@ impl TypeChecker {
                         return None;
                     }
 
+                    // Built-in str_split() — returns [string]
+                    if name == "str_split" {
+                        if args.len() != 2 {
+                            self.errors.push(TypeError {
+                                message: format!(
+                                    "'str_split' expects 2 arguments, found {}",
+                                    args.len()
+                                ),
+                                span: expr.span,
+                            });
+                            return None;
+                        }
+                        if self.current_fn_is_pure {
+                            self.errors.push(TypeError {
+                                message: "pure function cannot call impure function 'str_split'"
+                                    .to_string(),
+                                span: expr.span,
+                            });
+                        }
+                        for arg in args {
+                            if let Some(ty) = self.infer_expr(arg) {
+                                if ty != Type::Str {
+                                    self.errors.push(TypeError {
+                                        message: format!(
+                                            "str_split: expected string argument, found '{}'",
+                                            ty
+                                        ),
+                                        span: arg.span,
+                                    });
+                                }
+                            }
+                        }
+                        return Some(Type::Array(Box::new(Type::Str)));
+                    }
+
                     // Built-in args() — returns command-line arguments
                     if name == "args" {
                         if !args.is_empty() {
@@ -943,6 +1155,146 @@ impl TypeChecker {
                                 self.errors.push(TypeError {
                                     message: format!(
                                         "pop: argument must be an array, found '{}'",
+                                        arr_ty
+                                    ),
+                                    span: args[0].span,
+                                });
+                            }
+                        }
+                        return None;
+                    }
+
+                    // Built-in slice(arr, start, end) — returns [T]
+                    if name == "slice" {
+                        if args.len() != 3 {
+                            self.errors.push(TypeError {
+                                message: format!(
+                                    "'slice' expects 3 arguments, found {}",
+                                    args.len()
+                                ),
+                                span: expr.span,
+                            });
+                            return None;
+                        }
+                        if self.current_fn_is_pure {
+                            self.errors.push(TypeError {
+                                message: "pure function cannot call impure function 'slice'"
+                                    .to_string(),
+                                span: expr.span,
+                            });
+                        }
+                        if let Some(arr_ty) = self.infer_expr(&args[0]) {
+                            if let Type::Array(inner) = &arr_ty {
+                                for arg in &args[1..] {
+                                    if let Some(t) = self.infer_expr(arg) {
+                                        if t != Type::Int {
+                                            self.errors.push(TypeError {
+                                                message: format!(
+                                                    "slice: index must be int, found '{}'",
+                                                    t
+                                                ),
+                                                span: arg.span,
+                                            });
+                                        }
+                                    }
+                                }
+                                return Some(Type::Array(inner.clone()));
+                            } else {
+                                self.errors.push(TypeError {
+                                    message: format!(
+                                        "slice: first argument must be an array, found '{}'",
+                                        arr_ty
+                                    ),
+                                    span: args[0].span,
+                                });
+                            }
+                        }
+                        return None;
+                    }
+
+                    // Built-in concat_arrays(a, b) — returns [T]
+                    if name == "concat_arrays" {
+                        if args.len() != 2 {
+                            self.errors.push(TypeError {
+                                message: format!(
+                                    "'concat_arrays' expects 2 arguments, found {}",
+                                    args.len()
+                                ),
+                                span: expr.span,
+                            });
+                            return None;
+                        }
+                        if self.current_fn_is_pure {
+                            self.errors.push(TypeError {
+                                message:
+                                    "pure function cannot call impure function 'concat_arrays'"
+                                        .to_string(),
+                                span: expr.span,
+                            });
+                        }
+                        if let Some(a_ty) = self.infer_expr(&args[0]) {
+                            if let Type::Array(inner_a) = &a_ty {
+                                if let Some(b_ty) = self.infer_expr(&args[1]) {
+                                    if let Type::Array(inner_b) = &b_ty {
+                                        if *inner_a != *inner_b {
+                                            self.errors.push(TypeError {
+                                                message: format!(
+                                                    "concat_arrays: array types must match, found '[{}]' and '[{}]'",
+                                                    inner_a, inner_b
+                                                ),
+                                                span: expr.span,
+                                            });
+                                        }
+                                    } else {
+                                        self.errors.push(TypeError {
+                                            message: format!(
+                                                "concat_arrays: second argument must be an array, found '{}'",
+                                                b_ty
+                                            ),
+                                            span: args[1].span,
+                                        });
+                                    }
+                                }
+                                return Some(Type::Array(inner_a.clone()));
+                            } else {
+                                self.errors.push(TypeError {
+                                    message: format!(
+                                        "concat_arrays: first argument must be an array, found '{}'",
+                                        a_ty
+                                    ),
+                                    span: args[0].span,
+                                });
+                            }
+                        }
+                        return None;
+                    }
+
+                    // Built-in reverse(arr) — returns [T]
+                    if name == "reverse" {
+                        if args.len() != 1 {
+                            self.errors.push(TypeError {
+                                message: format!(
+                                    "'reverse' expects 1 argument, found {}",
+                                    args.len()
+                                ),
+                                span: expr.span,
+                            });
+                            return None;
+                        }
+                        if self.current_fn_is_pure {
+                            self.errors.push(TypeError {
+                                message: "pure function cannot call impure function 'reverse'"
+                                    .to_string(),
+                                span: expr.span,
+                            });
+                        }
+                        if let Some(arr_ty) = self.infer_expr(&args[0]) {
+                            if let Type::Array(inner) = &arr_ty {
+                                return Some(Type::Array(inner.clone()));
+                            } else {
+                                self.errors.push(TypeError {
+                                    message: format!(
+                                        "reverse: argument must be an array, found '{}'",
                                         arr_ty
                                     ),
                                     span: args[0].span,

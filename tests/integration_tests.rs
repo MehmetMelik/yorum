@@ -1769,3 +1769,601 @@ fn test_map_ir_contains_helpers() {
     assert!(ir.contains("define i64 @map_get"));
     assert!(ir.contains("define i1 @map_has"));
 }
+
+// ═══════════════════════════════════════════════════════════════
+//  v0.6 Standard Library — Math builtins
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn test_math_abs_int() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let x: int = abs_int(-5);\n\
+         \x20 print_int(x);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call i64 @abs_int"));
+}
+
+#[test]
+fn test_math_abs_float() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let x: float = abs_float(-3.14);\n\
+         \x20 print_float(x);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call double @abs_float"));
+}
+
+#[test]
+fn test_math_min_max_int() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let a: int = min_int(3, 7);\n\
+         \x20 let b: int = max_int(3, 7);\n\
+         \x20 print_int(a);\n\
+         \x20 print_int(b);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call i64 @min_int"));
+    assert!(ir.contains("call i64 @max_int"));
+}
+
+#[test]
+fn test_math_min_max_float() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let a: float = min_float(1.5, 2.5);\n\
+         \x20 let b: float = max_float(1.5, 2.5);\n\
+         \x20 print_float(a);\n\
+         \x20 print_float(b);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call double @min_float"));
+    assert!(ir.contains("call double @max_float"));
+}
+
+#[test]
+fn test_math_sqrt_pow() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let s: float = sqrt(16.0);\n\
+         \x20 let p: float = pow(2.0, 10.0);\n\
+         \x20 print_float(s);\n\
+         \x20 print_float(p);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call double @sqrt"));
+    assert!(ir.contains("call double @pow"));
+}
+
+#[test]
+fn test_math_trig() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let a: float = sin(0.0);\n\
+         \x20 let b: float = cos(0.0);\n\
+         \x20 let c: float = tan(0.0);\n\
+         \x20 print_float(a);\n\
+         \x20 print_float(b);\n\
+         \x20 print_float(c);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call double @sin"));
+    assert!(ir.contains("call double @cos"));
+    assert!(ir.contains("call double @tan"));
+}
+
+#[test]
+fn test_math_floor_ceil_round() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let a: float = floor(3.7);\n\
+         \x20 let b: float = ceil(3.2);\n\
+         \x20 let c: float = round(3.5);\n\
+         \x20 print_float(a);\n\
+         \x20 print_float(b);\n\
+         \x20 print_float(c);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call double @floor"));
+    assert!(ir.contains("call double @ceil"));
+    assert!(ir.contains("call double @round"));
+}
+
+#[test]
+fn test_math_log_exp() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let a: float = log(2.718);\n\
+         \x20 let b: float = log10(100.0);\n\
+         \x20 let c: float = exp(1.0);\n\
+         \x20 print_float(a);\n\
+         \x20 print_float(b);\n\
+         \x20 print_float(c);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call double @log"));
+    assert!(ir.contains("call double @log10"));
+    assert!(ir.contains("call double @exp"));
+}
+
+#[test]
+fn test_math_pure_in_pure_fn() {
+    // Math builtins are pure, so they should work in pure functions
+    parse_and_check(
+        "pure fn f(x: int) -> int { return abs_int(x); }\n\
+         pure fn g(x: float) -> float { return sqrt(x); }\n\
+         pure fn h(a: int, b: int) -> int { return min_int(a, b); }\n",
+    );
+}
+
+#[test]
+fn test_math_ir_definitions() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let x: int = abs_int(1);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("define i64 @abs_int"));
+    assert!(ir.contains("define double @abs_float"));
+    assert!(ir.contains("define i64 @min_int"));
+    assert!(ir.contains("define i64 @max_int"));
+    assert!(ir.contains("define double @min_float"));
+    assert!(ir.contains("define double @max_float"));
+    assert!(ir.contains("define double @sqrt"));
+    assert!(ir.contains("define double @pow"));
+    assert!(ir.contains("define double @floor"));
+    assert!(ir.contains("define double @ceil"));
+    assert!(ir.contains("define double @round"));
+    // sin, cos, tan, log, log10, exp are external declarations, not definitions
+    assert!(ir.contains("declare double @sin"));
+    assert!(ir.contains("declare double @cos"));
+    assert!(ir.contains("declare double @tan"));
+    assert!(ir.contains("declare double @log(double)"));
+    assert!(ir.contains("declare double @log10"));
+    assert!(ir.contains("declare double @exp"));
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  v0.6 Standard Library — String utility builtins
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn test_str_contains_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let b: bool = str_contains(\"hello world\", \"world\");\n\
+         \x20 print_bool(b);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call i1 @str_contains"));
+}
+
+#[test]
+fn test_str_index_of_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let i: int = str_index_of(\"hello\", \"ll\");\n\
+         \x20 print_int(i);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call i64 @str_index_of"));
+}
+
+#[test]
+fn test_str_starts_ends_with() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let a: bool = str_starts_with(\"hello\", \"hel\");\n\
+         \x20 let b: bool = str_ends_with(\"hello\", \"llo\");\n\
+         \x20 print_bool(a);\n\
+         \x20 print_bool(b);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call i1 @str_starts_with"));
+    assert!(ir.contains("call i1 @str_ends_with"));
+}
+
+#[test]
+fn test_str_trim_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let s: string = str_trim(\"  hello  \");\n\
+         \x20 print_str(s);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call ptr @str_trim"));
+}
+
+#[test]
+fn test_str_replace_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let s: string = str_replace(\"hello world\", \"world\", \"yorum\");\n\
+         \x20 print_str(s);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call ptr @str_replace"));
+}
+
+#[test]
+fn test_str_split_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let parts: [string] = str_split(\"a,b,c\", \",\");\n\
+         \x20 print_int(len(parts));\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call ptr @str_split"));
+}
+
+#[test]
+fn test_str_to_upper_lower() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let a: string = str_to_upper(\"hello\");\n\
+         \x20 let b: string = str_to_lower(\"HELLO\");\n\
+         \x20 print_str(a);\n\
+         \x20 print_str(b);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call ptr @str_to_upper"));
+    assert!(ir.contains("call ptr @str_to_lower"));
+}
+
+#[test]
+fn test_str_repeat_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let s: string = str_repeat(\"ab\", 3);\n\
+         \x20 print_str(s);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call ptr @str_repeat"));
+}
+
+#[test]
+fn test_str_contains_pure() {
+    // str_contains is pure
+    parse_and_check("pure fn f(s: string) -> bool { return str_contains(s, \"x\"); }\n");
+}
+
+#[test]
+fn test_str_split_impure() {
+    // str_split is impure (allocates array)
+    let result =
+        yorum::typecheck("pure fn f(s: string) -> [string] { return str_split(s, \",\"); }");
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_str_utility_ir_definitions() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let b: bool = str_contains(\"a\", \"b\");\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("define i1 @str_contains"));
+    assert!(ir.contains("define i64 @str_index_of"));
+    assert!(ir.contains("define i1 @str_starts_with"));
+    assert!(ir.contains("define i1 @str_ends_with"));
+    assert!(ir.contains("define ptr @str_trim"));
+    assert!(ir.contains("define ptr @str_replace"));
+    assert!(ir.contains("define ptr @str_split"));
+    assert!(ir.contains("define ptr @str_to_upper"));
+    assert!(ir.contains("define ptr @str_to_lower"));
+    assert!(ir.contains("define ptr @str_repeat"));
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  v0.6 Standard Library — Collection utility builtins
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn test_slice_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let arr: [int] = [1, 2, 3, 4, 5];\n\
+         \x20 let s: [int] = slice(arr, 1, 4);\n\
+         \x20 print_int(len(s));\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    // slice is inlined, check for its characteristic pattern
+    assert!(ir.contains("@malloc"));
+    assert!(ir.contains("@memcpy"));
+}
+
+#[test]
+fn test_concat_arrays_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let a: [int] = [1, 2];\n\
+         \x20 let b: [int] = [3, 4];\n\
+         \x20 let c: [int] = concat_arrays(a, b);\n\
+         \x20 print_int(len(c));\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("@malloc"));
+}
+
+#[test]
+fn test_reverse_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let arr: [int] = [1, 2, 3];\n\
+         \x20 let rev: [int] = reverse(arr);\n\
+         \x20 print_int(len(rev));\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("rev.loop"));
+}
+
+#[test]
+fn test_contains_int_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let arr: [int] = [1, 2, 3];\n\
+         \x20 let b: bool = contains_int(arr, 2);\n\
+         \x20 print_bool(b);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call i1 @contains_int"));
+}
+
+#[test]
+fn test_contains_str_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let arr: [string] = [\"hello\", \"world\"];\n\
+         \x20 let b: bool = contains_str(arr, \"world\");\n\
+         \x20 print_bool(b);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call i1 @contains_str"));
+}
+
+#[test]
+fn test_sort_int_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let arr: [int] = [3, 1, 2];\n\
+         \x20 let sorted: [int] = sort_int(arr);\n\
+         \x20 print_int(len(sorted));\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call ptr @sort_int"));
+}
+
+#[test]
+fn test_sort_str_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let arr: [string] = [\"c\", \"a\", \"b\"];\n\
+         \x20 let sorted: [string] = sort_str(arr);\n\
+         \x20 print_int(len(sorted));\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call ptr @sort_str"));
+}
+
+#[test]
+fn test_map_size_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let m: Map = map_new();\n\
+         \x20 map_set(m, \"a\", 1);\n\
+         \x20 let s: int = map_size(m);\n\
+         \x20 print_int(s);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call i64 @map_size"));
+}
+
+#[test]
+fn test_map_remove_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let m: Map = map_new();\n\
+         \x20 map_set(m, \"a\", 1);\n\
+         \x20 let removed: bool = map_remove(m, \"a\");\n\
+         \x20 print_bool(removed);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call i1 @map_remove"));
+}
+
+#[test]
+fn test_map_keys_values_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let m: Map = map_new();\n\
+         \x20 map_set(m, \"a\", 1);\n\
+         \x20 let keys: [string] = map_keys(m);\n\
+         \x20 let vals: [int] = map_values(m);\n\
+         \x20 print_int(len(keys));\n\
+         \x20 print_int(len(vals));\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call ptr @map_keys"));
+    assert!(ir.contains("call ptr @map_values"));
+}
+
+#[test]
+fn test_contains_int_pure() {
+    // contains_int is pure
+    parse_and_check(
+        "fn main() -> int {\n\
+         \x20 let arr: [int] = [1, 2, 3];\n\
+         \x20 let b: bool = contains_int(arr, 2);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+}
+
+#[test]
+fn test_slice_type_error() {
+    // slice requires array argument
+    let result = yorum::typecheck("fn f(x: int) { let y: int = slice(x, 0, 1); }");
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_concat_arrays_type_mismatch() {
+    let result = yorum::typecheck(
+        "fn f() {\n\
+         \x20 let a: [int] = [1];\n\
+         \x20 let b: [string] = [\"x\"];\n\
+         \x20 let c: [int] = concat_arrays(a, b);\n\
+         }",
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_collection_ir_definitions() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let m: Map = map_new();\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("define i1 @contains_int"));
+    assert!(ir.contains("define i1 @contains_str"));
+    assert!(ir.contains("define ptr @sort_int"));
+    assert!(ir.contains("define ptr @sort_str"));
+    assert!(ir.contains("define i64 @map_size"));
+    assert!(ir.contains("define i1 @map_remove"));
+    assert!(ir.contains("define ptr @map_keys"));
+    assert!(ir.contains("define ptr @map_values"));
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  v0.6 Standard Library — Enhanced I/O builtins
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn test_file_exists_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let b: bool = file_exists(\"test.txt\");\n\
+         \x20 print_bool(b);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call i1 @file_exists"));
+}
+
+#[test]
+fn test_file_append_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let ok: bool = file_append(\"log.txt\", \"hello\\n\");\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call i1 @file_append"));
+}
+
+#[test]
+fn test_read_line_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let s: string = read_line();\n\
+         \x20 print_str(s);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call ptr @read_line"));
+}
+
+#[test]
+fn test_print_flush_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 print_flush(\"prompt> \");\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call void @print_flush"));
+}
+
+#[test]
+fn test_env_get_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let home: string = env_get(\"HOME\");\n\
+         \x20 print_str(home);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call ptr @env_get"));
+}
+
+#[test]
+fn test_time_ms_compiles() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let t: int = time_ms();\n\
+         \x20 print_int(t);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call i64 @time_ms"));
+}
+
+#[test]
+fn test_io_builtins_impure() {
+    // All enhanced I/O builtins are impure
+    let result = yorum::typecheck("pure fn f() -> bool { return file_exists(\"x\"); }");
+    assert!(result.is_err());
+    let result = yorum::typecheck("pure fn f() -> string { return read_line(); }");
+    assert!(result.is_err());
+    let result = yorum::typecheck("pure fn f() -> int { return time_ms(); }");
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_io_ir_definitions() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let b: bool = file_exists(\"x\");\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("define i1 @file_exists"));
+    assert!(ir.contains("define i1 @file_append"));
+    assert!(ir.contains("define ptr @read_line"));
+    assert!(ir.contains("define void @print_flush"));
+    assert!(ir.contains("define ptr @env_get"));
+    assert!(ir.contains("define i64 @time_ms"));
+}

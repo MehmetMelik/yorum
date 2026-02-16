@@ -92,6 +92,9 @@ pub struct Codegen {
     // Contract support
     current_fn_contracts: Vec<Contract>,
     current_fn_name: String,
+
+    // Loop control flow: (continue_label, break_label)
+    loop_labels: Vec<(String, String)>,
 }
 
 impl Default for Codegen {
@@ -125,6 +128,7 @@ impl Codegen {
             current_block: "entry".to_string(),
             current_fn_contracts: Vec::new(),
             current_fn_name: String::new(),
+            loop_labels: Vec::new(),
         }
     }
 
@@ -2782,6 +2786,22 @@ impl Codegen {
                 self.emit_expr(&s.expr)?;
                 Ok(())
             }
+            Stmt::Break(_) => {
+                if let Some((_, break_label)) = self.loop_labels.last() {
+                    let break_label = break_label.clone();
+                    self.emit_line(&format!("br label %{}", break_label));
+                    self.block_terminated = true;
+                }
+                Ok(())
+            }
+            Stmt::Continue(_) => {
+                if let Some((continue_label, _)) = self.loop_labels.last() {
+                    let continue_label = continue_label.clone();
+                    self.emit_line(&format!("br label %{}", continue_label));
+                    self.block_terminated = true;
+                }
+                Ok(())
+            }
         }
     }
 
@@ -3026,7 +3046,10 @@ impl Codegen {
         // Loop body
         self.emit_label(&body_label);
         self.block_terminated = false;
+        self.loop_labels
+            .push((cond_label.clone(), end_label.clone()));
         self.emit_block(&s.body)?;
+        self.loop_labels.pop();
         if !self.block_terminated {
             self.emit_line(&format!("br label %{}", cond_label));
         }
@@ -3038,6 +3061,11 @@ impl Codegen {
     }
 
     fn emit_for(&mut self, s: &ForStmt) -> Result<(), CodegenError> {
+        // Range-based for loop: for i in start..end
+        if let ExprKind::Range(ref start, ref end) = s.iterable.kind {
+            return self.emit_for_range(&s.var_name, start, end, &s.body);
+        }
+
         // Evaluate the iterable (array fat pointer)
         let arr_val = self.emit_expr(&s.iterable)?;
 
@@ -3079,6 +3107,7 @@ impl Codegen {
 
         let cond_label = self.fresh_label("for.cond");
         let body_label = self.fresh_label("for.body");
+        let inc_label = self.fresh_label("for.inc");
         let end_label = self.fresh_label("for.end");
 
         self.emit_line(&format!("br label %{}", cond_label));
@@ -3116,19 +3145,95 @@ impl Codegen {
 
         self.define_var(&s.var_name, &var_ptr, &elem_ty);
 
+        // Push loop labels: continue → for.inc, break → for.end
+        self.loop_labels
+            .push((inc_label.clone(), end_label.clone()));
         self.emit_block(&s.body)?;
+        self.loop_labels.pop();
 
         if !self.block_terminated {
-            // Increment index
-            let next_idx_tmp = self.fresh_temp();
-            let cur_idx2 = self.fresh_temp();
-            self.emit_line(&format!("{} = load i64, ptr {}", cur_idx2, idx_ptr));
-            self.emit_line(&format!("{} = add i64 {}, 1", next_idx_tmp, cur_idx2));
-            self.emit_line(&format!("store i64 {}, ptr {}", next_idx_tmp, idx_ptr));
-            self.emit_line(&format!("br label %{}", cond_label));
+            self.emit_line(&format!("br label %{}", inc_label));
         }
 
         self.pop_scope();
+
+        // Increment block
+        self.emit_label(&inc_label);
+        self.block_terminated = false;
+        let next_idx_tmp = self.fresh_temp();
+        let cur_idx2 = self.fresh_temp();
+        self.emit_line(&format!("{} = load i64, ptr {}", cur_idx2, idx_ptr));
+        self.emit_line(&format!("{} = add i64 {}, 1", next_idx_tmp, cur_idx2));
+        self.emit_line(&format!("store i64 {}, ptr {}", next_idx_tmp, idx_ptr));
+        self.emit_line(&format!("br label %{}", cond_label));
+
+        self.emit_label(&end_label);
+        self.block_terminated = false;
+        Ok(())
+    }
+
+    fn emit_for_range(
+        &mut self,
+        var_name: &str,
+        start_expr: &Expr,
+        end_expr: &Expr,
+        body: &Block,
+    ) -> Result<(), CodegenError> {
+        // Evaluate start and end bounds
+        let start_val = self.emit_expr(start_expr)?;
+        let end_val = self.emit_expr(end_expr)?;
+
+        // Alloca for the loop counter (also the loop variable)
+        let var_ptr = format!("%{}.addr", var_name);
+        self.emit_line(&format!("{} = alloca i64", var_ptr));
+        self.emit_line(&format!("store i64 {}, ptr {}", start_val, var_ptr));
+
+        let cond_label = self.fresh_label("for.cond");
+        let body_label = self.fresh_label("for.body");
+        let inc_label = self.fresh_label("for.inc");
+        let end_label = self.fresh_label("for.end");
+
+        self.emit_line(&format!("br label %{}", cond_label));
+
+        // Condition: counter < end
+        self.emit_label(&cond_label);
+        self.block_terminated = false;
+        let cur_val = self.fresh_temp();
+        self.emit_line(&format!("{} = load i64, ptr {}", cur_val, var_ptr));
+        let cmp = self.fresh_temp();
+        self.emit_line(&format!("{} = icmp slt i64 {}, {}", cmp, cur_val, end_val));
+        self.emit_line(&format!(
+            "br i1 {}, label %{}, label %{}",
+            cmp, body_label, end_label
+        ));
+
+        // Body
+        self.emit_label(&body_label);
+        self.block_terminated = false;
+
+        self.push_scope();
+        self.define_var(var_name, &var_ptr, "i64");
+
+        self.loop_labels
+            .push((inc_label.clone(), end_label.clone()));
+        self.emit_block(body)?;
+        self.loop_labels.pop();
+
+        if !self.block_terminated {
+            self.emit_line(&format!("br label %{}", inc_label));
+        }
+
+        self.pop_scope();
+
+        // Increment block
+        self.emit_label(&inc_label);
+        self.block_terminated = false;
+        let next_val = self.fresh_temp();
+        let cur_val2 = self.fresh_temp();
+        self.emit_line(&format!("{} = load i64, ptr {}", cur_val2, var_ptr));
+        self.emit_line(&format!("{} = add i64 {}, 1", next_val, cur_val2));
+        self.emit_line(&format!("store i64 {}, ptr {}", next_val, var_ptr));
+        self.emit_line(&format!("br label %{}", cond_label));
 
         self.emit_label(&end_label);
         self.block_terminated = false;
@@ -3497,6 +3602,11 @@ impl Codegen {
                     (BinOp::LtEq, true) => format!("{} = fcmp ole double {}, {}", tmp, l, r),
                     (BinOp::GtEq, false) => format!("{} = icmp sge {} {}, {}", tmp, ity, l, r),
                     (BinOp::GtEq, true) => format!("{} = fcmp oge double {}, {}", tmp, l, r),
+                    (BinOp::BitAnd, _) => format!("{} = and i64 {}, {}", tmp, l, r),
+                    (BinOp::BitOr, _) => format!("{} = or i64 {}, {}", tmp, l, r),
+                    (BinOp::BitXor, _) => format!("{} = xor i64 {}, {}", tmp, l, r),
+                    (BinOp::Shl, _) => format!("{} = shl i64 {}, {}", tmp, l, r),
+                    (BinOp::Shr, _) => format!("{} = ashr i64 {}, {}", tmp, l, r),
                     (BinOp::And, _) | (BinOp::Or, _) => unreachable!(),
                 };
                 self.emit_line(&instr);
@@ -4169,6 +4279,10 @@ impl Codegen {
             ExprKind::Closure(closure) => self.emit_closure(closure),
 
             ExprKind::Spawn(block) => self.emit_spawn(block),
+
+            ExprKind::Range(_, _) => Err(CodegenError {
+                message: "range expression is only valid in for loops".to_string(),
+            })?,
 
             ExprKind::StructInit(name, fields) => {
                 let _layout =
@@ -5134,6 +5248,7 @@ impl Codegen {
             Stmt::Expr(s) => {
                 Self::collect_idents_from_expr(&s.expr, locals, names);
             }
+            Stmt::Break(_) | Stmt::Continue(_) => {}
         }
     }
 
@@ -5193,6 +5308,10 @@ impl Codegen {
             }
             ExprKind::Spawn(block) => {
                 Self::collect_idents_from_block(block, locals, names);
+            }
+            ExprKind::Range(start, end) => {
+                Self::collect_idents_from_expr(start, locals, names);
+                Self::collect_idents_from_expr(end, locals, names);
             }
             ExprKind::Literal(_) => {}
         }
@@ -5285,7 +5404,12 @@ impl Codegen {
                     | BinOp::LtEq
                     | BinOp::GtEq
                     | BinOp::And
-                    | BinOp::Or => false,
+                    | BinOp::Or
+                    | BinOp::BitAnd
+                    | BinOp::BitOr
+                    | BinOp::BitXor
+                    | BinOp::Shl
+                    | BinOp::Shr => false,
                     _ => self.expr_is_float(lhs),
                 }
             }
@@ -5391,6 +5515,9 @@ impl Codegen {
                 | BinOp::GtEq
                 | BinOp::And
                 | BinOp::Or => "i1".to_string(),
+                BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::Shr => {
+                    "i64".to_string()
+                }
                 _ => {
                     if self.expr_is_float(expr) {
                         "double".to_string()
@@ -5438,6 +5565,7 @@ impl Codegen {
             ExprKind::StructInit(name, _) => format!("%{}", name),
             ExprKind::Closure(_) => "ptr".to_string(),
             ExprKind::Spawn(_) => "ptr".to_string(),
+            ExprKind::Range(_, _) => "i64".to_string(),
         }
     }
 

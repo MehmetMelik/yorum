@@ -587,6 +587,18 @@ impl Parser {
             TokenKind::While => self.parse_while_stmt(),
             TokenKind::For => self.parse_for_stmt(),
             TokenKind::Match => self.parse_match_stmt(),
+            TokenKind::Break => {
+                let span = self.current_span();
+                self.advance();
+                self.expect(&TokenKind::Semicolon)?;
+                Ok(Stmt::Break(BreakStmt { span }))
+            }
+            TokenKind::Continue => {
+                let span = self.current_span();
+                self.advance();
+                self.expect(&TokenKind::Semicolon)?;
+                Ok(Stmt::Continue(ContinueStmt { span }))
+            }
             _ => self.parse_assign_or_expr_stmt(),
         }
     }
@@ -806,6 +818,20 @@ impl Parser {
                 value,
                 span: start.merge(self.prev_span()),
             }))
+        } else if let Some(op) = self.try_compound_assign() {
+            self.advance();
+            let rhs = self.parse_expr()?;
+            self.expect(&TokenKind::Semicolon)?;
+            let end = self.prev_span();
+            let value = Expr {
+                kind: ExprKind::Binary(Box::new(expr.clone()), op, Box::new(rhs)),
+                span: start.merge(end),
+            };
+            Ok(Stmt::Assign(AssignStmt {
+                target: expr,
+                value,
+                span: start.merge(end),
+            }))
         } else {
             self.expect(&TokenKind::Semicolon)?;
             Ok(Stmt::Expr(ExprStmt {
@@ -824,19 +850,41 @@ impl Parser {
     fn parse_expr_bp(&mut self, min_bp: u8) -> Result<Expr, ParseError> {
         let mut lhs = self.parse_unary()?;
 
-        while let Some(op) = self.try_binop() {
-            let (l_bp, r_bp) = infix_binding_power(op);
-            if l_bp < min_bp {
-                break;
+        loop {
+            // Range operator `..` has lowest precedence (1, 2)
+            if self.check(&TokenKind::DotDot) {
+                if 1 < min_bp {
+                    break;
+                }
+                self.advance();
+                let rhs = self.parse_expr_bp(2)?;
+                let span = lhs.span.merge(rhs.span);
+                lhs = Expr {
+                    kind: ExprKind::Range(Box::new(lhs), Box::new(rhs)),
+                    span,
+                };
+                continue;
             }
 
-            self.advance(); // consume operator token
-            let rhs = self.parse_expr_bp(r_bp)?;
-            let span = lhs.span.merge(rhs.span);
-            lhs = Expr {
-                kind: ExprKind::Binary(Box::new(lhs), op, Box::new(rhs)),
-                span,
-            };
+            if let Some((op, width)) = self.try_binop() {
+                let (l_bp, r_bp) = infix_binding_power(op);
+                if l_bp < min_bp {
+                    break;
+                }
+
+                // Consume operator token(s)
+                for _ in 0..width {
+                    self.advance();
+                }
+                let rhs = self.parse_expr_bp(r_bp)?;
+                let span = lhs.span.merge(rhs.span);
+                lhs = Expr {
+                    kind: ExprKind::Binary(Box::new(lhs), op, Box::new(rhs)),
+                    span,
+                };
+            } else {
+                break;
+            }
         }
 
         Ok(lhs)
@@ -1115,23 +1163,54 @@ impl Parser {
         }
     }
 
-    fn try_binop(&self) -> Option<BinOp> {
+    fn try_compound_assign(&self) -> Option<BinOp> {
         match self.peek_kind() {
-            TokenKind::Plus => Some(BinOp::Add),
-            TokenKind::Minus => Some(BinOp::Sub),
-            TokenKind::Star => Some(BinOp::Mul),
-            TokenKind::Slash => Some(BinOp::Div),
-            TokenKind::Percent => Some(BinOp::Mod),
-            TokenKind::EqEq => Some(BinOp::Eq),
-            TokenKind::NotEq => Some(BinOp::NotEq),
-            TokenKind::Lt => Some(BinOp::Lt),
-            TokenKind::Gt => Some(BinOp::Gt),
-            TokenKind::LtEq => Some(BinOp::LtEq),
-            TokenKind::GtEq => Some(BinOp::GtEq),
-            TokenKind::And => Some(BinOp::And),
-            TokenKind::Or => Some(BinOp::Or),
+            TokenKind::PlusEq => Some(BinOp::Add),
+            TokenKind::MinusEq => Some(BinOp::Sub),
+            TokenKind::StarEq => Some(BinOp::Mul),
+            TokenKind::SlashEq => Some(BinOp::Div),
+            TokenKind::PercentEq => Some(BinOp::Mod),
             _ => None,
         }
+    }
+
+    fn try_binop(&self) -> Option<(BinOp, usize)> {
+        match self.peek_kind() {
+            TokenKind::Plus => Some((BinOp::Add, 1)),
+            TokenKind::Minus => Some((BinOp::Sub, 1)),
+            TokenKind::Star => Some((BinOp::Mul, 1)),
+            TokenKind::Slash => Some((BinOp::Div, 1)),
+            TokenKind::Percent => Some((BinOp::Mod, 1)),
+            TokenKind::EqEq => Some((BinOp::Eq, 1)),
+            TokenKind::NotEq => Some((BinOp::NotEq, 1)),
+            TokenKind::Lt => Some((BinOp::Lt, 1)),
+            TokenKind::Gt => {
+                // >> = two Gt tokens (avoid conflict with generic closing >>)
+                if self.peek_kind_at(self.pos + 1) == TokenKind::Gt
+                    && self.peek_kind_at(self.pos + 2) != TokenKind::Eq
+                {
+                    Some((BinOp::Shr, 2))
+                } else {
+                    Some((BinOp::Gt, 1))
+                }
+            }
+            TokenKind::LtEq => Some((BinOp::LtEq, 1)),
+            TokenKind::GtEq => Some((BinOp::GtEq, 1)),
+            TokenKind::And => Some((BinOp::And, 1)),
+            TokenKind::Or => Some((BinOp::Or, 1)),
+            TokenKind::Ampersand => Some((BinOp::BitAnd, 1)),
+            TokenKind::Pipe => Some((BinOp::BitOr, 1)),
+            TokenKind::Caret => Some((BinOp::BitXor, 1)),
+            TokenKind::LShift => Some((BinOp::Shl, 1)),
+            _ => None,
+        }
+    }
+
+    fn peek_kind_at(&self, pos: usize) -> TokenKind {
+        self.tokens
+            .get(pos)
+            .map(|t| t.kind.clone())
+            .unwrap_or(TokenKind::EOF)
     }
 
     // ── Token utilities ──────────────────────────────────────
@@ -1207,12 +1286,16 @@ impl Parser {
 /// Left < Right gives left-associativity.
 fn infix_binding_power(op: BinOp) -> (u8, u8) {
     match op {
-        BinOp::Or => (1, 2),
-        BinOp::And => (3, 4),
-        BinOp::Eq | BinOp::NotEq => (5, 6),
-        BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq => (7, 8),
-        BinOp::Add | BinOp::Sub => (9, 10),
-        BinOp::Mul | BinOp::Div | BinOp::Mod => (11, 12),
+        BinOp::Or => (3, 4),
+        BinOp::And => (5, 6),
+        BinOp::BitOr => (7, 8),
+        BinOp::BitXor => (9, 10),
+        BinOp::BitAnd => (11, 12),
+        BinOp::Eq | BinOp::NotEq => (13, 14),
+        BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq => (15, 16),
+        BinOp::Shl | BinOp::Shr => (17, 18),
+        BinOp::Add | BinOp::Sub => (19, 20),
+        BinOp::Mul | BinOp::Div | BinOp::Mod => (21, 22),
     }
 }
 

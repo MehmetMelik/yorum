@@ -125,6 +125,7 @@ impl Monomorphizer {
             Stmt::Expr(s) => {
                 self.collect_from_expr(&s.expr);
             }
+            Stmt::Break(_) | Stmt::Continue(_) => {}
         }
     }
 
@@ -186,6 +187,10 @@ impl Monomorphizer {
             }
             ExprKind::Spawn(block) => {
                 self.collect_from_block(block);
+            }
+            ExprKind::Range(start, end) => {
+                self.collect_from_expr(start);
+                self.collect_from_expr(end);
             }
             _ => {}
         }
@@ -494,6 +499,8 @@ fn substitute_stmt(stmt: &Stmt, subst: &HashMap<String, Type>) -> Stmt {
             expr: substitute_expr(&s.expr, subst),
             span: s.span,
         }),
+        Stmt::Break(s) => Stmt::Break(BreakStmt { span: s.span }),
+        Stmt::Continue(s) => Stmt::Continue(ContinueStmt { span: s.span }),
     }
 }
 
@@ -569,6 +576,10 @@ fn substitute_expr(expr: &Expr, subst: &HashMap<String, Type>) -> Expr {
             span: c.span,
         }),
         ExprKind::Spawn(block) => ExprKind::Spawn(substitute_block(block, subst)),
+        ExprKind::Range(start, end) => ExprKind::Range(
+            Box::new(substitute_expr(start, subst)),
+            Box::new(substitute_expr(end, subst)),
+        ),
         other => other.clone(),
     };
     Expr {
@@ -707,6 +718,7 @@ fn rewrite_stmt(
                 struct_insts,
             );
         }
+        Stmt::Break(_) | Stmt::Continue(_) => {}
     }
 }
 
@@ -830,6 +842,16 @@ fn rewrite_expr(
                 fn_insts,
                 _struct_insts,
             );
+        }
+        ExprKind::Range(start, end) => {
+            rewrite_expr(
+                start,
+                generic_fns,
+                _generic_structs,
+                fn_insts,
+                _struct_insts,
+            );
+            rewrite_expr(end, generic_fns, _generic_structs, fn_insts, _struct_insts);
         }
         _ => {}
     }

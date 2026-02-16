@@ -230,6 +230,18 @@ pub enum Stmt {
     For(ForStmt),
     Match(MatchStmt),
     Expr(ExprStmt),
+    Break(BreakStmt),
+    Continue(ContinueStmt),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BreakStmt {
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContinueStmt {
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -335,6 +347,7 @@ pub enum ExprKind {
     Closure(ClosureExpr),
     ArrayLit(Vec<Expr>),
     Spawn(Block),
+    Range(Box<Expr>, Box<Expr>),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -377,6 +390,11 @@ pub enum BinOp {
     GtEq,
     And,
     Or,
+    BitAnd,
+    BitOr,
+    BitXor,
+    Shl,
+    Shr,
 }
 
 impl std::fmt::Display for BinOp {
@@ -395,6 +413,11 @@ impl std::fmt::Display for BinOp {
             BinOp::GtEq => write!(f, ">="),
             BinOp::And => write!(f, "and"),
             BinOp::Or => write!(f, "or"),
+            BinOp::BitAnd => write!(f, "&"),
+            BinOp::BitOr => write!(f, "|"),
+            BinOp::BitXor => write!(f, "^"),
+            BinOp::Shl => write!(f, "<<"),
+            BinOp::Shr => write!(f, ">>"),
         }
     }
 }

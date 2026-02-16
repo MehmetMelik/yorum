@@ -80,17 +80,49 @@ impl Lexer {
             ',' => TokenKind::Comma,
             ':' => TokenKind::Colon,
             ';' => TokenKind::Semicolon,
-            '.' => TokenKind::Dot,
-            '+' => TokenKind::Plus,
-            '*' => TokenKind::Star,
-            '%' => TokenKind::Percent,
+            '.' => {
+                if self.peek() == Some('.') {
+                    self.advance();
+                    TokenKind::DotDot
+                } else {
+                    TokenKind::Dot
+                }
+            }
+            '+' => {
+                if self.peek() == Some('=') {
+                    self.advance();
+                    TokenKind::PlusEq
+                } else {
+                    TokenKind::Plus
+                }
+            }
+            '*' => {
+                if self.peek() == Some('=') {
+                    self.advance();
+                    TokenKind::StarEq
+                } else {
+                    TokenKind::Star
+                }
+            }
+            '%' => {
+                if self.peek() == Some('=') {
+                    self.advance();
+                    TokenKind::PercentEq
+                } else {
+                    TokenKind::Percent
+                }
+            }
             '&' => TokenKind::Ampersand,
             '|' => TokenKind::Pipe,
+            '^' => TokenKind::Caret,
 
             '-' => {
                 if self.peek() == Some('>') {
                     self.advance();
                     TokenKind::Arrow
+                } else if self.peek() == Some('=') {
+                    self.advance();
+                    TokenKind::MinusEq
                 } else {
                     TokenKind::Minus
                 }
@@ -125,6 +157,9 @@ impl Lexer {
                 if self.peek() == Some('=') {
                     self.advance();
                     TokenKind::LtEq
+                } else if self.peek() == Some('<') {
+                    self.advance();
+                    TokenKind::LShift
                 } else {
                     TokenKind::Lt
                 }
@@ -141,7 +176,12 @@ impl Lexer {
 
             '/' => {
                 // Division — comments are already stripped by skip_whitespace_and_comments
-                TokenKind::Slash
+                if self.peek() == Some('=') {
+                    self.advance();
+                    TokenKind::SlashEq
+                } else {
+                    TokenKind::Slash
+                }
             }
 
             '"' => return self.lex_string(start, start_line, start_col),

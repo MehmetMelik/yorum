@@ -238,6 +238,7 @@ fn rewrite_stmt_calls(stmt: &mut Stmt, name_map: &std::collections::HashMap<Stri
         Stmt::Expr(s) => {
             rewrite_expr_calls(&mut s.expr, name_map);
         }
+        Stmt::Break(_) | Stmt::Continue(_) => {}
     }
 }
 
@@ -307,6 +308,10 @@ fn rewrite_expr_calls(expr: &mut Expr, name_map: &std::collections::HashMap<Stri
         }
         ExprKind::Spawn(block) => {
             rewrite_block_calls(block, name_map);
+        }
+        ExprKind::Range(start, end) => {
+            rewrite_expr_calls(start, name_map);
+            rewrite_expr_calls(end, name_map);
         }
         _ => {}
     }

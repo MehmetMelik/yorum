@@ -5102,8 +5102,13 @@ impl Codegen {
             }
             Type::Array(_) => "ptr".to_string(),
             Type::Ref(_) | Type::MutRef(_) | Type::Own(_) => "ptr".to_string(),
-            Type::SelfType => panic!("Type::SelfType should be resolved before codegen"),
-            Type::TypeVar(_) => panic!("Type::TypeVar should be resolved before codegen"),
+            Type::SelfType | Type::TypeVar(_) => {
+                debug_assert!(
+                    false,
+                    "Type::SelfType/TypeVar should be resolved before codegen"
+                );
+                "i64".to_string()
+            }
             Type::Generic(name, _) => format!("%{}", name),
             Type::Fn(_, _) => "ptr".to_string(),
             Type::Task(_) => "ptr".to_string(),
@@ -5127,7 +5132,13 @@ impl Codegen {
                     8
                 }
             }
-            Type::SelfType | Type::TypeVar(_) => panic!("should be resolved before codegen"),
+            Type::SelfType | Type::TypeVar(_) => {
+                debug_assert!(
+                    false,
+                    "Type::SelfType/TypeVar should be resolved before codegen"
+                );
+                8
+            }
             Type::Generic(_, _) | Type::Fn(_, _) => 8,
             _ => 8,
         }

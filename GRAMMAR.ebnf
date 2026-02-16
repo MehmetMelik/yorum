@@ -1,6 +1,6 @@
 (* ═══════════════════════════════════════════════════════════════ *)
 (*  Yorum Language — Formal Grammar (EBNF)                       *)
-(*  Version 0.4.0                                                 *)
+(*  Version 0.5.0                                                 *)
 (* ═══════════════════════════════════════════════════════════════ *)
 
 (* ── Top-level ─────────────────────────────────────────────── *)
@@ -72,8 +72,10 @@ bound_list      = IDENT { "+" IDENT } ;
 type            = "int"
                 | "float"
                 | "bool"
+                | "char"
                 | "string"
                 | "unit"
+                | "Map"                 (* hash map: string -> int *)
                 | "Self"               (* implementing type in trait/impl *)
                 | "Task" "<" type ">"  (* task handle *)
                 | "Chan" "<" type ">"  (* channel *)
@@ -164,6 +166,7 @@ primary         = INT_LIT
                 | FLOAT_LIT
                 | "true" | "false"
                 | STRING_LIT
+                | CHAR_LIT
                 | IDENT [ struct_init ]
                 | "(" expr ")"
                 | array_lit
@@ -184,7 +187,7 @@ field_init      = IDENT ":" expr ;
 
 (* ── Literals ──────────────────────────────────────────────── *)
 
-literal         = INT_LIT | FLOAT_LIT | "true" | "false" | STRING_LIT ;
+literal         = INT_LIT | FLOAT_LIT | "true" | "false" | STRING_LIT | CHAR_LIT ;
 
 (* ── Lexical tokens ────────────────────────────────────────── *)
 
@@ -193,6 +196,8 @@ INT_LIT         = DIGIT { DIGIT } ;
 FLOAT_LIT       = DIGIT { DIGIT } "." DIGIT { DIGIT } ;
 
 STRING_LIT      = '"' { CHAR | ESCAPE } '"' ;
+
+CHAR_LIT        = "'" ( CHAR | ESCAPE ) "'" ;
 
 IDENT           = ( ALPHA | "_" ) { ALPHA | DIGIT | "_" } ;
 
@@ -212,4 +217,4 @@ ESCAPE          = "\\" ( "n" | "t" | "r" | "\\" | '"' | "0" ) ;
 (* struct  enum  module  use  const  pub  pure  own  impl  trait *)
 (* and  or  not  true  false  Self                               *)
 (* requires  ensures  effects                                    *)
-(* int  float  bool  string  unit                                *)
+(* int  float  bool  char  string  unit  Map                      *)

@@ -1,0 +1,4 @@
+[package]
+name = "yorumc"
+version = "0.1.0"
+src_dir = "src"

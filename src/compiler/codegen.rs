@@ -1759,8 +1759,24 @@ impl Codegen {
             "i8" => 1,
             "ptr" => 8,
             "i32" => 4,
-            _ => 8,
+            _ => {
+                // Handle struct types like %Token
+                if let Some(name) = llvm_ty.strip_prefix('%') {
+                    if let Some(layout) = self.struct_layouts.get(name) {
+                        return layout
+                            .fields
+                            .iter()
+                            .map(|(_, t)| self.type_size(t))
+                            .sum();
+                    }
+                }
+                8
+            }
         }
+    }
+
+    fn is_aggregate_type(llvm_ty: &str) -> bool {
+        llvm_ty.starts_with('%')
     }
 
     // ── Expression emission ──────────────────────────────────
@@ -1955,13 +1971,28 @@ impl Codegen {
                         self.block_terminated = false;
                         let cur_data = self.fresh_temp();
                         self.emit_line(&format!("{} = load ptr, ptr {}", cur_data, data_gep));
-                        let val = self.emit_expr(&args[1])?;
+                        let is_agg = Self::is_aggregate_type(&elem_ty);
+                        let val = if is_agg {
+                            self.emit_expr_ptr(&args[1])?
+                        } else {
+                            self.emit_expr(&args[1])?
+                        };
                         let elem_gep = self.fresh_temp();
                         self.emit_line(&format!(
                             "{} = getelementptr {}, ptr {}, i64 {}",
                             elem_gep, elem_ty, cur_data, len_val
                         ));
-                        self.emit_line(&format!("store {} {}, ptr {}", elem_ty, val, elem_gep));
+                        if Self::is_aggregate_type(&elem_ty) {
+                            self.emit_line(&format!(
+                                "call ptr @memcpy(ptr {}, ptr {}, i64 {})",
+                                elem_gep, val, elem_size
+                            ));
+                        } else {
+                            self.emit_line(&format!(
+                                "store {} {}, ptr {}",
+                                elem_ty, val, elem_gep
+                            ));
+                        }
                         let new_len = self.fresh_temp();
                         self.emit_line(&format!("{} = add i64 {}, 1", new_len, len_val));
                         self.emit_line(&format!("store i64 {}, ptr {}", new_len, len_gep));
@@ -2025,9 +2056,27 @@ impl Codegen {
                             "{} = getelementptr {}, ptr {}, i64 {}",
                             elem_gep, elem_ty, data_ptr, new_len
                         ));
-                        let val = self.fresh_temp();
-                        self.emit_line(&format!("{} = load {}, ptr {}", val, elem_ty, elem_gep));
-                        return Ok(val);
+                        if Self::is_aggregate_type(&elem_ty) {
+                            // For aggregate types, copy to a local alloca and return pointer
+                            let tmp_alloca = self.fresh_temp();
+                            self.emit_line(&format!(
+                                "{} = alloca {}",
+                                tmp_alloca, elem_ty
+                            ));
+                            let sz = self.llvm_type_size(&elem_ty);
+                            self.emit_line(&format!(
+                                "call ptr @memcpy(ptr {}, ptr {}, i64 {})",
+                                tmp_alloca, elem_gep, sz
+                            ));
+                            return Ok(tmp_alloca);
+                        } else {
+                            let val = self.fresh_temp();
+                            self.emit_line(&format!(
+                                "{} = load {}, ptr {}",
+                                val, elem_ty, elem_gep
+                            ));
+                            return Ok(val);
+                        }
                     }
 
                     // Built-in exit() — truncate i64 to i32 and call C exit
@@ -2252,14 +2301,26 @@ impl Codegen {
                 ));
 
                 // Store each element
+                let is_aggregate = Self::is_aggregate_type(&elem_ty);
                 for (i, elem) in elements.iter().enumerate() {
-                    let val = self.emit_expr(elem)?;
+                    let val = if is_aggregate {
+                        self.emit_expr_ptr(elem)?
+                    } else {
+                        self.emit_expr(elem)?
+                    };
                     let gep = self.fresh_temp();
                     self.emit_line(&format!(
                         "{} = getelementptr {}, ptr {}, i64 {}",
                         gep, elem_ty, data_ptr, i
                     ));
-                    self.emit_line(&format!("store {} {}, ptr {}", elem_ty, val, gep));
+                    if is_aggregate {
+                        self.emit_line(&format!(
+                            "call ptr @memcpy(ptr {}, ptr {}, i64 {})",
+                            gep, val, elem_size
+                        ));
+                    } else {
+                        self.emit_line(&format!("store {} {}, ptr {}", elem_ty, val, gep));
+                    }
                 }
 
                 // Build { ptr, i64, i64 } fat pointer on stack
@@ -2332,9 +2393,24 @@ impl Codegen {
                     "{} = getelementptr {}, ptr {}, i64 {}",
                     elem_gep, elem_ty, data_ptr, idx_val
                 ));
-                let val = self.fresh_temp();
-                self.emit_line(&format!("{} = load {}, ptr {}", val, elem_ty, elem_gep));
-                Ok(val)
+                if Self::is_aggregate_type(&elem_ty) {
+                    // For aggregate types, copy to a local alloca and return pointer
+                    let tmp_alloca = self.fresh_temp();
+                    self.emit_line(&format!("{} = alloca {}", tmp_alloca, elem_ty));
+                    let sz = self.llvm_type_size(&elem_ty);
+                    self.emit_line(&format!(
+                        "call ptr @memcpy(ptr {}, ptr {}, i64 {})",
+                        tmp_alloca, elem_gep, sz
+                    ));
+                    Ok(tmp_alloca)
+                } else {
+                    let val = self.fresh_temp();
+                    self.emit_line(&format!(
+                        "{} = load {}, ptr {}",
+                        val, elem_ty, elem_gep
+                    ));
+                    Ok(val)
+                }
             }
         }
     }
@@ -2348,9 +2424,37 @@ impl Codegen {
                 })?;
                 Ok(slot.ptr.clone())
             }
-            _ => {
-                // For complex expressions, evaluate to a temp alloca
+            ExprKind::StructInit(_, _) => {
+                // StructInit's emit_expr already returns an alloca pointer
                 self.emit_expr(expr)
+            }
+            ExprKind::Index(arr_expr, _) => {
+                // Index on aggregate types already returns an alloca pointer
+                // (the codegen does memcpy to a temp alloca for struct elements)
+                let val = self.emit_expr(expr)?;
+                // Check if element type is aggregate
+                if let ExprKind::Ident(name) = &arr_expr.kind {
+                    if let Some(elem_ty) = self.array_elem_types.get(name) {
+                        if Self::is_aggregate_type(elem_ty) {
+                            return Ok(val); // already a pointer to temp alloca
+                        }
+                    }
+                }
+                Ok(val)
+            }
+            _ => {
+                // For complex expressions that return aggregate types (e.g., function calls
+                // returning structs), store to a temp alloca and return the alloca pointer
+                let val = self.emit_expr(expr)?;
+                let llvm_ty = self.expr_llvm_type(expr);
+                if Self::is_aggregate_type(&llvm_ty) {
+                    let tmp = self.fresh_temp();
+                    self.emit_line(&format!("{} = alloca {}", tmp, llvm_ty));
+                    self.emit_line(&format!("store {} {}, ptr {}", llvm_ty, val, tmp));
+                    Ok(tmp)
+                } else {
+                    Ok(val)
+                }
             }
         }
     }
@@ -3358,9 +3462,9 @@ impl Codegen {
                 }
                 "i64".to_string()
             }
+            ExprKind::StructInit(name, _) => format!("%{}", name),
             ExprKind::Closure(_) => "ptr".to_string(),
             ExprKind::Spawn(_) => "ptr".to_string(),
-            _ => "i64".to_string(),
         }
     }
 
@@ -3381,6 +3485,33 @@ impl Codegen {
                         message: format!("undefined variable '{}'", name),
                     })
                 }
+            }
+            ExprKind::Index(arr_expr, _) => {
+                // Array indexing: element type is stored in array_elem_types
+                if let ExprKind::Ident(name) = &arr_expr.kind {
+                    if let Some(elem_ty) = self.array_elem_types.get(name) {
+                        if let Some(stripped) = elem_ty.strip_prefix('%') {
+                            return Ok(stripped.to_string());
+                        }
+                    }
+                }
+                Err(CodegenError {
+                    message: "cannot determine struct name from index expression".to_string(),
+                })
+            }
+            ExprKind::StructInit(name, _) => Ok(name.clone()),
+            ExprKind::Call(callee, _) => {
+                // Function call: look up return type from function signatures
+                if let ExprKind::Ident(fn_name) = &callee.kind {
+                    if let Some(ret_ty) = self.fn_ret_types.get(fn_name) {
+                        if let Type::Named(name) = ret_ty {
+                            return Ok(name.clone());
+                        }
+                    }
+                }
+                Err(CodegenError {
+                    message: "cannot determine struct name from call expression".to_string(),
+                })
             }
             _ => Err(CodegenError {
                 message: "cannot determine struct name from expression".to_string(),

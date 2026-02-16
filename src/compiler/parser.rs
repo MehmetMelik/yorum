@@ -1224,6 +1224,12 @@ impl Parser {
                     // Sub-parse the expression tokens
                     let mut sub_parser = Parser::new(tokens.clone());
                     let inner_expr = sub_parser.parse_expr()?;
+                    if sub_parser.peek_kind() != TokenKind::EOF {
+                        return Err(ParseError {
+                            message: "unexpected token in interpolation expression".to_string(),
+                            span,
+                        });
+                    }
                     // Wrap in to_str() call
                     Expr {
                         kind: ExprKind::Call(

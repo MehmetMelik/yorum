@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 cargo build                          # dev build
 cargo build --release                # release build
-cargo test                           # all tests (385: 46 unit + 339 integration)
+cargo test                           # all tests (390: 46 unit + 344 integration)
 cargo test compiler::lexer           # tests in one module
 cargo test test_fibonacci_compiles   # single test by name
 cargo test -- --nocapture            # see stdout from tests
@@ -376,6 +376,26 @@ Generic enums always available without declaration. Required adding generic enum
 ### Test coverage
 
 23 new integration tests — total 385 tests (46 unit + 339 integration).
+
+## Completed: v1.2.1 — PR Review Bug Fixes
+
+Five bugs found in the v1.2 PR review: 3 codegen issues producing invalid LLVM IR, 1 type-safety regression, and 1 parser leniency issue.
+
+### Bug fixes
+
+1. **`to_str` missing from `fn_ret_types`:** `to_str` was special-cased in `emit_expr` but never registered in `fn_ret_types`. `expr_llvm_type` fell back to `"i64"` instead of `"ptr"`, making string interpolation emit `str_concat(ptr, i64)` — invalid IR. Fix: registered `to_str` → `Type::Str` in codegen init.
+
+2. **Tuple let binding assumes RHS is pointer:** Tuple path in `emit_let` always treated `emit_expr` result as an alloca pointer. Function calls returning tuples produce values, not pointers (same bug already fixed for structs/enums). Fix: added `expr_returns_ptr()` check with `alloca + store` fallback.
+
+3. **Tuple type naming inconsistency:** `expr_llvm_type` for `TupleLit` built names using LLVM types (`%tuple.i64.ptr`) while `emit_tuple_lit` and `tuple_type_name` used semantic names (`%tuple.int.string`). Downstream code referenced undefined types. Fix: extracted `llvm_to_semantic_name()` helper, used in both locations.
+
+4. **Generic argument mismatches accepted:** Compatibility checks in `Stmt::Let` and `Stmt::Return` only compared the base name of `Type::Generic`, ignoring type arguments. `Option<int>` would accept `Some("hello")`. Fix: compare type args pairwise, allowing `TypeVar` as wildcard (for unresolved params like `None` → `Option<T>`) but rejecting concrete mismatches.
+
+5. **Interpolation parser accepts trailing tokens:** `desugar_interp_string` called `parse_expr()` but didn't verify the token stream was exhausted. `"bad {1 2}"` silently dropped `2`. Fix: check `peek_kind() != EOF` after `parse_expr()`.
+
+### Test coverage
+
+5 new integration tests — total 390 tests (46 unit + 344 integration).
 
 ## Git Workflow
 

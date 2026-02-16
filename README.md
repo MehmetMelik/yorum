@@ -722,7 +722,7 @@ diff gen1.ll gen2.ll    # identical — fixed-point achieved
 ## Testing
 
 ```bash
-cargo test                    # 385 tests (46 unit + 339 integration)
+cargo test                    # 390 tests (46 unit + 344 integration)
 cargo test compiler::lexer    # tests in one module
 cargo test test_fibonacci     # single test by name
 ```
@@ -749,6 +749,7 @@ cargo test test_fibonacci     # single test by name
 | **v1.0.2** | Codegen bug fixes: stale PHI labels, HashMap tombstone loop, spawn alignment, unit IR | Done |
 | **v1.1** | Ergonomics: compound assignment, bitwise operators, break/continue, range for-loops | Done |
 | **v1.2** | String interpolation, tuple types, prelude Option\<T\>/Result\<T,E\> with methods | Done |
+| **v1.2.1** | Bug fixes: `to_str` codegen, tuple let from functions, tuple type naming, generic arg checks, interp parser | Done |
 
 ## License
 

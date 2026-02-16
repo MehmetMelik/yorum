@@ -4987,3 +4987,74 @@ fn test_option_in_function_return() {
     assert!(ir.contains("define %Option__int @find"));
     assert!(ir.contains("%Option__int"));
 }
+
+// ═══════════════════════════════════════════════════════════════
+//  v1.2 bug-fix regression tests
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn test_string_interp_variable() {
+    // Fix 1: to_str must be in fn_ret_types so expr_llvm_type returns "ptr" (not "i64")
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let x: int = 42;\n\
+         \x20 let s: string = \"x = {x}\";\n\
+         \x20 print_str(s);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    // str_concat should receive ptr arguments, not i64
+    assert!(ir.contains("call ptr @str_concat(ptr"));
+}
+
+#[test]
+fn test_tuple_from_function_return() {
+    // Fix 2: tuple let binding must handle function-call RHS (value, not pointer)
+    let ir = compile(
+        "fn swap(a: int, b: int) -> (int, int) {\n\
+         \x20 return (b, a);\n\
+         }\n\
+         fn main() -> int {\n\
+         \x20 let t: (int, int) = swap(1, 2);\n\
+         \x20 return t.0;\n\
+         }\n",
+    );
+    assert!(ir.contains("define %tuple.int.int @swap"));
+}
+
+#[test]
+fn test_tuple_array() {
+    // Fix 3: tuple type names must be consistent (semantic names, not LLVM names)
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20 let arr: [(int, string)] = [(1, \"a\"), (2, \"b\")];\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    // The type must use semantic names consistently
+    assert!(ir.contains("%tuple.int.string = type"));
+}
+
+#[test]
+fn test_option_type_arg_mismatch() {
+    // Fix 4: Option<int> must reject Some("hello") which infers as Option<string>
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20 let x: Option<int> = Some(\"hello\");\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_interp_trailing_tokens() {
+    // Fix 5: interpolation must reject trailing tokens in expressions
+    let result = yorum::compile_to_ir(
+        "fn main() -> int {\n\
+         \x20 let s: string = \"bad {1 2}\";\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+}

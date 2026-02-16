@@ -9,6 +9,23 @@ use std::collections::HashMap;
 use std::fmt;
 
 // ═══════════════════════════════════════════════════════════════
+//  Helpers
+// ═══════════════════════════════════════════════════════════════
+
+/// Map an LLVM type name to the semantic name used in tuple type identifiers.
+fn llvm_to_semantic_name(t: &str) -> String {
+    match t {
+        "i64" => "int".to_string(),
+        "double" => "float".to_string(),
+        "i1" => "bool".to_string(),
+        "i8" => "char".to_string(),
+        "ptr" => "string".to_string(),
+        "void" => "unit".to_string(),
+        other => other.strip_prefix('%').unwrap_or(other).to_string(),
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
 //  Error type
 // ═══════════════════════════════════════════════════════════════
 
@@ -295,6 +312,7 @@ impl Codegen {
             .insert("float_to_str".to_string(), Type::Str);
         self.fn_ret_types
             .insert("bool_to_str".to_string(), Type::Str);
+        self.fn_ret_types.insert("to_str".to_string(), Type::Str);
 
         // Register function return types (including impl methods with mangled names)
         for decl in &program.declarations {
@@ -2915,7 +2933,16 @@ impl Codegen {
         // For tuple-typed variables, TupleLit already creates an alloca.
         // Reuse that alloca directly as the variable slot.
         if let Type::Tuple(ref elem_types) = s.ty {
-            let val_ptr = self.emit_expr(&s.value)?;
+            let returns_ptr = self.expr_returns_ptr(&s.value);
+            let val = self.emit_expr(&s.value)?;
+            let val_ptr = if returns_ptr {
+                val
+            } else {
+                let ptr = format!("%{}.tuple.addr", s.name);
+                self.emit_line(&format!("{} = alloca {}", ptr, ty));
+                self.emit_line(&format!("store {} {}, ptr {}", ty, val, ptr));
+                ptr
+            };
 
             // Handle destructuring: let (a, b): (int, string) = expr;
             if let Some(ref names) = s.destructure {
@@ -2938,11 +2965,11 @@ impl Codegen {
                         "{} = getelementptr %{}, ptr {}, i32 0, i32 {}",
                         gep, tuple_name, val_ptr, i
                     ));
-                    let val = self.fresh_temp();
-                    self.emit_line(&format!("{} = load {}, ptr {}", val, elem_ty, gep));
+                    let loaded = self.fresh_temp();
+                    self.emit_line(&format!("{} = load {}, ptr {}", loaded, elem_ty, gep));
                     let ptr = format!("%{}.addr", name);
                     self.emit_line(&format!("{} = alloca {}", ptr, elem_ty));
-                    self.emit_line(&format!("store {} {}, ptr {}", elem_ty, val, ptr));
+                    self.emit_line(&format!("store {} {}, ptr {}", elem_ty, loaded, ptr));
                     self.define_var(name, &ptr, elem_ty);
                     self.var_ast_types
                         .insert(name.clone(), elem_types[i].clone());
@@ -4918,15 +4945,7 @@ impl Codegen {
             "tuple.{}",
             elem_types
                 .iter()
-                .map(|t| match t.as_str() {
-                    "i64" => "int".to_string(),
-                    "double" => "float".to_string(),
-                    "i1" => "bool".to_string(),
-                    "i8" => "char".to_string(),
-                    "ptr" => "string".to_string(),
-                    "void" => "unit".to_string(),
-                    other => other.strip_prefix('%').unwrap_or(other).to_string(),
-                })
+                .map(|t| llvm_to_semantic_name(t))
                 .collect::<Vec<_>>()
                 .join(".")
         );
@@ -6061,10 +6080,16 @@ impl Codegen {
             ExprKind::StructInit(name, _) => format!("%{}", name),
             ExprKind::Closure(_) => "ptr".to_string(),
             ExprKind::TupleLit(elements) => {
-                // Infer element types and construct the tuple LLVM type name
+                // Infer element types and construct the tuple type name using semantic names
+                // (matching emit_tuple_lit and tuple_type_name conventions)
                 let elem_types: Vec<String> =
                     elements.iter().map(|e| self.expr_llvm_type(e)).collect();
-                format!("%tuple.{}", elem_types.join("."))
+                let semantic_name = elem_types
+                    .iter()
+                    .map(|t| llvm_to_semantic_name(t))
+                    .collect::<Vec<_>>()
+                    .join(".");
+                format!("%tuple.{}", semantic_name)
             }
             ExprKind::Spawn(_) => "ptr".to_string(),
             ExprKind::Range(_, _) => "i64".to_string(),

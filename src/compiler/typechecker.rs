@@ -910,7 +910,15 @@ impl TypeChecker {
                     // For generic types, compare base name
                     let compatible = match (&s.ty, &val_ty) {
                         (Type::Generic(name, _), Type::Named(vname)) => name == vname,
-                        (Type::Generic(name1, _), Type::Generic(name2, _)) => name1 == name2,
+                        (Type::Generic(name1, args1), Type::Generic(name2, args2)) => {
+                            name1 == name2
+                                && args1.len() == args2.len()
+                                && args1.iter().zip(args2.iter()).all(|(a, b)| {
+                                    matches!(a, Type::TypeVar(_))
+                                        || matches!(b, Type::TypeVar(_))
+                                        || a == b
+                                })
+                        }
                         _ => val_ty == s.ty,
                     };
                     if !compatible {
@@ -1025,7 +1033,15 @@ impl TypeChecker {
                     let expected = expected.clone();
                     if let Some(actual) = self.infer_expr(&s.value) {
                         let compatible = match (&expected, &actual) {
-                            (Type::Generic(name1, _), Type::Generic(name2, _)) => name1 == name2,
+                            (Type::Generic(name1, args1), Type::Generic(name2, args2)) => {
+                                name1 == name2
+                                    && args1.len() == args2.len()
+                                    && args1.iter().zip(args2.iter()).all(|(a, b)| {
+                                        matches!(a, Type::TypeVar(_))
+                                            || matches!(b, Type::TypeVar(_))
+                                            || a == b
+                                    })
+                            }
                             (Type::Generic(name, _), Type::Named(vname)) => name == vname,
                             _ => actual == expected,
                         };

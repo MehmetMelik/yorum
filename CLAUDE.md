@@ -271,7 +271,7 @@ Stabilization release — no new language features or builtins. Focus on robustn
 - **Effects clarification:** `SPEC.md` section 5.1 notes that `effects` is parsed but not enforced
 - **Test coverage:** 56 new integration tests (5 robustness, 15 parser errors, 7 module system, 7 control flow, 5 struct/trait, 17 example programs) — total 336 tests (46 unit + 290 integration)
 
-## Completed: v1.0.1 — Codegen Bug Fixes
+## Completed: v1.0.2 — Codegen Bug Fixes
 
 Four correctness bugs in `codegen.rs` identified by staff-engineer code review and fixed.
 

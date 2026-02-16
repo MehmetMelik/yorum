@@ -730,7 +730,7 @@ cargo test test_fibonacci     # single test by name
 | **v0.8** | Ownership checker: type-aware move tracking, branch merging, loop safety | Done |
 | **v0.9** | Networking: TCP/UDP sockets, DNS resolution, HTTP client (14 builtins) | Done |
 | **v1.0** | Stable language specification and ABI, production-ready toolchain | Done |
-| **v1.0.1** | Codegen bug fixes: stale PHI labels, HashMap tombstone loop, spawn alignment, unit IR | Done |
+| **v1.0.2** | Codegen bug fixes: stale PHI labels, HashMap tombstone loop, spawn alignment, unit IR | Done |
 
 ## License
 

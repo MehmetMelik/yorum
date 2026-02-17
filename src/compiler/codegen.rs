@@ -4545,22 +4545,24 @@ impl Codegen {
         };
 
         let mut arm_labels: Vec<String> = Vec::new();
+        let mut check_labels: Vec<String> = Vec::new();
         for _ in &s.arms {
             arm_labels.push(self.fresh_label("match.arm"));
+            check_labels.push(self.fresh_label("match.check"));
         }
         let default_label = self.fresh_label("match.default");
 
         // Emit cascading comparisons
         for (i, arm) in s.arms.iter().enumerate() {
+            let next = if i + 1 < s.arms.len() {
+                check_labels[i + 1].clone()
+            } else {
+                default_label.clone()
+            };
             match &arm.pattern {
                 Pattern::Literal(Literal::Int(n), _) => {
                     let cmp = self.fresh_temp();
                     self.emit_line(&format!("{} = icmp eq i64 {}, {}", cmp, compare_val, n));
-                    let next = if i + 1 < s.arms.len() {
-                        format!("match.check.{}", i + 1)
-                    } else {
-                        default_label.clone()
-                    };
                     self.emit_line(&format!(
                         "br i1 {}, label %{}, label %{}",
                         cmp, arm_labels[i], next
@@ -4576,11 +4578,6 @@ impl Codegen {
                         "{} = icmp eq i8 {}, {}",
                         cmp, compare_val, *c as u8
                     ));
-                    let next = if i + 1 < s.arms.len() {
-                        format!("match.check.{}", i + 1)
-                    } else {
-                        default_label.clone()
-                    };
                     self.emit_line(&format!(
                         "br i1 {}, label %{}, label %{}",
                         cmp, arm_labels[i], next
@@ -4602,11 +4599,6 @@ impl Codegen {
                                 "{} = icmp eq i32 {}, {}",
                                 cmp, compare_val, tag
                             ));
-                            let next = if i + 1 < s.arms.len() {
-                                format!("match.check.{}", i + 1)
-                            } else {
-                                default_label.clone()
-                            };
                             self.emit_line(&format!(
                                 "br i1 {}, label %{}, label %{}",
                                 cmp, arm_labels[i], next
@@ -4626,11 +4618,6 @@ impl Codegen {
                     let tag = self.variant_tag(vname)?;
                     let cmp = self.fresh_temp();
                     self.emit_line(&format!("{} = icmp eq i32 {}, {}", cmp, compare_val, tag));
-                    let next = if i + 1 < s.arms.len() {
-                        format!("match.check.{}", i + 1)
-                    } else {
-                        default_label.clone()
-                    };
                     self.emit_line(&format!(
                         "br i1 {}, label %{}, label %{}",
                         cmp, arm_labels[i], next
@@ -4670,7 +4657,7 @@ impl Codegen {
                             "i64".to_string()
                         };
                         let val = &compare_val;
-                        let ptr = format!("%{}.match.addr", name);
+                        let ptr = self.fresh_temp();
                         self.emit_line(&format!("{} = alloca {}", ptr, ty_str));
                         self.emit_line(&format!("store {} {}, ptr {}", ty_str, val, ptr));
                         self.define_var(name, &ptr, &ty_str);
@@ -4712,7 +4699,7 @@ impl Codegen {
                                                 "{} = load {}, ptr {}",
                                                 field_val, field_llvm_ty, field_ptr
                                             ));
-                                            let bind_ptr = format!("%{}.match.addr", bname);
+                                            let bind_ptr = self.fresh_temp();
                                             self.emit_line(&format!(
                                                 "{} = alloca {}",
                                                 bind_ptr, field_llvm_ty

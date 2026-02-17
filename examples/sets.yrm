@@ -1,0 +1,54 @@
+// sets.yrm — Generic Set<T> collection type.
+//
+// Demonstrates: Set<T> with all hashable key types, set builtins
+// (set_new, set_add, set_has, set_remove, set_size, set_values).
+
+fn main() -> int {
+    // Set<int>
+    let nums: Set<int> = set_new();
+    set_add(nums, 10);
+    set_add(nums, 20);
+    set_add(nums, 30);
+    set_add(nums, 10);  // duplicate, no effect
+    print_str("=== Set<int> ===");
+    print_int(set_size(nums));
+    print_bool(set_has(nums, 20));
+    print_bool(set_has(nums, 99));
+
+    // Set<string>
+    let names: Set<string> = set_new();
+    set_add(names, "alice");
+    set_add(names, "bob");
+    set_add(names, "carol");
+    print_str("=== Set<string> ===");
+    print_int(set_size(names));
+    print_bool(set_has(names, "alice"));
+
+    // Set<char>
+    let chars: Set<char> = set_new();
+    set_add(chars, 'a');
+    set_add(chars, 'b');
+    set_add(chars, 'c');
+    print_str("=== Set<char> ===");
+    print_int(set_size(chars));
+    print_bool(set_has(chars, 'b'));
+
+    // Set<bool>
+    let bools: Set<bool> = set_new();
+    set_add(bools, true);
+    set_add(bools, false);
+    set_add(bools, true);  // duplicate
+    print_str("=== Set<bool> ===");
+    print_int(set_size(bools));
+
+    // set_remove, set_values
+    print_str("=== remove/values ===");
+    set_remove(nums, 20);
+    print_int(set_size(nums));
+    print_bool(set_has(nums, 20));
+
+    let vs: [int] = set_values(nums);
+    print_int(len(vs));
+
+    return 0;
+}

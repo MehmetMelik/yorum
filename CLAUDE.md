@@ -111,7 +111,7 @@ Multi-file projects (`yorum build`) add a front-end step: `ModuleResolver` disco
 - `?` operator: `Option<T>?` yields `T` (fn must return `Option<_>`), `Result<T, E>?` yields `T` (fn must return `Result<_, E>`)
 - Match exhaustiveness checked for enums
 - Generic `Map<K, V>` and `Set<T>` with keys restricted to hashable primitives (`int`, `string`, `char`, `bool`)
-- Copy types: `int`, `float`, `bool`, `char`, `string`, `unit`. Everything else (structs, enums, arrays) uses move semantics
+- Copy types: `int`, `float`, `bool`, `char`, `string`, `unit`, `[T]` (arrays), `Map<K,V>`, `Set<T>`. Structs and enums use move semantics
 - Reserved words cannot be used as identifiers (including module names)
 
 ### Test organization

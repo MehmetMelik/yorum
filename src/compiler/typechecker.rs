@@ -641,6 +641,37 @@ impl TypeChecker {
         );
     }
 
+    /// Recursive type compatibility check, treating TypeVar as wildcard.
+    fn types_compatible(a: &Type, b: &Type) -> bool {
+        if a == b {
+            return true;
+        }
+        match (a, b) {
+            (Type::TypeVar(_), _) | (_, Type::TypeVar(_)) => true,
+            (Type::Array(inner_a), Type::Array(inner_b)) => {
+                Self::types_compatible(inner_a, inner_b)
+            }
+            (Type::Generic(name1, args1), Type::Generic(name2, args2)) => {
+                name1 == name2
+                    && args1.len() == args2.len()
+                    && args1
+                        .iter()
+                        .zip(args2.iter())
+                        .all(|(x, y)| Self::types_compatible(x, y))
+            }
+            (Type::Generic(name, _), Type::Named(vname))
+            | (Type::Named(vname), Type::Generic(name, _)) => name == vname,
+            (Type::Tuple(elems_a), Type::Tuple(elems_b)) => {
+                elems_a.len() == elems_b.len()
+                    && elems_a
+                        .iter()
+                        .zip(elems_b.iter())
+                        .all(|(x, y)| Self::types_compatible(x, y))
+            }
+            _ => false,
+        }
+    }
+
     /// Type-check an entire program. Returns Ok(()) or collected errors.
     pub fn check_program(&mut self, program: &Program) -> Result<(), Vec<TypeError>> {
         // Pass 1: register all top-level declarations
@@ -1049,21 +1080,7 @@ impl TypeChecker {
                     }
                 }
                 if let Some(val_ty) = self.infer_expr_with_expectation(&s.value, Some(&s.ty)) {
-                    // For generic types, compare base name
-                    let compatible = match (&s.ty, &val_ty) {
-                        (Type::Generic(name, _), Type::Named(vname)) => name == vname,
-                        (Type::Generic(name1, args1), Type::Generic(name2, args2)) => {
-                            name1 == name2
-                                && args1.len() == args2.len()
-                                && args1.iter().zip(args2.iter()).all(|(a, b)| {
-                                    matches!(a, Type::TypeVar(_))
-                                        || matches!(b, Type::TypeVar(_))
-                                        || a == b
-                                })
-                        }
-                        _ => val_ty == s.ty,
-                    };
-                    if !compatible {
+                    if !Self::types_compatible(&s.ty, &val_ty) {
                         self.errors.push(TypeError {
                             message: format!(
                                 "cannot assign '{}' to variable of type '{}'",
@@ -1161,7 +1178,7 @@ impl TypeChecker {
                 let target_ty = self.infer_expr(&s.target);
                 let value_ty = self.infer_expr_with_expectation(&s.value, target_ty.as_ref());
                 if let (Some(tt), Some(vt)) = (target_ty, value_ty) {
-                    if tt != vt {
+                    if !Self::types_compatible(&tt, &vt) {
                         self.errors.push(TypeError {
                             message: format!("cannot assign '{}' to '{}'", vt, tt),
                             span: s.span,
@@ -1176,20 +1193,7 @@ impl TypeChecker {
                     if let Some(actual) =
                         self.infer_expr_with_expectation(&s.value, Some(&expected))
                     {
-                        let compatible = match (&expected, &actual) {
-                            (Type::Generic(name1, args1), Type::Generic(name2, args2)) => {
-                                name1 == name2
-                                    && args1.len() == args2.len()
-                                    && args1.iter().zip(args2.iter()).all(|(a, b)| {
-                                        matches!(a, Type::TypeVar(_))
-                                            || matches!(b, Type::TypeVar(_))
-                                            || a == b
-                                    })
-                            }
-                            (Type::Generic(name, _), Type::Named(vname)) => name == vname,
-                            _ => actual == expected,
-                        };
-                        if !compatible {
+                        if !Self::types_compatible(&expected, &actual) {
                             self.errors.push(TypeError {
                                 message: format!(
                                     "return type mismatch: expected '{}', found '{}'",
@@ -1811,7 +1815,7 @@ impl TypeChecker {
                         if let Some(arr_ty) = self.infer_expr(&args[0]) {
                             if let Type::Array(inner) = &arr_ty {
                                 if let Some(val_ty) = self.infer_expr(&args[1]) {
-                                    if val_ty != **inner {
+                                    if !Self::types_compatible(inner, &val_ty) {
                                         self.errors.push(TypeError {
                                             message: format!(
                                                 "push: array expects '{}', found '{}'",

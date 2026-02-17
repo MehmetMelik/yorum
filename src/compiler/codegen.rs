@@ -7564,6 +7564,17 @@ impl Codegen {
                     self.find_enum_for_variant(name).is_some()
                 }
             }
+            ExprKind::Index(arr_expr, _) => {
+                // Array index of aggregate types returns alloca pointer (via memcpy)
+                if let ExprKind::Ident(name) = &arr_expr.kind {
+                    self.array_elem_types
+                        .get(name)
+                        .map(|ty| Self::is_aggregate_type(ty))
+                        .unwrap_or(false)
+                } else {
+                    false
+                }
+            }
             _ => false,
         }
     }

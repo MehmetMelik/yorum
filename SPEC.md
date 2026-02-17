@@ -128,9 +128,23 @@ fields but different names are distinct types.
   The identifier `result` is bound to the return value and may be used in the
   expression.
 - `effects` lists the effect capabilities the function may use.
-  The `effects` clause is parsed and preserved in the AST but is not enforced by
-  the compiler. It serves as documentation. Effect enforcement is planned for a
-  future release.
+  **Enforced at compile time** (v1.4+). The compiler checks that every call site
+  only uses effects declared in the enclosing function's `effects` clause.
+
+  Six effect categories:
+  | Effect | Builtins |
+  |--------|----------|
+  | `io` | `print_int`, `print_float`, `print_bool`, `print_str`, `print_char`, `print_err`, `read_line`, `print_flush` |
+  | `fs` | `file_read`, `file_write`, `file_exists`, `file_append` |
+  | `net` | `tcp_connect`, `tcp_listen`, `tcp_accept`, `tcp_send`, `tcp_recv`, `tcp_close`, `udp_socket`, `udp_bind`, `udp_send_to`, `udp_recv_from`, `dns_resolve`, `http_request`, `http_get`, `http_post` |
+  | `time` | `time_ms` |
+  | `env` | `env_get`, `exit`, `args` |
+  | `concurrency` | `spawn`, `chan`, `send`, `recv` |
+
+  Functions **without** an `effects` clause are unchecked (backward compatible).
+  The compiler infers their effects for validation when called from checked functions.
+  `main` is always unchecked. `pure fn` is strictly more restrictive than empty effects.
+  Memory-only operations (math, string ops, array push/pop, collections) require no effect.
 - Type parameters (e.g., `<T, U>`) make the function generic.
 
 ### 5.2 Structs

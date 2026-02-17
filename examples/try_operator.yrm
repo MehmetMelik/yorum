@@ -1,0 +1,63 @@
+// try_operator.yrm — The ? operator for ergonomic error propagation.
+//
+// Demonstrates: ? on Option<T>, ? on Result<T, E>, chaining,
+// None propagation, Err propagation.
+
+fn find_value(x: int) -> Option<int> {
+    if x > 0 {
+        return Some(x * 10);
+    }
+    return None;
+}
+
+fn double_find(x: int) -> Option<int> {
+    let val: int = find_value(x)?;
+    return Some(val + 1);
+}
+
+fn divide(a: int, b: int) -> Result<int, string> {
+    if b == 0 {
+        return Err("division by zero");
+    }
+    return Ok(a / b);
+}
+
+fn chain_divide(a: int, b: int, c: int) -> Result<int, string> {
+    let r1: int = divide(a, b)?;
+    let r2: int = divide(r1, c)?;
+    return Ok(r2);
+}
+
+fn main() -> int {
+    // Option ? — success path
+    print_str("=== Option ? ===");
+    let opt1: Option<int> = double_find(5);
+    match opt1 {
+        Some(v) => { print_int(v); },
+        None => { print_str("none"); },
+    }
+
+    // Option ? — None propagation
+    let opt2: Option<int> = double_find(0);
+    match opt2 {
+        Some(v) => { print_int(v); },
+        None => { print_str("got none"); },
+    }
+
+    // Result ? — success path
+    print_str("=== Result ? ===");
+    let res1: Result<int, string> = chain_divide(100, 5, 2);
+    match res1 {
+        Ok(v) => { print_int(v); },
+        Err(e) => { print_str(e); },
+    }
+
+    // Result ? — Err propagation
+    let res2: Result<int, string> = chain_divide(100, 0, 2);
+    match res2 {
+        Ok(v) => { print_int(v); },
+        Err(e) => { print_str(e); },
+    }
+
+    return 0;
+}

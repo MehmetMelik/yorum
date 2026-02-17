@@ -1,33 +1,24 @@
-// effects.yrm — Effect annotations and purity.
+// effects.yrm — Effect system enforcement.
 //
-// Demonstrates: pure vs impure functions, effect annotations,
-//               contract clauses (requires/ensures).
+// Demonstrates: pure fn, effects io, effects fs, effects io+fs,
+//               backward-compatible unchecked functions, effect inference.
 
 module fx;
 
-// A pure function — no side effects, deterministic.
+// ── Pure functions: no side effects, no allocation mutations ──
+
 pure fn square(x: int) -> int
     ensures result >= 0
 {
     return x * x;
 }
 
-// A pure function with a precondition.
 pure fn safe_div(a: int, b: int) -> int
     requires b != 0
 {
     return a / b;
 }
 
-// An impure function — performs IO.
-fn display_result(label: int, value: int) -> unit
-    effects io
-{
-    print_int(label);
-    print_int(value);
-}
-
-// Compute the sum of squares from 1 to n.
 pure fn sum_of_squares(n: int) -> int
     requires n >= 0
     ensures result >= 0
@@ -41,9 +32,80 @@ pure fn sum_of_squares(n: int) -> int
     return total;
 }
 
+// ── Effect-checked functions: declare exactly what they touch ──
+
+// Only performs console I/O.
+fn display(label: string, value: int) -> unit
+    effects io
+{
+    print_str(label);
+    print_int(value);
+}
+
+// Only performs filesystem operations.
+fn save_result(path: string, content: string) -> bool
+    effects fs
+{
+    return file_write(path, content);
+}
+
+// Performs both I/O and filesystem operations.
+fn log_and_save(msg: string, path: string) -> unit
+    effects io, fs
+{
+    print_str(msg);
+    let ok: bool = file_write(path, msg);
+    if ok {
+        print_str("saved successfully");
+    }
+}
+
+// ── Unchecked functions: backward-compatible, can do anything ──
+
+// No effects clause — the compiler infers io from print_str.
+// When called from an effect-checked function, the inferred effects are used.
+fn unchecked_printer(msg: string) -> unit {
+    print_str(msg);
+}
+
+// This calls unchecked_printer, which infers io. Since we declare io, it's fine.
+fn caller_with_io() -> unit
+    effects io
+{
+    unchecked_printer("hello from caller");
+}
+
+// ── Memory-only operations need no effects ──
+
+// Even with an empty effects list, memory-only operations are allowed:
+// math builtins, string ops, array push/pop, etc.
+fn compute() -> int
+    effects
+{
+    let mut arr: [int] = [1, 2, 3];
+    push(arr, 4);
+    let n: int = abs_int(-42);
+    let s: string = str_concat("hello", " world");
+    return n + len(arr);
+}
+
+// ── Main: always unchecked (entry point) ──
+
 fn main() -> int {
+    // Pure computation
     let result: int = sum_of_squares(10);
-    display_result(10, result);
+    display("sum of squares(10) = ", result);
     print_int(safe_div(100, 7));
+
+    // Effect-checked calls
+    log_and_save("logging\n", "/tmp/yorum_effects_test.txt");
+
+    // Unchecked call (backward compat)
+    unchecked_printer("unchecked works too");
+
+    // Memory-only computation
+    let n: int = compute();
+    print_int(n);
+
     return 0;
 }

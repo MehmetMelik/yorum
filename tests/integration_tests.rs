@@ -5619,3 +5619,486 @@ fn test_collection_calls_in_match_block() {
     assert!(ir.contains("set_add__int"));
     assert!(ir.contains("set_size__int"));
 }
+
+// ═══════════════════════════════════════════════════════════════
+//  v1.4 — Effect system enforcement
+// ═══════════════════════════════════════════════════════════════
+
+// ── Validation tests ──
+
+#[test]
+fn test_effects_unknown_effect_name_rejected() {
+    let result = yorum::typecheck("fn foo() -> unit effects badeffect { print_str(\"hi\"); }");
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(err.contains("unknown effect 'badeffect'"));
+}
+
+#[test]
+fn test_effects_pure_fn_with_effects_clause_rejected() {
+    let result = yorum::typecheck("pure fn foo() -> int effects io { return 1; }");
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(err.contains("pure function cannot have an 'effects' clause"));
+}
+
+#[test]
+fn test_effects_valid_effect_names_accepted() {
+    parse_and_check(
+        "fn foo() -> unit effects io, fs, net, time, env, concurrency { }\n\
+         fn main() -> int { foo(); return 0; }",
+    );
+}
+
+// ── Per-effect category tests ──
+
+#[test]
+fn test_effects_io_allowed_when_declared() {
+    parse_and_check(
+        "fn foo() -> unit effects io { print_str(\"hello\"); }\n\
+         fn main() -> int { foo(); return 0; }",
+    );
+}
+
+#[test]
+fn test_effects_io_rejected_when_missing() {
+    let result = yorum::typecheck(
+        "fn foo() -> unit effects fs { print_str(\"hello\"); }\n\
+         fn main() -> int { foo(); return 0; }",
+    );
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(err.contains("'io' effect"));
+    assert!(err.contains("print_str"));
+}
+
+#[test]
+fn test_effects_fs_allowed_when_declared() {
+    parse_and_check(
+        "fn foo() -> unit effects fs { let x0: bool = file_exists(\"test.txt\"); }\n\
+         fn main() -> int { foo(); return 0; }",
+    );
+}
+
+#[test]
+fn test_effects_fs_rejected_when_missing() {
+    let result = yorum::typecheck(
+        "fn foo() -> unit effects io { let s0: string = file_read(\"test.txt\"); }\n\
+         fn main() -> int { foo(); return 0; }",
+    );
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(err.contains("'fs' effect"));
+    assert!(err.contains("file_read"));
+}
+
+#[test]
+fn test_effects_net_allowed_when_declared() {
+    parse_and_check(
+        "fn foo() -> unit effects net { let s0: string = dns_resolve(\"example.com\"); }\n\
+         fn main() -> int { foo(); return 0; }",
+    );
+}
+
+#[test]
+fn test_effects_net_rejected_when_missing() {
+    let result = yorum::typecheck(
+        "fn foo() -> unit effects io { let s0: string = http_get(\"http://example.com\"); }\n\
+         fn main() -> int { foo(); return 0; }",
+    );
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(err.contains("'net' effect"));
+    assert!(err.contains("http_get"));
+}
+
+#[test]
+fn test_effects_time_allowed_when_declared() {
+    parse_and_check(
+        "fn foo() -> int effects time { return time_ms(); }\n\
+         fn main() -> int { return foo(); }",
+    );
+}
+
+#[test]
+fn test_effects_time_rejected_when_missing() {
+    let result = yorum::typecheck(
+        "fn foo() -> int effects io { return time_ms(); }\n\
+         fn main() -> int { return foo(); }",
+    );
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(err.contains("'time' effect"));
+    assert!(err.contains("time_ms"));
+}
+
+#[test]
+fn test_effects_env_allowed_when_declared() {
+    parse_and_check(
+        "fn foo() -> unit effects env { let s0: string = env_get(\"PATH\"); }\n\
+         fn main() -> int { foo(); return 0; }",
+    );
+}
+
+#[test]
+fn test_effects_env_rejected_when_missing() {
+    let result = yorum::typecheck(
+        "fn foo() -> unit effects io { exit(1); }\n\
+         fn main() -> int { foo(); return 0; }",
+    );
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(err.contains("'env' effect"));
+    assert!(err.contains("exit"));
+}
+
+// ── Multiple effects ──
+
+#[test]
+fn test_effects_multiple_effects_allowed() {
+    parse_and_check(
+        "fn foo() -> unit effects io, fs {\n\
+         \x20   print_str(\"reading file\");\n\
+         \x20   let s0: string = file_read(\"data.txt\");\n\
+         }\n\
+         fn main() -> int { foo(); return 0; }",
+    );
+}
+
+#[test]
+fn test_effects_multiple_effects_partial_missing() {
+    let result = yorum::typecheck(
+        "fn foo() -> unit effects io {\n\
+         \x20   print_str(\"reading file\");\n\
+         \x20   let s0: string = file_read(\"data.txt\");\n\
+         }\n\
+         fn main() -> int { foo(); return 0; }",
+    );
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(err.contains("'fs' effect"));
+}
+
+// ── Propagation tests ──
+
+#[test]
+fn test_effects_callee_effects_must_be_subset() {
+    let result = yorum::typecheck(
+        "fn printer() -> unit effects io { print_str(\"hi\"); }\n\
+         fn wrapper() -> unit effects fs { printer(); }\n\
+         fn main() -> int { wrapper(); return 0; }",
+    );
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(err.contains("'io' effect"));
+    assert!(err.contains("printer"));
+}
+
+#[test]
+fn test_effects_superset_is_ok() {
+    parse_and_check(
+        "fn printer() -> unit effects io { print_str(\"hi\"); }\n\
+         fn wrapper() -> unit effects io, fs { printer(); }\n\
+         fn main() -> int { wrapper(); return 0; }",
+    );
+}
+
+#[test]
+fn test_effects_transitive_propagation_error() {
+    let result = yorum::typecheck(
+        "fn b() -> unit effects io { print_str(\"b\"); }\n\
+         fn a() -> unit effects fs { b(); }\n\
+         fn main() -> int { a(); return 0; }",
+    );
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(err.contains("'io' effect"));
+}
+
+// ── Inference tests ──
+
+#[test]
+fn test_effects_inference_from_builtin() {
+    parse_and_check(
+        "fn unchecked_printer() -> unit { print_str(\"hello\"); }\n\
+         fn caller() -> unit effects io { unchecked_printer(); }\n\
+         fn main() -> int { caller(); return 0; }",
+    );
+}
+
+#[test]
+fn test_effects_inference_rejects_missing() {
+    let result = yorum::typecheck(
+        "fn unchecked_printer() -> unit { print_str(\"hello\"); }\n\
+         fn caller() -> unit effects fs { unchecked_printer(); }\n\
+         fn main() -> int { caller(); return 0; }",
+    );
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(err.contains("'io' effect"));
+}
+
+#[test]
+fn test_effects_transitive_inference() {
+    parse_and_check(
+        "fn b() -> unit { print_str(\"b\"); }\n\
+         fn a() -> unit { b(); }\n\
+         fn caller() -> unit effects io { a(); }\n\
+         fn main() -> int { caller(); return 0; }",
+    );
+}
+
+#[test]
+fn test_effects_transitive_inference_rejects() {
+    let result = yorum::typecheck(
+        "fn b() -> unit { print_str(\"b\"); }\n\
+         fn a() -> unit { b(); }\n\
+         fn caller() -> unit effects fs { a(); }\n\
+         fn main() -> int { caller(); return 0; }",
+    );
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(err.contains("'io' effect"));
+}
+
+// ── Backward compatibility tests ──
+
+#[test]
+fn test_effects_unchecked_fn_compiles_freely() {
+    parse_and_check(
+        "fn do_everything() -> unit {\n\
+         \x20   print_str(\"hello\");\n\
+         \x20   let s0: string = env_get(\"PATH\");\n\
+         }\n\
+         fn main() -> int { do_everything(); return 0; }",
+    );
+}
+
+#[test]
+fn test_effects_main_always_unchecked() {
+    parse_and_check(
+        "fn main() -> int {\n\
+         \x20   print_str(\"hello\");\n\
+         \x20   let s0: string = env_get(\"HOME\");\n\
+         \x20   return 0;\n\
+         }",
+    );
+}
+
+#[test]
+fn test_effects_memory_ops_need_no_effect() {
+    parse_and_check(
+        "fn foo() -> int effects io {\n\
+         \x20   let mut arr: [int] = [1, 2, 3];\n\
+         \x20   push(arr, 4);\n\
+         \x20   let n0: int = abs_int(-5);\n\
+         \x20   let s0: string = str_concat(\"a\", \"b\");\n\
+         \x20   print_int(len(arr));\n\
+         \x20   return 0;\n\
+         }\n\
+         fn main() -> int { return foo(); }",
+    );
+}
+
+#[test]
+fn test_effects_empty_effects_clause() {
+    parse_and_check(
+        "fn pure_ish() -> int effects {\n\
+         \x20   let x: int = abs_int(-5);\n\
+         \x20   return x;\n\
+         }\n\
+         fn main() -> int { return pure_ish(); }",
+    );
+}
+
+#[test]
+fn test_effects_empty_effects_rejects_io() {
+    let result = yorum::typecheck(
+        "fn pure_ish() -> unit effects { print_str(\"hello\"); }\n\
+         fn main() -> int { pure_ish(); return 0; }",
+    );
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(err.contains("'io' effect"));
+}
+
+// ── Closure tests ──
+
+#[test]
+fn test_effects_closure_inherits_enclosing_effects() {
+    parse_and_check(
+        "fn foo() -> unit effects io {\n\
+         \x20   let f: fn() -> unit = || -> unit { print_str(\"hello\"); };\n\
+         \x20   f();\n\
+         }\n\
+         fn main() -> int { foo(); return 0; }",
+    );
+}
+
+#[test]
+fn test_effects_closure_rejects_missing_effect() {
+    let result = yorum::typecheck(
+        "fn foo() -> unit effects fs {\n\
+         \x20   let f: fn() -> unit = || -> unit { print_str(\"hello\"); };\n\
+         \x20   f();\n\
+         }\n\
+         fn main() -> int { foo(); return 0; }",
+    );
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(err.contains("'io' effect"));
+}
+
+// ── Concurrency effect tests ──
+
+#[test]
+fn test_effects_concurrency_allowed() {
+    let ir = compile(
+        "fn worker() -> unit effects concurrency {\n\
+         \x20   let ch: Chan<int> = chan();\n\
+         \x20   send(ch, 42);\n\
+         }\n\
+         fn main() -> int { worker(); return 0; }",
+    );
+    assert!(ir.contains("define void @worker"));
+}
+
+#[test]
+fn test_effects_concurrency_rejected_when_missing() {
+    let result = yorum::typecheck(
+        "fn worker() -> unit effects io {\n\
+         \x20   let ch: Chan<int> = chan();\n\
+         \x20   send(ch, 42);\n\
+         }\n\
+         fn main() -> int { worker(); return 0; }",
+    );
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(err.contains("'concurrency' effect"));
+}
+
+#[test]
+fn test_effects_spawn_requires_concurrency() {
+    let result = yorum::typecheck(
+        "fn worker() -> unit effects io {\n\
+         \x20   let t: Task<int> = spawn { return 42; };\n\
+         \x20   let r0: int = t.join();\n\
+         }\n\
+         fn main() -> int { worker(); return 0; }",
+    );
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(err.contains("'concurrency' effect"));
+}
+
+// ── args() effect test ──
+
+#[test]
+fn test_effects_args_requires_env() {
+    let result = yorum::typecheck(
+        "fn foo() -> unit effects io {\n\
+         \x20   let a0: [string] = args();\n\
+         }\n\
+         fn main() -> int { foo(); return 0; }",
+    );
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(err.contains("'env' effect"));
+    assert!(err.contains("args"));
+}
+
+// ── Compile-time only (no IR changes) ──
+
+#[test]
+fn test_effects_compiles_to_same_ir() {
+    let ir = compile(
+        "fn greet() -> unit effects io { print_str(\"hello\"); }\n\
+         fn main() -> int { greet(); return 0; }",
+    );
+    assert!(ir.contains("define void @greet()"));
+    assert!(ir.contains("call void @print_str"));
+    assert!(!ir.contains("effect"));
+}
+
+// ── Bug fix regression tests ──
+
+#[test]
+fn test_effects_method_call_enforces_effects() {
+    // Bug 1: method calls bypassed effect enforcement
+    let result = yorum::typecheck(
+        "struct Printer { id: int }\n\
+         impl Printer {\n\
+         \x20   fn print(self: &Printer) -> unit effects io { print_str(\"hello\"); }\n\
+         }\n\
+         fn caller() -> unit effects fs {\n\
+         \x20   let p: Printer = Printer { id: 1 };\n\
+         \x20   p.print();\n\
+         }\n\
+         fn main() -> int { caller(); return 0; }",
+    );
+    assert!(result.is_err(), "expected error but got Ok: {:?}", result);
+    let err = result.unwrap_err();
+    assert!(err.contains("'io' effect"), "got: {}", err);
+}
+
+#[test]
+fn test_effects_method_call_allowed_when_declared() {
+    parse_and_check(
+        "struct Printer { id: int }\n\
+         impl Printer {\n\
+         \x20   fn print(self: &Printer) -> unit effects io { print_str(\"hello\"); }\n\
+         }\n\
+         fn caller() -> unit effects io {\n\
+         \x20   let p: Printer = Printer { id: 1 };\n\
+         \x20   p.print();\n\
+         }\n\
+         fn main() -> int { caller(); return 0; }",
+    );
+}
+
+#[test]
+fn test_effects_method_call_purity_enforced() {
+    // Bug 1 also: pure function calling impure method was allowed
+    let result = yorum::typecheck(
+        "struct Svc { id: int }\n\
+         impl Svc {\n\
+         \x20   fn do_io(self: &Svc) -> unit { print_str(\"hello\"); }\n\
+         }\n\
+         pure fn bad(s: &Svc) -> unit {\n\
+         \x20   s.do_io();\n\
+         }\n\
+         fn main() -> int { return 0; }",
+    );
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(err.contains("pure function cannot call impure method"));
+}
+
+#[test]
+fn test_effects_inference_includes_method_calls() {
+    // Bug 2: unchecked wrapper calling io method was inferred as effect-free
+    let result = yorum::typecheck(
+        "struct Logger { id: int }\n\
+         impl Logger {\n\
+         \x20   fn log(self: &Logger) -> unit effects io { print_str(\"log\"); }\n\
+         }\n\
+         fn unchecked_wrapper(l: &Logger) -> unit { l.log(); }\n\
+         fn caller() -> unit effects fs {\n\
+         \x20   let lg: Logger = Logger { id: 1 };\n\
+         \x20   unchecked_wrapper(lg);\n\
+         }\n\
+         fn main() -> int { caller(); return 0; }",
+    );
+    assert!(result.is_err(), "expected error but got Ok: {:?}", result);
+    let err = result.unwrap_err();
+    assert!(err.contains("'io' effect"), "got: {}", err);
+}
+
+#[test]
+fn test_effects_main_unknown_effect_rejected() {
+    // Bug 3: unknown effect names on main were silently accepted
+    let result = yorum::typecheck("fn main() -> int effects madeup { return 0; }");
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(err.contains("unknown effect 'madeup'"));
+}

@@ -70,6 +70,47 @@ struct FnSig {
     is_pure: bool,
     type_params: Vec<String>,
     span: Span,
+    /// None = unchecked (no effects clause), Some(vec![]) = no effects, Some(vec!["io"]) = io only
+    effects: Option<Vec<String>>,
+}
+
+const VALID_EFFECTS: &[&str] = &["io", "fs", "net", "time", "env", "concurrency"];
+
+/// Returns the effect categories for a builtin function name.
+/// Returns empty vec for pure/memory-only builtins (no external effects).
+/// Returns None for unknown names (not a builtin).
+fn builtin_effects(name: &str) -> Option<Vec<&'static str>> {
+    match name {
+        // io
+        "print_int" | "print_float" | "print_bool" | "print_str" | "print_char" | "print_err"
+        | "read_line" | "print_flush" => Some(vec!["io"]),
+        // fs
+        "file_read" | "file_write" | "file_exists" | "file_append" => Some(vec!["fs"]),
+        // net
+        "tcp_connect" | "tcp_listen" | "tcp_accept" | "tcp_send" | "tcp_recv" | "tcp_close"
+        | "udp_socket" | "udp_bind" | "udp_send_to" | "udp_recv_from" | "dns_resolve"
+        | "http_request" | "http_get" | "http_post" => Some(vec!["net"]),
+        // time
+        "time_ms" => Some(vec!["time"]),
+        // env
+        "env_get" | "exit" | "args" => Some(vec!["env"]),
+        // concurrency
+        "chan" | "send" | "recv" | "spawn" => Some(vec!["concurrency"]),
+        // Pure / memory-only builtins — no external effects
+        "str_len" | "str_concat" | "str_eq" | "str_charAt" | "str_sub" | "str_from_char"
+        | "char_to_int" | "int_to_char" | "int_to_float" | "float_to_int" | "int_to_str"
+        | "str_to_int" | "char_is_alpha" | "char_is_digit" | "char_is_whitespace"
+        | "float_to_str" | "bool_to_str" | "to_str" | "abs_int" | "abs_float" | "min_int"
+        | "max_int" | "min_float" | "max_float" | "sqrt" | "pow" | "sin" | "cos" | "tan"
+        | "floor" | "ceil" | "round" | "log" | "log10" | "exp" | "str_contains"
+        | "str_index_of" | "str_starts_with" | "str_ends_with" | "str_trim" | "str_replace"
+        | "str_to_upper" | "str_to_lower" | "str_repeat" | "str_split" | "contains_int"
+        | "contains_str" | "sort_int" | "sort_str" | "len" | "push" | "pop" | "slice"
+        | "concat_arrays" | "reverse" | "map_new" | "map_set" | "map_get" | "map_has"
+        | "map_size" | "map_remove" | "map_keys" | "map_values" | "set_new" | "set_add"
+        | "set_has" | "set_remove" | "set_size" | "set_values" => Some(vec![]),
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -120,6 +161,8 @@ pub struct TypeChecker {
     current_self_type: Option<Type>,
     current_fn_ret: Option<Type>,
     current_fn_is_pure: bool,
+    current_fn_effects: Option<Vec<String>>,
+    inferred_effects: HashMap<String, Vec<String>>,
     loop_depth: usize,
     errors: Vec<TypeError>,
     collect_symbols: bool,
@@ -146,6 +189,8 @@ impl TypeChecker {
             current_self_type: None,
             current_fn_ret: None,
             current_fn_is_pure: false,
+            current_fn_effects: None,
+            inferred_effects: HashMap::new(),
             loop_depth: 0,
             errors: Vec::new(),
             collect_symbols: false,
@@ -175,227 +220,289 @@ impl TypeChecker {
     }
 
     fn register_builtins(&mut self) {
-        let builtin = |params: Vec<Type>, ret: Type, is_pure: bool| FnSig {
-            params,
-            ret,
-            is_pure,
-            type_params: Vec::new(),
-            span: Span::synthetic(),
-        };
+        let builtin =
+            |params: Vec<Type>, ret: Type, is_pure: bool, effects: Option<Vec<String>>| FnSig {
+                params,
+                ret,
+                is_pure,
+                type_params: Vec::new(),
+                span: Span::synthetic(),
+                effects,
+            };
+        let eff_io = || Some(vec!["io".to_string()]);
+        let eff_fs = || Some(vec!["fs".to_string()]);
+        let eff_net = || Some(vec!["net".to_string()]);
+        let eff_time = || Some(vec!["time".to_string()]);
+        let eff_env = || Some(vec!["env".to_string()]);
+        let eff_none = || Some(vec![]);
+
+        // I/O builtins
         self.functions.insert(
             "print_int".to_string(),
-            builtin(vec![Type::Int], Type::Unit, false),
+            builtin(vec![Type::Int], Type::Unit, false, eff_io()),
         );
         self.functions.insert(
             "print_float".to_string(),
-            builtin(vec![Type::Float], Type::Unit, false),
+            builtin(vec![Type::Float], Type::Unit, false, eff_io()),
         );
         self.functions.insert(
             "print_bool".to_string(),
-            builtin(vec![Type::Bool], Type::Unit, false),
+            builtin(vec![Type::Bool], Type::Unit, false, eff_io()),
         );
         self.functions.insert(
             "print_str".to_string(),
-            builtin(vec![Type::Str], Type::Unit, false),
-        );
-        self.functions.insert(
-            "str_len".to_string(),
-            builtin(vec![Type::Str], Type::Int, true),
-        );
-        self.functions.insert(
-            "str_concat".to_string(),
-            builtin(vec![Type::Str, Type::Str], Type::Str, false),
-        );
-        self.functions.insert(
-            "str_eq".to_string(),
-            builtin(vec![Type::Str, Type::Str], Type::Bool, true),
+            builtin(vec![Type::Str], Type::Unit, false, eff_io()),
         );
         self.functions.insert(
             "print_char".to_string(),
-            builtin(vec![Type::Char], Type::Unit, false),
+            builtin(vec![Type::Char], Type::Unit, false, eff_io()),
+        );
+        self.functions.insert(
+            "print_err".to_string(),
+            builtin(vec![Type::Str], Type::Unit, false, eff_io()),
+        );
+        self.functions.insert(
+            "read_line".to_string(),
+            builtin(vec![], Type::Str, false, eff_io()),
+        );
+        self.functions.insert(
+            "print_flush".to_string(),
+            builtin(vec![Type::Str], Type::Unit, false, eff_io()),
+        );
+        // Pure string/char builtins
+        self.functions.insert(
+            "str_len".to_string(),
+            builtin(vec![Type::Str], Type::Int, true, eff_none()),
+        );
+        self.functions.insert(
+            "str_concat".to_string(),
+            builtin(vec![Type::Str, Type::Str], Type::Str, false, eff_none()),
+        );
+        self.functions.insert(
+            "str_eq".to_string(),
+            builtin(vec![Type::Str, Type::Str], Type::Bool, true, eff_none()),
         );
         // Type casting builtins
         self.functions.insert(
             "char_to_int".to_string(),
-            builtin(vec![Type::Char], Type::Int, true),
+            builtin(vec![Type::Char], Type::Int, true, eff_none()),
         );
         self.functions.insert(
             "int_to_char".to_string(),
-            builtin(vec![Type::Int], Type::Char, true),
+            builtin(vec![Type::Int], Type::Char, true, eff_none()),
         );
         self.functions.insert(
             "int_to_float".to_string(),
-            builtin(vec![Type::Int], Type::Float, true),
+            builtin(vec![Type::Int], Type::Float, true, eff_none()),
         );
         self.functions.insert(
             "float_to_int".to_string(),
-            builtin(vec![Type::Float], Type::Int, true),
+            builtin(vec![Type::Float], Type::Int, true, eff_none()),
         );
         self.functions.insert(
             "int_to_str".to_string(),
-            builtin(vec![Type::Int], Type::Str, true),
+            builtin(vec![Type::Int], Type::Str, true, eff_none()),
         );
         self.functions.insert(
             "str_to_int".to_string(),
-            builtin(vec![Type::Str], Type::Int, true),
+            builtin(vec![Type::Str], Type::Int, true, eff_none()),
         );
         // String/char operation builtins
         self.functions.insert(
             "str_charAt".to_string(),
-            builtin(vec![Type::Str, Type::Int], Type::Char, true),
+            builtin(vec![Type::Str, Type::Int], Type::Char, true, eff_none()),
         );
         self.functions.insert(
             "str_sub".to_string(),
-            builtin(vec![Type::Str, Type::Int, Type::Int], Type::Str, false),
+            builtin(
+                vec![Type::Str, Type::Int, Type::Int],
+                Type::Str,
+                false,
+                eff_none(),
+            ),
         );
         self.functions.insert(
             "str_from_char".to_string(),
-            builtin(vec![Type::Char], Type::Str, false),
+            builtin(vec![Type::Char], Type::Str, false, eff_none()),
         );
         self.functions.insert(
             "char_is_alpha".to_string(),
-            builtin(vec![Type::Char], Type::Bool, true),
+            builtin(vec![Type::Char], Type::Bool, true, eff_none()),
         );
         self.functions.insert(
             "char_is_digit".to_string(),
-            builtin(vec![Type::Char], Type::Bool, true),
+            builtin(vec![Type::Char], Type::Bool, true, eff_none()),
         );
         self.functions.insert(
             "char_is_whitespace".to_string(),
-            builtin(vec![Type::Char], Type::Bool, true),
+            builtin(vec![Type::Char], Type::Bool, true, eff_none()),
         );
         // File I/O builtins
         self.functions.insert(
             "file_read".to_string(),
-            builtin(vec![Type::Str], Type::Str, false),
+            builtin(vec![Type::Str], Type::Str, false, eff_fs()),
         );
         self.functions.insert(
             "file_write".to_string(),
-            builtin(vec![Type::Str, Type::Str], Type::Bool, false),
+            builtin(vec![Type::Str, Type::Str], Type::Bool, false, eff_fs()),
         );
         self.functions.insert(
-            "print_err".to_string(),
-            builtin(vec![Type::Str], Type::Unit, false),
+            "file_exists".to_string(),
+            builtin(vec![Type::Str], Type::Bool, false, eff_fs()),
+        );
+        self.functions.insert(
+            "file_append".to_string(),
+            builtin(vec![Type::Str, Type::Str], Type::Bool, false, eff_fs()),
         );
         // Process interaction builtins
         self.functions.insert(
             "exit".to_string(),
-            builtin(vec![Type::Int], Type::Unit, false),
+            builtin(vec![Type::Int], Type::Unit, false, eff_env()),
+        );
+        self.functions.insert(
+            "env_get".to_string(),
+            builtin(vec![Type::Str], Type::Str, false, eff_env()),
+        );
+        // Time
+        self.functions.insert(
+            "time_ms".to_string(),
+            builtin(vec![], Type::Int, false, eff_time()),
         );
         // Map and Set are now generic — their builtins are special-cased in infer_expr
-        // Math builtins
+        // Math builtins (pure, no effects)
         self.functions.insert(
             "abs_int".to_string(),
-            builtin(vec![Type::Int], Type::Int, true),
+            builtin(vec![Type::Int], Type::Int, true, eff_none()),
         );
         self.functions.insert(
             "abs_float".to_string(),
-            builtin(vec![Type::Float], Type::Float, true),
+            builtin(vec![Type::Float], Type::Float, true, eff_none()),
         );
         self.functions.insert(
             "min_int".to_string(),
-            builtin(vec![Type::Int, Type::Int], Type::Int, true),
+            builtin(vec![Type::Int, Type::Int], Type::Int, true, eff_none()),
         );
         self.functions.insert(
             "max_int".to_string(),
-            builtin(vec![Type::Int, Type::Int], Type::Int, true),
+            builtin(vec![Type::Int, Type::Int], Type::Int, true, eff_none()),
         );
         self.functions.insert(
             "min_float".to_string(),
-            builtin(vec![Type::Float, Type::Float], Type::Float, true),
+            builtin(
+                vec![Type::Float, Type::Float],
+                Type::Float,
+                true,
+                eff_none(),
+            ),
         );
         self.functions.insert(
             "max_float".to_string(),
-            builtin(vec![Type::Float, Type::Float], Type::Float, true),
+            builtin(
+                vec![Type::Float, Type::Float],
+                Type::Float,
+                true,
+                eff_none(),
+            ),
         );
         self.functions.insert(
             "sqrt".to_string(),
-            builtin(vec![Type::Float], Type::Float, true),
+            builtin(vec![Type::Float], Type::Float, true, eff_none()),
         );
         self.functions.insert(
             "pow".to_string(),
-            builtin(vec![Type::Float, Type::Float], Type::Float, true),
+            builtin(
+                vec![Type::Float, Type::Float],
+                Type::Float,
+                true,
+                eff_none(),
+            ),
         );
         self.functions.insert(
             "sin".to_string(),
-            builtin(vec![Type::Float], Type::Float, true),
+            builtin(vec![Type::Float], Type::Float, true, eff_none()),
         );
         self.functions.insert(
             "cos".to_string(),
-            builtin(vec![Type::Float], Type::Float, true),
+            builtin(vec![Type::Float], Type::Float, true, eff_none()),
         );
         self.functions.insert(
             "tan".to_string(),
-            builtin(vec![Type::Float], Type::Float, true),
+            builtin(vec![Type::Float], Type::Float, true, eff_none()),
         );
         self.functions.insert(
             "floor".to_string(),
-            builtin(vec![Type::Float], Type::Float, true),
+            builtin(vec![Type::Float], Type::Float, true, eff_none()),
         );
         self.functions.insert(
             "ceil".to_string(),
-            builtin(vec![Type::Float], Type::Float, true),
+            builtin(vec![Type::Float], Type::Float, true, eff_none()),
         );
         self.functions.insert(
             "round".to_string(),
-            builtin(vec![Type::Float], Type::Float, true),
+            builtin(vec![Type::Float], Type::Float, true, eff_none()),
         );
         self.functions.insert(
             "log".to_string(),
-            builtin(vec![Type::Float], Type::Float, true),
+            builtin(vec![Type::Float], Type::Float, true, eff_none()),
         );
         self.functions.insert(
             "log10".to_string(),
-            builtin(vec![Type::Float], Type::Float, true),
+            builtin(vec![Type::Float], Type::Float, true, eff_none()),
         );
         self.functions.insert(
             "exp".to_string(),
-            builtin(vec![Type::Float], Type::Float, true),
+            builtin(vec![Type::Float], Type::Float, true, eff_none()),
         );
-        // String utility builtins
+        // String utility builtins (no effects — memory-only)
         self.functions.insert(
             "str_contains".to_string(),
-            builtin(vec![Type::Str, Type::Str], Type::Bool, true),
+            builtin(vec![Type::Str, Type::Str], Type::Bool, true, eff_none()),
         );
         self.functions.insert(
             "str_index_of".to_string(),
-            builtin(vec![Type::Str, Type::Str], Type::Int, true),
+            builtin(vec![Type::Str, Type::Str], Type::Int, true, eff_none()),
         );
         self.functions.insert(
             "str_starts_with".to_string(),
-            builtin(vec![Type::Str, Type::Str], Type::Bool, true),
+            builtin(vec![Type::Str, Type::Str], Type::Bool, true, eff_none()),
         );
         self.functions.insert(
             "str_ends_with".to_string(),
-            builtin(vec![Type::Str, Type::Str], Type::Bool, true),
+            builtin(vec![Type::Str, Type::Str], Type::Bool, true, eff_none()),
         );
         self.functions.insert(
             "str_trim".to_string(),
-            builtin(vec![Type::Str], Type::Str, false),
+            builtin(vec![Type::Str], Type::Str, false, eff_none()),
         );
         self.functions.insert(
             "str_replace".to_string(),
-            builtin(vec![Type::Str, Type::Str, Type::Str], Type::Str, false),
+            builtin(
+                vec![Type::Str, Type::Str, Type::Str],
+                Type::Str,
+                false,
+                eff_none(),
+            ),
         );
         self.functions.insert(
             "str_to_upper".to_string(),
-            builtin(vec![Type::Str], Type::Str, false),
+            builtin(vec![Type::Str], Type::Str, false, eff_none()),
         );
         self.functions.insert(
             "str_to_lower".to_string(),
-            builtin(vec![Type::Str], Type::Str, false),
+            builtin(vec![Type::Str], Type::Str, false, eff_none()),
         );
         self.functions.insert(
             "str_repeat".to_string(),
-            builtin(vec![Type::Str, Type::Int], Type::Str, false),
+            builtin(vec![Type::Str, Type::Int], Type::Str, false, eff_none()),
         );
-        // Collection utility builtins (type-specific)
+        // Collection utility builtins (no effects — memory-only)
         self.functions.insert(
             "contains_int".to_string(),
             builtin(
                 vec![Type::Array(Box::new(Type::Int)), Type::Int],
                 Type::Bool,
                 true,
+                eff_none(),
             ),
         );
         self.functions.insert(
@@ -404,6 +511,7 @@ impl TypeChecker {
                 vec![Type::Array(Box::new(Type::Str)), Type::Str],
                 Type::Bool,
                 true,
+                eff_none(),
             ),
         );
         self.functions.insert(
@@ -412,6 +520,7 @@ impl TypeChecker {
                 vec![Type::Array(Box::new(Type::Int))],
                 Type::Array(Box::new(Type::Int)),
                 false,
+                eff_none(),
             ),
         );
         self.functions.insert(
@@ -420,61 +529,48 @@ impl TypeChecker {
                 vec![Type::Array(Box::new(Type::Str))],
                 Type::Array(Box::new(Type::Str)),
                 false,
+                eff_none(),
             ),
         );
         // (map_size, map_remove, map_keys, map_values are now special-cased in infer_expr)
-        // Enhanced I/O builtins
-        self.functions.insert(
-            "file_exists".to_string(),
-            builtin(vec![Type::Str], Type::Bool, false),
-        );
-        self.functions.insert(
-            "file_append".to_string(),
-            builtin(vec![Type::Str, Type::Str], Type::Bool, false),
-        );
-        self.functions
-            .insert("read_line".to_string(), builtin(vec![], Type::Str, false));
-        self.functions.insert(
-            "print_flush".to_string(),
-            builtin(vec![Type::Str], Type::Unit, false),
-        );
-        self.functions.insert(
-            "env_get".to_string(),
-            builtin(vec![Type::Str], Type::Str, false),
-        );
-        self.functions
-            .insert("time_ms".to_string(), builtin(vec![], Type::Int, false));
         // Networking — TCP
         self.functions.insert(
             "tcp_connect".to_string(),
-            builtin(vec![Type::Str, Type::Int], Type::Int, false),
+            builtin(vec![Type::Str, Type::Int], Type::Int, false, eff_net()),
         );
         self.functions.insert(
             "tcp_listen".to_string(),
-            builtin(vec![Type::Str, Type::Int], Type::Int, false),
+            builtin(vec![Type::Str, Type::Int], Type::Int, false, eff_net()),
         );
         self.functions.insert(
             "tcp_accept".to_string(),
-            builtin(vec![Type::Int], Type::Int, false),
+            builtin(vec![Type::Int], Type::Int, false, eff_net()),
         );
         self.functions.insert(
             "tcp_send".to_string(),
-            builtin(vec![Type::Int, Type::Str], Type::Int, false),
+            builtin(vec![Type::Int, Type::Str], Type::Int, false, eff_net()),
         );
         self.functions.insert(
             "tcp_recv".to_string(),
-            builtin(vec![Type::Int, Type::Int], Type::Str, false),
+            builtin(vec![Type::Int, Type::Int], Type::Str, false, eff_net()),
         );
         self.functions.insert(
             "tcp_close".to_string(),
-            builtin(vec![Type::Int], Type::Unit, false),
+            builtin(vec![Type::Int], Type::Unit, false, eff_net()),
         );
         // Networking — UDP
-        self.functions
-            .insert("udp_socket".to_string(), builtin(vec![], Type::Int, false));
+        self.functions.insert(
+            "udp_socket".to_string(),
+            builtin(vec![], Type::Int, false, eff_net()),
+        );
         self.functions.insert(
             "udp_bind".to_string(),
-            builtin(vec![Type::Int, Type::Str, Type::Int], Type::Int, false),
+            builtin(
+                vec![Type::Int, Type::Str, Type::Int],
+                Type::Int,
+                false,
+                eff_net(),
+            ),
         );
         self.functions.insert(
             "udp_send_to".to_string(),
@@ -482,16 +578,17 @@ impl TypeChecker {
                 vec![Type::Int, Type::Str, Type::Str, Type::Int],
                 Type::Int,
                 false,
+                eff_net(),
             ),
         );
         self.functions.insert(
             "udp_recv_from".to_string(),
-            builtin(vec![Type::Int, Type::Int], Type::Str, false),
+            builtin(vec![Type::Int, Type::Int], Type::Str, false, eff_net()),
         );
         // Networking — DNS
         self.functions.insert(
             "dns_resolve".to_string(),
-            builtin(vec![Type::Str], Type::Str, false),
+            builtin(vec![Type::Str], Type::Str, false, eff_net()),
         );
         // Networking — HTTP
         self.functions.insert(
@@ -500,24 +597,25 @@ impl TypeChecker {
                 vec![Type::Str, Type::Str, Type::Str, Type::Str],
                 Type::Str,
                 false,
+                eff_net(),
             ),
         );
         self.functions.insert(
             "http_get".to_string(),
-            builtin(vec![Type::Str], Type::Str, false),
+            builtin(vec![Type::Str], Type::Str, false, eff_net()),
         );
         self.functions.insert(
             "http_post".to_string(),
-            builtin(vec![Type::Str, Type::Str], Type::Str, false),
+            builtin(vec![Type::Str, Type::Str], Type::Str, false, eff_net()),
         );
         // String conversion builtins (for string interpolation)
         self.functions.insert(
             "float_to_str".to_string(),
-            builtin(vec![Type::Float], Type::Str, true),
+            builtin(vec![Type::Float], Type::Str, true, eff_none()),
         );
         self.functions.insert(
             "bool_to_str".to_string(),
-            builtin(vec![Type::Bool], Type::Str, true),
+            builtin(vec![Type::Bool], Type::Str, true, eff_none()),
         );
 
         // Register prelude generic enums: Option<T> and Result<T, E>
@@ -557,6 +655,9 @@ impl TypeChecker {
             }
         }
 
+        // Pass 1.5: infer effects for functions without explicit `effects` clause
+        self.infer_all_effects(program);
+
         // Pass 2: check function bodies, const values, and impl method bodies
         for decl in &program.declarations {
             match decl {
@@ -582,13 +683,24 @@ impl TypeChecker {
 
     // ── Registration ─────────────────────────────────────────
 
+    fn extract_effects(contracts: &[Contract]) -> Option<Vec<String>> {
+        for c in contracts {
+            if let Contract::Effects(effs) = c {
+                return Some(effs.clone());
+            }
+        }
+        None
+    }
+
     fn register_function(&mut self, f: &FnDecl) {
+        let effects = Self::extract_effects(&f.contracts);
         let sig = FnSig {
             params: f.params.iter().map(|p| p.ty.clone()).collect(),
             ret: f.return_type.clone(),
             is_pure: f.is_pure,
             type_params: f.type_params.iter().map(|tp| tp.name.clone()).collect(),
             span: f.span,
+            effects,
         };
         if self.collect_symbols {
             let params_desc: Vec<String> = f
@@ -657,6 +769,7 @@ impl TypeChecker {
                     is_pure: false,
                     type_params: Vec::new(),
                     span: m.span,
+                    effects: None,
                 };
                 (m.name.clone(), sig)
             })
@@ -670,6 +783,7 @@ impl TypeChecker {
 
         for method in &i.methods {
             let mangled = format!("{}_{}", i.target_type, method.name);
+            let effects = Self::extract_effects(&method.contracts);
             let sig = FnSig {
                 params: method
                     .params
@@ -684,6 +798,7 @@ impl TypeChecker {
                     .map(|tp| tp.name.clone())
                     .collect(),
                 span: method.span,
+                effects,
             };
             let self_param_ty = if let Some(p) = method.params.first() {
                 self.resolve_self_type(&p.ty, &self_ty)
@@ -788,6 +903,41 @@ impl TypeChecker {
 
         self.current_fn_ret = Some(f.return_type.clone());
         self.current_fn_is_pure = f.is_pure;
+
+        // Set up effect tracking for this function
+        let effects = Self::extract_effects(&f.contracts);
+
+        // Validate effect names (always, even on main/pure)
+        if let Some(ref effs) = effects {
+            for eff in effs {
+                if !VALID_EFFECTS.contains(&eff.as_str()) {
+                    self.errors.push(TypeError {
+                        message: format!(
+                            "unknown effect '{}'; valid effects are: {}",
+                            eff,
+                            VALID_EFFECTS.join(", ")
+                        ),
+                        span: f.span,
+                    });
+                }
+            }
+        }
+
+        if f.is_pure {
+            // pure fn: effects clause not allowed (pure is stricter)
+            if effects.is_some() {
+                self.errors.push(TypeError {
+                    message: "pure function cannot have an 'effects' clause".to_string(),
+                    span: f.span,
+                });
+            }
+            self.current_fn_effects = None; // purity system handles pure fns
+        } else if f.name == "main" {
+            self.current_fn_effects = None; // main is always unchecked
+        } else {
+            self.current_fn_effects = effects;
+        }
+
         self.push_scope();
 
         // Bind parameters
@@ -830,7 +980,7 @@ impl TypeChecker {
                         }
                     }
                 }
-                Contract::Effects(_) => {}
+                Contract::Effects(_) => {} // already handled above
             }
         }
 
@@ -838,6 +988,7 @@ impl TypeChecker {
         self.pop_scope();
         self.current_fn_ret = None;
         self.current_fn_is_pure = false;
+        self.current_fn_effects = None;
 
         if !f.type_params.is_empty() {
             self.type_param_scope.pop();
@@ -1494,6 +1645,7 @@ impl TypeChecker {
                     }
                     // Built-in concurrency functions
                     if name == "chan" {
+                        self.check_call_effects("chan", expr.span);
                         if !args.is_empty() {
                             self.errors.push(TypeError {
                                 message: "chan() takes no arguments".to_string(),
@@ -1505,6 +1657,7 @@ impl TypeChecker {
                         return Some(Type::Chan(Box::new(Type::Int)));
                     }
                     if name == "send" {
+                        self.check_call_effects("send", expr.span);
                         if args.len() != 2 {
                             self.errors.push(TypeError {
                                 message: format!(
@@ -1541,6 +1694,7 @@ impl TypeChecker {
                         return Some(Type::Unit);
                     }
                     if name == "recv" {
+                        self.check_call_effects("recv", expr.span);
                         if args.len() != 1 {
                             self.errors.push(TypeError {
                                 message: format!("'recv' expects 1 argument, found {}", args.len()),
@@ -1631,6 +1785,7 @@ impl TypeChecker {
                                 span: expr.span,
                             });
                         }
+                        self.check_call_effects("args", expr.span);
                         return Some(Type::Array(Box::new(Type::Str)));
                     }
 
@@ -2383,6 +2538,7 @@ impl TypeChecker {
                                 span: expr.span,
                             });
                         }
+                        self.check_call_effects(name, expr.span);
                         if args.len() != sig.params.len() {
                             self.errors.push(TypeError {
                                 message: format!(
@@ -2706,6 +2862,18 @@ impl TypeChecker {
 
                 if let Some(method) = method {
                     let sig = method.sig.clone();
+                    let mangled = method.mangled_name.clone();
+                    // Enforce purity: pure functions cannot call impure methods
+                    if self.current_fn_is_pure && !sig.is_pure {
+                        self.errors.push(TypeError {
+                            message: format!(
+                                "pure function cannot call impure method '{}'",
+                                method_name
+                            ),
+                            span: expr.span,
+                        });
+                    }
+                    self.check_call_effects(&mangled, expr.span);
                     // sig.params includes the self param; external args exclude self
                     let expected_args = sig.params.len() - 1;
                     if args.len() != expected_args {
@@ -2917,6 +3085,7 @@ impl TypeChecker {
                         span: expr.span,
                     });
                 }
+                self.check_call_effects("spawn", expr.span);
                 self.push_scope();
                 self.check_block(block);
                 // Infer the return type from the last return statement in the block
@@ -3294,6 +3463,275 @@ impl TypeChecker {
                 self.infer_type_vars_from_expected(g, c, type_params, bindings);
             }
             _ => {}
+        }
+    }
+
+    // ── Effect inference ──────────────────────────────────────
+
+    /// Collect all function call names from a block (lightweight AST walk).
+    fn collect_calls_in_block(block: &Block, out: &mut Vec<String>) {
+        for stmt in &block.stmts {
+            Self::collect_calls_in_stmt(stmt, out);
+        }
+    }
+
+    fn collect_calls_in_stmt(stmt: &Stmt, out: &mut Vec<String>) {
+        match stmt {
+            Stmt::Let(s) => Self::collect_calls_in_expr(&s.value, out),
+            Stmt::Assign(s) => {
+                Self::collect_calls_in_expr(&s.target, out);
+                Self::collect_calls_in_expr(&s.value, out);
+            }
+            Stmt::Return(s) => Self::collect_calls_in_expr(&s.value, out),
+            Stmt::If(s) => {
+                Self::collect_calls_in_expr(&s.condition, out);
+                Self::collect_calls_in_block(&s.then_block, out);
+                if let Some(ref else_branch) = s.else_branch {
+                    match else_branch.as_ref() {
+                        ElseBranch::Else(block) => Self::collect_calls_in_block(block, out),
+                        ElseBranch::ElseIf(if_stmt) => {
+                            // Wrap in a synthetic Stmt::If and recurse
+                            Self::collect_calls_in_expr(&if_stmt.condition, out);
+                            Self::collect_calls_in_block(&if_stmt.then_block, out);
+                            if let Some(ref inner) = if_stmt.else_branch {
+                                match inner.as_ref() {
+                                    ElseBranch::Else(block) => {
+                                        Self::collect_calls_in_block(block, out)
+                                    }
+                                    ElseBranch::ElseIf(inner_if) => {
+                                        let stmt = Stmt::If(inner_if.clone());
+                                        Self::collect_calls_in_stmt(&stmt, out);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Stmt::While(s) => {
+                Self::collect_calls_in_expr(&s.condition, out);
+                Self::collect_calls_in_block(&s.body, out);
+            }
+            Stmt::For(s) => {
+                Self::collect_calls_in_expr(&s.iterable, out);
+                Self::collect_calls_in_block(&s.body, out);
+            }
+            Stmt::Match(s) => {
+                Self::collect_calls_in_expr(&s.subject, out);
+                for arm in &s.arms {
+                    Self::collect_calls_in_block(&arm.body, out);
+                }
+            }
+            Stmt::Expr(s) => Self::collect_calls_in_expr(&s.expr, out),
+            Stmt::Break(_) | Stmt::Continue(_) => {}
+        }
+    }
+
+    fn collect_calls_in_expr(expr: &Expr, out: &mut Vec<String>) {
+        match &expr.kind {
+            ExprKind::Call(callee, args) => {
+                if let ExprKind::Ident(name) = &callee.kind {
+                    out.push(name.clone());
+                }
+                Self::collect_calls_in_expr(callee, out);
+                for arg in args {
+                    Self::collect_calls_in_expr(arg, out);
+                }
+            }
+            ExprKind::MethodCall(obj, method, args) => {
+                // Record method call with prefix for resolution during inference
+                out.push(format!("__method__{}", method));
+                Self::collect_calls_in_expr(obj, out);
+                for arg in args {
+                    Self::collect_calls_in_expr(arg, out);
+                }
+            }
+            ExprKind::Binary(lhs, _, rhs) => {
+                Self::collect_calls_in_expr(lhs, out);
+                Self::collect_calls_in_expr(rhs, out);
+            }
+            ExprKind::Unary(_, inner) => Self::collect_calls_in_expr(inner, out),
+            ExprKind::Index(arr, idx) => {
+                Self::collect_calls_in_expr(arr, out);
+                Self::collect_calls_in_expr(idx, out);
+            }
+            ExprKind::FieldAccess(obj, _) => Self::collect_calls_in_expr(obj, out),
+            ExprKind::StructInit(_, fields) => {
+                for f in fields {
+                    Self::collect_calls_in_expr(&f.value, out);
+                }
+            }
+            ExprKind::ArrayLit(elems) | ExprKind::TupleLit(elems) => {
+                for e in elems {
+                    Self::collect_calls_in_expr(e, out);
+                }
+            }
+            ExprKind::Closure(c) => Self::collect_calls_in_block(&c.body, out),
+            ExprKind::Spawn(block) => {
+                out.push("spawn".to_string());
+                Self::collect_calls_in_block(block, out);
+            }
+            ExprKind::Range(start, end) => {
+                Self::collect_calls_in_expr(start, out);
+                Self::collect_calls_in_expr(end, out);
+            }
+            ExprKind::Try(inner) => Self::collect_calls_in_expr(inner, out),
+            ExprKind::Literal(_) | ExprKind::Ident(_) => {}
+        }
+    }
+
+    /// Infer effects for all functions without explicit `effects` clause.
+    /// Uses fixed-point iteration over the call graph.
+    fn infer_all_effects(&mut self, program: &Program) {
+        // Build fn_bodies: name -> &Block
+        let mut fn_bodies: HashMap<String, &Block> = HashMap::new();
+        for decl in &program.declarations {
+            match decl {
+                Declaration::Function(f) => {
+                    fn_bodies.insert(f.name.clone(), &f.body);
+                }
+                Declaration::Impl(i) => {
+                    for method in &i.methods {
+                        let mangled = format!("{}_{}", i.target_type, method.name);
+                        fn_bodies.insert(mangled, &method.body);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Build call graph: fn_name -> set of called function names
+        let mut call_graph: HashMap<String, Vec<String>> = HashMap::new();
+        for (name, body) in &fn_bodies {
+            let mut calls = Vec::new();
+            Self::collect_calls_in_block(body, &mut calls);
+            call_graph.insert(name.clone(), calls);
+        }
+
+        // Initialize effects from declared/builtin sources
+        let mut effects: HashMap<String, HashSet<String>> = HashMap::new();
+
+        // Seed with builtin effects
+        for name in call_graph.keys() {
+            if let Some(sig) = self.functions.get(name) {
+                if let Some(ref declared) = sig.effects {
+                    effects.insert(name.clone(), declared.iter().cloned().collect());
+                    continue;
+                }
+            }
+            // For functions without declared effects, start with empty set
+            effects.entry(name.clone()).or_default();
+        }
+
+        // Fixed-point iteration
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for (fn_name, calls) in &call_graph {
+                // Skip functions with declared effects
+                if let Some(sig) = self.functions.get(fn_name) {
+                    if sig.effects.is_some() {
+                        continue;
+                    }
+                }
+
+                let mut new_effects: HashSet<String> =
+                    effects.get(fn_name).cloned().unwrap_or_default();
+
+                for callee in calls {
+                    // Resolve __method__ prefixed names to mangled function names
+                    let callee_effs: HashSet<String> =
+                        if let Some(method_name) = callee.strip_prefix("__method__") {
+                            // Find all mangled methods matching *_<method_name>
+                            let suffix = format!("_{}", method_name);
+                            let mut combined = HashSet::new();
+                            for (mangled, sig) in &self.functions {
+                                if mangled.ends_with(&suffix) {
+                                    if let Some(ref declared) = sig.effects {
+                                        combined.extend(declared.iter().cloned());
+                                    } else if let Some(e) = effects.get(mangled) {
+                                        combined.extend(e.iter().cloned());
+                                    }
+                                }
+                            }
+                            combined
+                        } else if let Some(e) = effects.get(callee) {
+                            e.clone()
+                        } else if let Some(be) = builtin_effects(callee) {
+                            be.iter().map(|s| s.to_string()).collect()
+                        } else if let Some(sig) = self.functions.get(callee) {
+                            sig.effects
+                                .as_ref()
+                                .map(|e| e.iter().cloned().collect())
+                                .unwrap_or_default()
+                        } else {
+                            HashSet::new()
+                        };
+
+                    for eff in callee_effs {
+                        if new_effects.insert(eff) {
+                            changed = true;
+                        }
+                    }
+                }
+
+                effects.insert(fn_name.clone(), new_effects);
+            }
+        }
+
+        // Store inferred effects (only for functions without declared effects)
+        for (name, effs) in effects {
+            if let Some(sig) = self.functions.get(&name) {
+                if sig.effects.is_some() {
+                    continue;
+                }
+            }
+            if !effs.is_empty() {
+                self.inferred_effects
+                    .insert(name, effs.into_iter().collect());
+            }
+        }
+    }
+
+    /// Check if calling `callee_name` is allowed under the current function's effect constraints.
+    fn check_call_effects(&mut self, callee_name: &str, span: Span) {
+        if self.current_fn_is_pure {
+            return; // purity system handles pure fns
+        }
+        let allowed = match &self.current_fn_effects {
+            None => return, // unchecked
+            Some(effs) => effs.clone(),
+        };
+
+        // Look up callee effects: FnSig.effects > inferred > builtin_effects()
+        let callee_effects: Vec<String> = if let Some(sig) = self.functions.get(callee_name) {
+            match &sig.effects {
+                Some(effs) => effs.clone(),
+                None => {
+                    // Check inferred effects for unchecked user functions
+                    self.inferred_effects
+                        .get(callee_name)
+                        .cloned()
+                        .unwrap_or_default()
+                }
+            }
+        } else if let Some(effs) = builtin_effects(callee_name) {
+            effs.iter().map(|s| s.to_string()).collect()
+        } else {
+            // Unknown function — no effect info available, allow
+            return;
+        };
+
+        for eff in &callee_effects {
+            if !allowed.contains(eff) {
+                self.errors.push(TypeError {
+                    message: format!(
+                        "function requires '{}' effect to call '{}', but it is not declared",
+                        eff, callee_name
+                    ),
+                    span,
+                });
+            }
         }
     }
 

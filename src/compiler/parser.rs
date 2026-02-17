@@ -302,14 +302,18 @@ impl Parser {
                 contracts.push(Contract::Ensures(expr));
             } else if self.check(&TokenKind::Effects) {
                 self.advance();
-                let mut effects = vec![self.expect_ident()?];
-                while self.check(&TokenKind::Comma) {
-                    self.advance();
-                    // Stop if we hit the opening brace
-                    if self.check(&TokenKind::LBrace) {
-                        break;
-                    }
+                // Handle empty effects list: `effects {` → empty vec
+                let mut effects = Vec::new();
+                if !self.check(&TokenKind::LBrace) {
                     effects.push(self.expect_ident()?);
+                    while self.check(&TokenKind::Comma) {
+                        self.advance();
+                        // Stop if we hit the opening brace
+                        if self.check(&TokenKind::LBrace) {
+                            break;
+                        }
+                        effects.push(self.expect_ident()?);
+                    }
                 }
                 contracts.push(Contract::Effects(effects));
             } else {

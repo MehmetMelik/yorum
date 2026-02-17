@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 cargo build                          # dev build
 cargo build --release                # release build
-cargo test                           # all tests (423: 46 unit + 377 integration)
+cargo test                           # all tests (462: 46 unit + 416 integration)
 cargo test compiler::lexer           # tests in one module
 cargo test test_fibonacci_compiles   # single test by name
 cargo test -- --nocapture            # see stdout from tests
@@ -31,6 +31,16 @@ cargo run -- lsp                          # start LSP server (stdin/stdout)
 ```bash
 clang -x ir out.ll -o binary -Wno-override-module
 clang -x ir out.ll -o binary -lpthread -Wno-override-module   # if using spawn/channels
+```
+
+### Homebrew LLVM (recommended for debugging)
+
+Homebrew LLVM provides more explanatory error messages than Xcode's bundled clang, and includes `lli` for JIT execution of LLVM IR without producing a binary.
+
+```bash
+brew install llvm
+/opt/homebrew/opt/llvm/bin/clang -x ir out.ll -o binary -Wno-override-module   # better error messages
+/opt/homebrew/opt/llvm/bin/lli out.ll                                           # JIT execute directly
 ```
 
 ## Architecture
@@ -101,6 +111,8 @@ Multi-file projects (`yorum build`) add a front-end step: `ModuleResolver` disco
 ### Example programs
 
 `examples/*.yrm` — all compile to native binaries and run correctly. Use these as references for valid Yorum syntax.
+
+**Iteration rule:** Every version that adds new language features MUST also add or expand example programs exercising those features. After adding examples, verify the full cycle: compile with `cargo run -- compile`, link with `clang`, and run the binary. Do not use workarounds in examples — if a codegen bug prevents clean usage, fix the bug first.
 
 ## Completed: v0.5 — Self-hosting Compiler
 
@@ -482,6 +494,61 @@ Seven codegen bugs fixed and 10 new example programs covering all major language
 - `examples/string_utils.yrm` — `str_contains`, `str_index_of`, `str_starts/ends_with`, `str_trim`, `str_replace`, `str_split`, `str_to_upper/lower`, `str_repeat`
 - `examples/channels.yrm` — `chan()`, `send()`, `recv()` with `spawn`, producer/consumer pattern
 - `examples/http_client.yrm` — `dns_resolve`, `http_get`, `http_post`, `http_request`
+
+## Completed: v1.4 — Effect System Enforcement
+
+Enforces the `effects` clause at compile time. Six effect categories, compile-time checking at call sites, automatic effect inference, backward compatibility.
+
+### Effect categories
+
+| Effect | Builtins |
+|--------|----------|
+| `io` | `print_int`, `print_float`, `print_bool`, `print_str`, `print_char`, `print_err`, `read_line`, `print_flush` |
+| `fs` | `file_read`, `file_write`, `file_exists`, `file_append` |
+| `net` | `tcp_connect`, `tcp_listen`, `tcp_accept`, `tcp_send`, `tcp_recv`, `tcp_close`, `udp_socket`, `udp_bind`, `udp_send_to`, `udp_recv_from`, `dns_resolve`, `http_request`, `http_get`, `http_post` |
+| `time` | `time_ms` |
+| `env` | `env_get`, `exit`, `args` |
+| `concurrency` | `spawn`, `chan`, `send`, `recv` |
+
+### Key changes to `typechecker.rs`
+
+- **`FnSig.effects: Option<Vec<String>>`** — `None` = unchecked (no `effects` clause), `Some(vec![])` = no effects, `Some(vec!["io"])` = only io
+- **`VALID_EFFECTS` constant** — `["io", "fs", "net", "time", "env", "concurrency"]`
+- **`builtin_effects(name)` function** — maps every builtin to its effect category (or empty for memory-only builtins)
+- **`register_builtins()` updated** — all ~70 builtins now have `effects` field on their `FnSig`
+- **`register_function()`/`register_impl()`** — extract effects from `Contract::Effects` in function contracts
+- **`check_function()`** — validates effect names, rejects `effects` on `pure fn`, sets `current_fn_effects` state
+- **`check_call_effects(callee, span)`** — checks callee's effects against `current_fn_effects`. Called at all call sites (general calls, `chan`/`send`/`recv`, `args`, `spawn`)
+- **`infer_all_effects(program)`** — fixed-point iteration over call graph to infer effects for unannotated functions. Integrated as pass 1.5 between registration and body checking
+- **`current_fn_effects: Option<Vec<String>>`** — per-function tracking (None = unchecked)
+- **`inferred_effects: HashMap<String, Vec<String>>`** — lazily populated by inference
+
+### Design decisions
+
+1. **Functions without `effects` clause → unchecked** — backward compatible, any effects allowed
+2. **Functions with `effects` clause → checked** — only declared effects allowed
+3. **`pure fn` + `effects` → compile error** — pure is strictly more restrictive
+4. **`main` → always unchecked** — entry point
+5. **Effect inference** — fixed-point iteration walks the call graph to infer effects for unannotated functions
+6. **Memory-only builtins need no effect** — `push`, `pop`, `str_concat`, `map_*`, `set_*`, math builtins, etc.
+7. **Closures inherit enclosing function's effects** — checked inline within the enclosing function
+8. **Compile-time only** — no LLVM IR emitted for effects
+
+### Parser fix
+
+- `effects {}` (empty effects list) now accepted — previously required at least one effect name
+
+### Bug fixes (from code review)
+
+1. **Method calls bypassed purity and effect enforcement:** `ExprKind::MethodCall` handling checked arg types and returned `sig.ret` but never applied the purity check or `check_call_effects()`. Fix: added purity check and `check_call_effects(&mangled, span)` to method call handler.
+
+2. **Effect inference missed method-call edges:** `collect_calls_in_expr` for `MethodCall` only traversed receiver/args but never recorded the called method name. Unchecked wrappers calling effectful methods were inferred as effect-free. Fix: record `__method__<name>` sentinel in call graph; inference engine resolves to all mangled functions matching `*_<name>`.
+
+3. **Unknown effect names on main silently accepted:** `check_function()` set `current_fn_effects = None` for main before validation, so `fn main() -> int effects madeup { ... }` passed. Fix: validate effect names against `VALID_EFFECTS` before the unchecked/main branch.
+
+### Test coverage
+
+39 new integration tests — total 462 tests (46 unit + 416 integration).
 
 ## Git Workflow
 

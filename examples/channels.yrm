@@ -1,0 +1,32 @@
+// channels.yrm — Channels for inter-task communication.
+//
+// Demonstrates: chan(), send(), recv() with spawn,
+// producer/consumer pattern.
+
+fn main() -> int {
+    // Basic channel: send from spawned task, receive in main
+    let ch: Chan<int> = chan();
+    let t: Task<int> = spawn {
+        send(ch, 42);
+        return 0;
+    };
+    let val: int = recv(ch);
+    print_int(val);   // 42
+    t.join();
+
+    // Multiple values through a channel
+    let ch2: Chan<int> = chan();
+    let producer: Task<int> = spawn {
+        send(ch2, 10);
+        send(ch2, 20);
+        send(ch2, 30);
+        return 0;
+    };
+    let a: int = recv(ch2);
+    let b: int = recv(ch2);
+    let c: int = recv(ch2);
+    print_int(a + b + c);   // 60
+    producer.join();
+
+    return 0;
+}

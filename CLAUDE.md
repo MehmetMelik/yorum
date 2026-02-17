@@ -450,6 +450,39 @@ Two pre-existing codegen bugs exposed by multiple match statements in a single f
 - `examples/sets.yrm` — Generic `Set<T>` with all hashable element types and all builtins
 - `examples/try_operator.yrm` — `?` operator with `Option<T>` and `Result<T, E>`, success and error propagation paths
 
+## Completed: v1.3.2 — Codegen Fixes & Example Expansion
+
+Seven codegen bugs fixed and 10 new example programs covering all major language features.
+
+### Bug fixes
+
+1. **Math intrinsic name collision:** Wrapper functions `@sqrt`, `@pow`, `@floor`, `@ceil`, `@round` shadowed C library symbols. LLVM lowered `@llvm.pow.f64` back to C's `pow` → infinite recursion at runtime. Fix: inline LLVM intrinsic calls at call sites, removed wrapper functions.
+
+2. **Spawn return type mismatch:** `return 0;` in spawn blocks emitted `ret ptr 0` (invalid LLVM IR — integer literal as pointer). Fix: added `spawn_return_ctx` field; `emit_return` detects spawn context, stores the value in the env struct's result slot, and emits `ret ptr null`.
+
+3. **Spawn join returns hardcoded 0:** `.join()` always returned 0 instead of the spawn block's actual return value. Fix: added `task_env_info` and `last_spawn_env_info` tracking so `.join()` loads the result from the env struct's result slot via GEP.
+
+4. **Channel multi-send deadlock:** `send()` didn't wait for the slot to be consumed before writing, so a second `send` overwrote the first value. `recv()` didn't signal the condvar after consuming. Fix: added wait loop in `send` (waits while `ready==1`) and signal in `recv` after setting `ready=0`.
+
+5. **Duplicate for-loop variable allocas:** `for i in 0..n` used fixed name `%i.addr`, causing "multiple definition" errors when the same variable name appeared in multiple for loops. Fix: use `fresh_temp()` for both range and array for-loop variable allocas.
+
+6. **Duplicate tuple destructure allocas:** Multiple `let (a, b) = ...` destructures created duplicate `%.tuple.addr`. Fix: use `fresh_temp()` for intermediate tuple allocas.
+
+7. **Option/Result method type mismatch:** `.is_none()`, `.is_ok()`, `.is_err()` returned `i1` (from `icmp`) but `expr_llvm_type` returned `"i64"`, causing invalid `call void @print_bool(i64 %i1_val)`. Fix: added explicit `"i1"` return for `is_some`, `is_none`, `is_ok`, `is_err` in `expr_llvm_type`.
+
+### New examples (10)
+
+- `examples/tuples.yrm` — Tuple types, literals, field access, destructuring
+- `examples/string_interpolation.yrm` — `"hello {expr}"` syntax, `to_str`, `{{}}` escapes
+- `examples/option_result.yrm` — Option/Result construction, pattern matching, all methods (`.unwrap()`, `.is_some()`, `.is_none()`, `.is_ok()`, `.is_err()`, `.unwrap_err()`)
+- `examples/operators.yrm` — Compound assignment (`+=`, `-=`, `*=`, `/=`, `%=`), bitwise operators (`&`, `|`, `^`, `<<`, `>>`)
+- `examples/loop_control.yrm` — `break`, `continue`, range `0..n`, nested loop control
+- `examples/math.yrm` — All 17 math builtins: abs, min/max, sqrt, pow, trig, rounding, log/exp
+- `examples/collections.yrm` — `slice`, `concat_arrays`, `reverse`, `contains_int`/`str`, `sort_int`/`str`
+- `examples/string_utils.yrm` — `str_contains`, `str_index_of`, `str_starts/ends_with`, `str_trim`, `str_replace`, `str_split`, `str_to_upper/lower`, `str_repeat`
+- `examples/channels.yrm` — `chan()`, `send()`, `recv()` with `spawn`, producer/consumer pattern
+- `examples/http_client.yrm` — `dns_resolve`, `http_get`, `http_post`, `http_request`
+
 ## Git Workflow
 
 - **Branches**: Use `feature/<descriptive-name>` for feature branches (e.g., `feature/arrays-and-loops`). Never use version numbers in branch names — versions are only for tags and releases.

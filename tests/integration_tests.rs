@@ -1839,8 +1839,8 @@ fn test_math_sqrt_pow() {
          \x20 return 0;\n\
          }\n",
     );
-    assert!(ir.contains("call double @sqrt"));
-    assert!(ir.contains("call double @pow"));
+    assert!(ir.contains("call double @llvm.sqrt.f64"));
+    assert!(ir.contains("call double @llvm.pow.f64"));
 }
 
 #[test]
@@ -1874,9 +1874,9 @@ fn test_math_floor_ceil_round() {
          \x20 return 0;\n\
          }\n",
     );
-    assert!(ir.contains("call double @floor"));
-    assert!(ir.contains("call double @ceil"));
-    assert!(ir.contains("call double @round"));
+    assert!(ir.contains("call double @llvm.floor.f64"));
+    assert!(ir.contains("call double @llvm.ceil.f64"));
+    assert!(ir.contains("call double @llvm.round.f64"));
 }
 
 #[test]
@@ -1921,11 +1921,13 @@ fn test_math_ir_definitions() {
     assert!(ir.contains("define i64 @max_int"));
     assert!(ir.contains("define double @min_float"));
     assert!(ir.contains("define double @max_float"));
-    assert!(ir.contains("define double @sqrt"));
-    assert!(ir.contains("define double @pow"));
-    assert!(ir.contains("define double @floor"));
-    assert!(ir.contains("define double @ceil"));
-    assert!(ir.contains("define double @round"));
+    // sqrt, pow, floor, ceil, round are inlined as LLVM intrinsic calls
+    // (no wrapper functions) to avoid C library name collisions
+    assert!(ir.contains("declare double @llvm.sqrt.f64"));
+    assert!(ir.contains("declare double @llvm.pow.f64"));
+    assert!(ir.contains("declare double @llvm.floor.f64"));
+    assert!(ir.contains("declare double @llvm.ceil.f64"));
+    assert!(ir.contains("declare double @llvm.round.f64"));
     // sin, cos, tan, log, log10, exp are external declarations, not definitions
     assert!(ir.contains("declare double @sin"));
     assert!(ir.contains("declare double @cos"));

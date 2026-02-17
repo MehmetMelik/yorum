@@ -708,7 +708,7 @@ source.yrm
 |---|---|---|
 | Lexer | `src/compiler/lexer.rs` | Hand-written, nested `/* */` comments, escape sequences |
 | Parser | `src/compiler/parser.rs` | Recursive descent + Pratt expression parsing |
-| Type Checker | `src/compiler/typechecker.rs` | Two-pass: register declarations, then check bodies |
+| Type Checker | `src/compiler/typechecker.rs` | Three-pass: register declarations, infer effects, check bodies |
 | Ownership | `src/compiler/ownership.rs` | Move tracking, use-after-move prevention, must-join enforcement for tasks |
 | Monomorphizer | `src/compiler/monomorphize.rs` | Eliminates generics by cloning concrete instantiations |
 | Codegen | `src/compiler/codegen.rs` | Textual LLVM IR, alloca/load/store pattern, contract checks, pthread spawn/join |
@@ -745,7 +745,7 @@ diff gen1.ll gen2.ll    # identical — fixed-point achieved
 ## Testing
 
 ```bash
-cargo test                    # 423 tests (46 unit + 377 integration)
+cargo test                    # 462 tests (46 unit + 416 integration)
 cargo test compiler::lexer    # tests in one module
 cargo test test_fibonacci     # single test by name
 ```
@@ -754,6 +754,7 @@ cargo test test_fibonacci     # single test by name
 
 - **[SPEC.md](SPEC.md)** — Full language specification
 - **[GRAMMAR.ebnf](GRAMMAR.ebnf)** — Formal grammar in EBNF notation
+- **[CHANGELOG.md](CHANGELOG.md)** — Detailed version history with release notes
 - **[examples/](examples/)** — Working programs that compile to native binaries (methods, traits, generics, closures, arrays, strings, contracts, concurrency)
 
 ## Roadmap
@@ -777,6 +778,7 @@ cargo test test_fibonacci     # single test by name
 | **v1.3.1** | Codegen bug fixes: duplicate match labels/allocas. New examples: maps, sets, try operator | Done |
 | **v1.3.2** | Codegen fixes: math intrinsic naming, spawn return/join, channel sync, for-loop/tuple alloca duplicates, Option/Result method types. 10 new examples | Done |
 | **v1.4** | Effect system enforcement: 6 effect categories (io, fs, net, time, env, concurrency), compile-time checking, effect inference, backward compatibility | Done |
+| **v1.4.1** | Restore self-hosting bootstrap, fix 4 compiler bugs (ownership, codegen, typechecker) | Done |
 
 ## License
 

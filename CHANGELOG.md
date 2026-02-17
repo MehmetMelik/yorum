@@ -2,6 +2,28 @@
 
 All notable changes to the Yorum programming language compiler.
 
+## [1.4.1] - 2026-02-17
+
+**Restore Self-hosting Bootstrap & Bug Fixes** — [PR #19](https://github.com/MehmetMelik/yorum/pull/19)
+
+The self-hosting compiler (`yorum-in-yorum`) was broken by features added in v0.8–v1.3. Four fixes restore the full bootstrap chain (`gen1.ll == gen2.ll`).
+
+### Fixed
+
+- **String interpolation breaks self-hosting compiler:** Escaped `{`/`}` → `{{`/`}}` in 64 string literals in `main.yrm` containing LLVM IR braces. Added `{{`/`}}` → `{`/`}` handling in the self-hosted lexer so it can read its own source
+- **Ownership checker rejects arrays/maps:** Made `[T]`, `Map<K,V>`, and `Set<T>` copy types — they use reference semantics at runtime (heap-allocated pointers), consistent with `string` which was already copy
+- **Array index of aggregates produces invalid IR:** `expr_returns_ptr()` didn't handle `ExprKind::Index` for struct/enum elements. Array index codegen returns alloca pointers via memcpy, but `emit_let` treated them as values, producing `store %Token %ptr`
+- **Nested generic type comparison fails:** Extracted recursive `types_compatible()` helper with TypeVar wildcard matching. Fixes `push(arr, map_new())` and `let x: [Map] = [map_new()]` where `Map<K,V>` TypeVars weren't matched against `Map<string, int>` inside `Array` wrappers. Replaces duplicated inline checks in let-bindings, assignments, and returns
+
+### Changed
+
+- Copy types expanded: `int`, `float`, `bool`, `char`, `string`, `unit`, `[T]`, `Map<K,V>`, `Set<T>`. Structs and enums remain move types
+- ROADMAP.md updated: v1.4 marked as done
+
+**Stats:** 6 files changed, +168 -142 | Bootstrap: gen1.ll == gen2.ll (fixed-point verified)
+
+---
+
 ## [1.4.0] - 2026-02-17
 
 **Effect System Enforcement** — [PR #17](https://github.com/MehmetMelik/yorum/pull/17)
@@ -384,6 +406,7 @@ The compiler written in Yorum itself (5,226 lines), achieving bootstrap fixed-po
 
 ---
 
+[1.4.1]: https://github.com/MehmetMelik/yorum/compare/v1.4.0...v1.4.1
 [1.4.0]: https://github.com/MehmetMelik/yorum/compare/v1.3.2...v1.4.0
 [1.3.2]: https://github.com/MehmetMelik/yorum/compare/v1.3.1...v1.3.2
 [1.3.1]: https://github.com/MehmetMelik/yorum/compare/v1.3.0...v1.3.1

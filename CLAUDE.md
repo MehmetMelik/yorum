@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 cargo build                          # dev build
 cargo build --release                # release build
-cargo test                           # all tests (416: 46 unit + 370 integration)
+cargo test                           # all tests (423: 46 unit + 377 integration)
 cargo test compiler::lexer           # tests in one module
 cargo test test_fibonacci_compiles   # single test by name
 cargo test -- --nocapture            # see stdout from tests
@@ -432,7 +432,23 @@ Postfix try operator for ergonomic error propagation.
 
 ### Test coverage
 
-26 new integration tests — total 416 tests (46 unit + 370 integration).
+33 new integration tests — total 423 tests (46 unit + 377 integration).
+
+## Completed: v1.3.1 — Match Codegen Fixes & Examples
+
+Two pre-existing codegen bugs exposed by multiple match statements in a single function, plus three new example programs.
+
+### Bug fixes
+
+1. **Duplicate match binding allocas:** Match pattern bindings used fixed names (`%v.match.addr`) instead of unique SSA names. When two match statements in the same function bound the same variable name, clang rejected the IR with "multiple definition of local value". Fix: use `fresh_temp()` for match binding allocas.
+
+2. **Duplicate match check labels:** Match check labels used arm-index naming (`match.check.1`) instead of globally unique labels. Multiple match statements in one function produced duplicate labels causing clang segfaults. Fix: pre-generate check labels via `fresh_label()` alongside arm labels.
+
+### New examples
+
+- `examples/maps.yrm` — Generic `Map<K, V>` with all hashable key types (string, int, char, bool) and all builtins
+- `examples/sets.yrm` — Generic `Set<T>` with all hashable element types and all builtins
+- `examples/try_operator.yrm` — `?` operator with `Option<T>` and `Result<T, E>`, success and error propagation paths
 
 ## Git Workflow
 

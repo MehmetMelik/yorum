@@ -275,6 +275,9 @@ impl Monomorphizer {
                 self.collect_from_expr(start);
                 self.collect_from_expr(end);
             }
+            ExprKind::Try(inner) => {
+                self.collect_from_expr(inner);
+            }
             _ => {}
         }
     }
@@ -721,6 +724,7 @@ fn substitute_expr(expr: &Expr, subst: &HashMap<String, Type>) -> Expr {
             Box::new(substitute_expr(start, subst)),
             Box::new(substitute_expr(end, subst)),
         ),
+        ExprKind::Try(inner) => ExprKind::Try(Box::new(substitute_expr(inner, subst))),
         other => other.clone(),
     };
     Expr {
@@ -994,17 +998,41 @@ fn rewrite_expr(
             );
             rewrite_expr(end, generic_fns, _generic_structs, fn_insts, _struct_insts);
         }
+        ExprKind::Try(inner) => {
+            rewrite_expr(
+                inner,
+                generic_fns,
+                _generic_structs,
+                fn_insts,
+                _struct_insts,
+            );
+        }
         _ => {}
     }
 }
 
 /// Rewrite Generic type annotations to Named types with mangled names.
+/// Also rewrites map/set builtin calls to mangled names based on variable types.
 fn rewrite_types_in_block(
     block: &mut Block,
     generic_structs: &HashMap<String, StructDecl>,
     _struct_insts: &HashSet<(String, Vec<Type>)>,
     generic_enums: &HashMap<String, EnumDecl>,
 ) {
+    rewrite_types_in_block_with_vars(block, generic_structs, _struct_insts, generic_enums, None);
+}
+
+/// Inner implementation that carries parent variable type mappings into nested blocks.
+fn rewrite_types_in_block_with_vars(
+    block: &mut Block,
+    generic_structs: &HashMap<String, StructDecl>,
+    _struct_insts: &HashSet<(String, Vec<Type>)>,
+    generic_enums: &HashMap<String, EnumDecl>,
+    parent_var_types: Option<&HashMap<String, String>>,
+) {
+    // Track variable name → mangled Map/Set type name for collection call rewriting
+    let mut var_types: HashMap<String, String> = parent_var_types.cloned().unwrap_or_default();
+
     for stmt in &mut block.stmts {
         match stmt {
             Stmt::Let(s) => {
@@ -1021,28 +1049,208 @@ fn rewrite_types_in_block(
                     } else if generic_enums.contains_key(name) {
                         let mangled = mangle_name(name, args);
                         s.ty = Type::Named(mangled);
+                    } else if name == "Map" || name == "Set" {
+                        let mangled = mangle_name(name, args);
+                        var_types.insert(s.name.clone(), mangled.clone());
+                        // Rewrite map_new()/set_new() to mangled version
+                        let type_suffix = &mangled[name.len()..]; // e.g., "__string__int"
+                        if let ExprKind::Call(ref mut callee, _) = s.value.kind {
+                            if let ExprKind::Ident(ref fn_name) = callee.kind {
+                                let expected_new = format!("{}_new", name.to_lowercase());
+                                if *fn_name == expected_new {
+                                    let mangled_fn = format!("{}{}", fn_name, type_suffix);
+                                    **callee = Expr {
+                                        kind: ExprKind::Ident(mangled_fn),
+                                        span: callee.span,
+                                    };
+                                }
+                            }
+                        }
+                        s.ty = Type::Named(mangled);
                     }
                 }
+                // Rewrite collection calls in the value expression
+                rewrite_collection_calls_in_expr(&mut s.value, &var_types);
+            }
+            Stmt::Assign(s) => {
+                rewrite_collection_calls_in_expr(&mut s.value, &var_types);
             }
             Stmt::Return(s) => {
-                // Rewrite return types aren't in the AST directly,
-                // but variant constructors in return expressions
-                // will be handled by the variant rewrite pass below
-                rewrite_variant_exprs_in_block_helper(&mut s.value, generic_enums);
+                rewrite_collection_calls_in_expr(&mut s.value, &var_types);
             }
-            _ => {}
+            Stmt::Expr(s) => {
+                rewrite_collection_calls_in_expr(&mut s.expr, &var_types);
+            }
+            Stmt::If(s) => {
+                rewrite_collection_calls_in_if(
+                    s,
+                    generic_structs,
+                    _struct_insts,
+                    generic_enums,
+                    &var_types,
+                );
+            }
+            Stmt::While(s) => {
+                rewrite_collection_calls_in_expr(&mut s.condition, &var_types);
+                rewrite_types_in_block_with_vars(
+                    &mut s.body,
+                    generic_structs,
+                    _struct_insts,
+                    generic_enums,
+                    Some(&var_types),
+                );
+            }
+            Stmt::For(s) => {
+                rewrite_collection_calls_in_expr(&mut s.iterable, &var_types);
+                rewrite_types_in_block_with_vars(
+                    &mut s.body,
+                    generic_structs,
+                    _struct_insts,
+                    generic_enums,
+                    Some(&var_types),
+                );
+            }
+            Stmt::Match(s) => {
+                rewrite_collection_calls_in_expr(&mut s.subject, &var_types);
+                for arm in &mut s.arms {
+                    rewrite_types_in_block_with_vars(
+                        &mut arm.body,
+                        generic_structs,
+                        _struct_insts,
+                        generic_enums,
+                        Some(&var_types),
+                    );
+                }
+            }
+            Stmt::Break(_) | Stmt::Continue(_) => {}
         }
     }
 }
 
-/// Rewrite variant constructor calls to work with monomorphized enums.
-/// This is a no-op for now — variant names stay the same, codegen uses hints.
-fn rewrite_variant_exprs_in_block_helper(
-    _expr: &mut Expr,
-    _generic_enums: &HashMap<String, EnumDecl>,
+/// Rewrite map/set builtin calls in an if statement, propagating var_types into nested blocks.
+fn rewrite_collection_calls_in_if(
+    s: &mut IfStmt,
+    generic_structs: &HashMap<String, StructDecl>,
+    _struct_insts: &HashSet<(String, Vec<Type>)>,
+    generic_enums: &HashMap<String, EnumDecl>,
+    var_types: &HashMap<String, String>,
 ) {
-    // Variant names don't change during monomorphization.
-    // The codegen uses current_expected_enum to disambiguate.
+    rewrite_collection_calls_in_expr(&mut s.condition, var_types);
+    rewrite_types_in_block_with_vars(
+        &mut s.then_block,
+        generic_structs,
+        _struct_insts,
+        generic_enums,
+        Some(var_types),
+    );
+    if let Some(else_branch) = &mut s.else_branch {
+        match else_branch.as_mut() {
+            ElseBranch::ElseIf(elif) => {
+                rewrite_collection_calls_in_if(
+                    elif,
+                    generic_structs,
+                    _struct_insts,
+                    generic_enums,
+                    var_types,
+                );
+            }
+            ElseBranch::Else(block) => {
+                rewrite_types_in_block_with_vars(
+                    block,
+                    generic_structs,
+                    _struct_insts,
+                    generic_enums,
+                    Some(var_types),
+                );
+            }
+        }
+    }
+}
+
+/// Rewrite map/set builtin calls (e.g., map_set(m, k, v) → map_set__string__int(m, k, v))
+/// based on the first argument's tracked type.
+fn rewrite_collection_calls_in_expr(expr: &mut Expr, var_types: &HashMap<String, String>) {
+    match &mut expr.kind {
+        ExprKind::Call(callee, args) => {
+            // First recurse into args
+            for arg in args.iter_mut() {
+                rewrite_collection_calls_in_expr(arg, var_types);
+            }
+            if let ExprKind::Ident(fn_name) = &callee.kind {
+                let fn_name_clone = fn_name.clone();
+                // map builtins: first arg is the map variable
+                if let Some(suffix) = match fn_name_clone.as_str() {
+                    "map_set" | "map_get" | "map_has" | "map_size" | "map_remove" | "map_keys"
+                    | "map_values" => args
+                        .first()
+                        .and_then(|a| infer_expr_type_for_rewrite(a, var_types)),
+                    "set_add" | "set_has" | "set_remove" | "set_size" | "set_values" => args
+                        .first()
+                        .and_then(|a| infer_expr_type_for_rewrite(a, var_types)),
+                    "map_new" | "set_new" => None, // handled by let binding
+                    _ => None,
+                } {
+                    // suffix is like "Map__string__int" or "Set__int" → extract the type suffix
+                    let type_suffix = if suffix.starts_with("Map__") || suffix.starts_with("Set__")
+                    {
+                        &suffix[3..] // "__string__int" or "__int"
+                    } else {
+                        ""
+                    };
+                    if !type_suffix.is_empty() {
+                        let mangled_fn = format!("{}{}", fn_name_clone, type_suffix);
+                        **callee = Expr {
+                            kind: ExprKind::Ident(mangled_fn),
+                            span: callee.span,
+                        };
+                    }
+                }
+                // For map_new/set_new, rewrite based on the let binding (done in Let handler)
+                // We handle them here for non-let contexts too
+                if fn_name_clone == "map_new" || fn_name_clone == "set_new" {
+                    // Can't rewrite without knowing the target type — handled by let stmt
+                }
+            }
+        }
+        ExprKind::Binary(lhs, _, rhs) => {
+            rewrite_collection_calls_in_expr(lhs, var_types);
+            rewrite_collection_calls_in_expr(rhs, var_types);
+        }
+        ExprKind::Unary(_, operand) => {
+            rewrite_collection_calls_in_expr(operand, var_types);
+        }
+        ExprKind::Index(arr, idx) => {
+            rewrite_collection_calls_in_expr(arr, var_types);
+            rewrite_collection_calls_in_expr(idx, var_types);
+        }
+        ExprKind::FieldAccess(obj, _) => {
+            rewrite_collection_calls_in_expr(obj, var_types);
+        }
+        ExprKind::MethodCall(recv, _, margs) => {
+            rewrite_collection_calls_in_expr(recv, var_types);
+            for arg in margs {
+                rewrite_collection_calls_in_expr(arg, var_types);
+            }
+        }
+        ExprKind::ArrayLit(elements) | ExprKind::TupleLit(elements) => {
+            for elem in elements {
+                rewrite_collection_calls_in_expr(elem, var_types);
+            }
+        }
+        ExprKind::Try(inner) => {
+            rewrite_collection_calls_in_expr(inner, var_types);
+        }
+        _ => {}
+    }
+}
+
+/// Infer the mangled type name for a variable used in a collection builtin call.
+fn infer_expr_type_for_rewrite(expr: &Expr, var_types: &HashMap<String, String>) -> Option<String> {
+    if let ExprKind::Ident(name) = &expr.kind {
+        var_types.get(name).cloned()
+    } else {
+        None
+    }
 }
 
 fn infer_type_args_simple(generic_fn: &FnDecl, args: &[Expr]) -> Option<Vec<Type>> {

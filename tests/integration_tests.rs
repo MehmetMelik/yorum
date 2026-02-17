@@ -5058,3 +5058,562 @@ fn test_interp_trailing_tokens() {
     );
     assert!(result.is_err());
 }
+
+// ═══════════════════════════════════════════════════════════════
+//  v1.3 — Match exhaustiveness checking
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn test_match_exhaustive_missing_variant() {
+    let result = yorum::typecheck(
+        "enum Color { Red, Green, Blue }\n\
+         fn main() -> int {\n\
+         \x20 let c: Color = Red;\n\
+         \x20 match c {\n\
+         \x20   Red => { print_int(1); }\n\
+         \x20   Green => { print_int(2); }\n\
+         \x20 }\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+    let msg = result.unwrap_err();
+    assert!(msg.contains("non-exhaustive match"));
+    assert!(msg.contains("Blue"));
+}
+
+#[test]
+fn test_match_exhaustive_all_variants() {
+    parse_and_check(
+        "enum Color { Red, Green, Blue }\n\
+         fn main() -> int {\n\
+         \x20 let c: Color = Red;\n\
+         \x20 match c {\n\
+         \x20   Red => { print_int(1); }\n\
+         \x20   Green => { print_int(2); }\n\
+         \x20   Blue => { print_int(3); }\n\
+         \x20 }\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+}
+
+#[test]
+fn test_match_exhaustive_wildcard() {
+    parse_and_check(
+        "enum Color { Red, Green, Blue }\n\
+         fn main() -> int {\n\
+         \x20 let c: Color = Red;\n\
+         \x20 match c {\n\
+         \x20   Red => { print_int(1); }\n\
+         \x20   _ => { print_int(0); }\n\
+         \x20 }\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+}
+
+#[test]
+fn test_match_exhaustive_binding_catchall() {
+    parse_and_check(
+        "enum Color { Red, Green, Blue }\n\
+         fn main() -> int {\n\
+         \x20 let c: Color = Red;\n\
+         \x20 match c {\n\
+         \x20   Red => { print_int(1); }\n\
+         \x20   other => { print_int(0); }\n\
+         \x20 }\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+}
+
+#[test]
+fn test_match_exhaustive_option() {
+    parse_and_check(
+        "fn main() -> int {\n\
+         \x20 let x: Option<int> = Some(42);\n\
+         \x20 match x {\n\
+         \x20   Some(v) => { print_int(v); }\n\
+         \x20   None => { print_int(0); }\n\
+         \x20 }\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  v1.3 — Generic Map<K, V>
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn test_map_generic_bare_backward_compat() {
+    // Bare `Map` should still work as Map<string, int>
+    let ir = compile(
+        "fn main() -> int {\
+           let m: Map = map_new();\
+           map_set(m, \"hello\", 42);\
+           let v: int = map_get(m, \"hello\");\
+           return v;\
+         }",
+    );
+    assert!(ir.contains("map_new"));
+    assert!(ir.contains("map_set"));
+    assert!(ir.contains("map_get"));
+}
+
+#[test]
+fn test_map_generic_explicit_string_int() {
+    // Explicit Map<string, int> should compile
+    let ir = compile(
+        "fn main() -> int {\
+           let m: Map<string, int> = map_new();\
+           map_set(m, \"key\", 99);\
+           let v: int = map_get(m, \"key\");\
+           return v;\
+         }",
+    );
+    assert!(ir.contains("map_new"));
+}
+
+#[test]
+fn test_map_generic_keys_values_types() {
+    // map_keys returns [string], map_values returns [int] for Map<string, int>
+    parse_and_check(
+        "fn main() -> int {\n\
+         \x20 let m: Map<string, int> = map_new();\n\
+         \x20 map_set(m, \"a\", 1);\n\
+         \x20 let ks: [string] = map_keys(m);\n\
+         \x20 let vs: [int] = map_values(m);\n\
+         \x20 return len(vs);\n\
+         }\n",
+    );
+}
+
+#[test]
+fn test_map_generic_size_has_remove() {
+    // map_size, map_has, map_remove work with Map<string, int>
+    parse_and_check(
+        "fn main() -> int {\n\
+         \x20 let m: Map<string, int> = map_new();\n\
+         \x20 map_set(m, \"x\", 10);\n\
+         \x20 let s: int = map_size(m);\n\
+         \x20 let h: bool = map_has(m, \"x\");\n\
+         \x20 let r: bool = map_remove(m, \"x\");\n\
+         \x20 return s;\n\
+         }\n",
+    );
+}
+
+#[test]
+fn test_map_generic_float_key_error() {
+    // float is not a hashable key type
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20 let m: Map<float, int> = map_new();\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(err.contains("hashable"));
+}
+
+#[test]
+fn test_map_generic_wrong_key_type_error() {
+    // map_set with int key on Map<string, int> should error
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20 let m: Map<string, int> = map_new();\n\
+         \x20 map_set(m, 42, 10);\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_map_generic_wrong_value_type_error() {
+    // map_set with string value on Map<string, int> should error
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20 let m: Map<string, int> = map_new();\n\
+         \x20 map_set(m, \"key\", \"not_int\");\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_map_generic_int_string() {
+    // Map<int, string> — int keys
+    let ir = compile(
+        "fn main() -> int {\
+           let m: Map<int, string> = map_new();\
+           map_set(m, 42, \"hello\");\
+           let v: string = map_get(m, 42);\
+           return 0;\
+         }",
+    );
+    assert!(ir.contains("map_new__int__string"));
+    assert!(ir.contains("map_set__int__string"));
+    assert!(ir.contains("map_get__int__string"));
+}
+
+#[test]
+fn test_map_generic_char_bool() {
+    // Map<char, bool> — char keys
+    let ir = compile(
+        "fn main() -> int {\
+           let m: Map<char, bool> = map_new();\
+           map_set(m, 'a', true);\
+           let v: bool = map_get(m, 'a');\
+           let h: bool = map_has(m, 'b');\
+           return 0;\
+         }",
+    );
+    assert!(ir.contains("map_new__char__bool"));
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  v1.3 — Set<T>
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn test_set_int_add_has_remove() {
+    let ir = compile(
+        "fn main() -> int {\
+           let s: Set<int> = set_new();\
+           set_add(s, 42);\
+           set_add(s, 99);\
+           let h: bool = set_has(s, 42);\
+           let r: bool = set_remove(s, 42);\
+           return 0;\
+         }",
+    );
+    assert!(ir.contains("set_new__int"));
+    assert!(ir.contains("set_add__int"));
+    assert!(ir.contains("set_has__int"));
+    assert!(ir.contains("set_remove__int"));
+}
+
+#[test]
+fn test_set_size_and_values() {
+    parse_and_check(
+        "fn main() -> int {\n\
+         \x20 let s: Set<string> = set_new();\n\
+         \x20 set_add(s, \"hello\");\n\
+         \x20 let sz: int = set_size(s);\n\
+         \x20 let vals: [string] = set_values(s);\n\
+         \x20 return sz;\n\
+         }\n",
+    );
+}
+
+#[test]
+fn test_set_float_not_hashable() {
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20 let s: Set<float> = set_new();\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(err.contains("hashable"));
+}
+
+#[test]
+fn test_set_wrong_element_type() {
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20 let s: Set<int> = set_new();\n\
+         \x20 set_add(s, \"not_int\");\n\
+         \x20 return 0;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_set_string_compiles() {
+    let ir = compile(
+        "fn main() -> int {\
+           let s: Set<string> = set_new();\
+           set_add(s, \"hello\");\
+           set_add(s, \"world\");\
+           let sz: int = set_size(s);\
+           return sz;\
+         }",
+    );
+    assert!(ir.contains("set_new__string"));
+    assert!(ir.contains("set_add__string"));
+    assert!(ir.contains("set_size__string"));
+}
+
+// ── ? operator tests ─────────────────────────────────────
+
+#[test]
+fn test_try_operator_option_in_option_fn() {
+    let ir = compile(
+        "fn get_val() -> Option<int> {\
+           return Some(42);\
+         }\
+         fn try_it() -> Option<int> {\
+           let v: int = get_val()?;\
+           return Some(v + 1);\
+         }\
+         fn main() -> int {\
+           return 0;\
+         }",
+    );
+    assert!(ir.contains("try.ok"));
+    assert!(ir.contains("try.err"));
+}
+
+#[test]
+fn test_try_operator_result_in_result_fn() {
+    let ir = compile(
+        "fn parse_num() -> Result<int, string> {\
+           return Ok(10);\
+         }\
+         fn compute() -> Result<int, string> {\
+           let n: int = parse_num()?;\
+           return Ok(n * 2);\
+         }\
+         fn main() -> int {\
+           return 0;\
+         }",
+    );
+    assert!(ir.contains("try.ok"));
+    assert!(ir.contains("try.err"));
+}
+
+#[test]
+fn test_try_operator_chaining() {
+    // Multiple ? operators in one function
+    let ir = compile(
+        "fn a() -> Option<int> {\
+           return Some(1);\
+         }\
+         fn b() -> Option<int> {\
+           return Some(2);\
+         }\
+         fn chain() -> Option<int> {\
+           let x: int = a()?;\
+           let y: int = b()?;\
+           return Some(x + y);\
+         }\
+         fn main() -> int {\
+           return 0;\
+         }",
+    );
+    // Should have two try.ok/try.err pairs
+    let ok_count = ir.matches("try.ok").count();
+    assert!(
+        ok_count >= 2,
+        "expected at least 2 try.ok labels, got {}",
+        ok_count
+    );
+}
+
+#[test]
+fn test_try_operator_error_not_option_or_result() {
+    let result = yorum::typecheck(
+        "fn foo() -> int {\
+           let x: int = 42;\
+           let y: int = x?;\
+           return y;\
+         }",
+    );
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(
+        err.contains("? operator") || err.contains("Option") || err.contains("Result"),
+        "unexpected error: {}",
+        err
+    );
+}
+
+#[test]
+fn test_try_operator_error_wrong_return_type() {
+    // ? on Option inside a function returning int (not Option)
+    let result = yorum::typecheck(
+        "fn get_opt() -> Option<int> {\
+           return Some(1);\
+         }\
+         fn bad() -> int {\
+           let v: int = get_opt()?;\
+           return v;\
+         }",
+    );
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(
+        err.contains("return") || err.contains("Option") || err.contains("?"),
+        "unexpected error: {}",
+        err
+    );
+}
+
+#[test]
+fn test_try_operator_result_e_type_mismatch() {
+    // ? on Result<int, string> inside fn returning Result<int, int> — E types differ
+    let result = yorum::typecheck(
+        "fn get_res() -> Result<int, string> {\
+           return Ok(1);\
+         }\
+         fn bad() -> Result<int, int> {\
+           let v: int = get_res()?;\
+           return Ok(v);\
+         }",
+    );
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(
+        err.contains("mismatch") || err.contains("error type") || err.contains("Result"),
+        "unexpected error: {}",
+        err
+    );
+}
+
+#[test]
+fn test_try_operator_none_propagation() {
+    // Verify the IR for Option ? has proper None construction and ret
+    let ir = compile(
+        "fn maybe() -> Option<int> {\
+           return None;\
+         }\
+         fn use_it() -> Option<int> {\
+           let v: int = maybe()?;\
+           return Some(v);\
+         }\
+         fn main() -> int {\
+           return 0;\
+         }",
+    );
+    // The error path should store tag 1 (None) and ret
+    assert!(ir.contains("store i32 1"));
+    assert!(ir.contains("try.err"));
+}
+
+// ── Bug fix regression tests (v1.3) ─────────────────────
+
+#[test]
+fn test_map_generic_format_string_length() {
+    // Bug: @.fmt.map_key_generic was declared as [22 x i8] but the string
+    // "map_get: key not found\0" is 23 bytes. Caused LLVM validation failure.
+    let ir = compile(
+        "fn main() -> int {\
+           let m: Map<int, string> = map_new();\
+           map_set(m, 1, \"hello\");\
+           let v: string = map_get(m, 1);\
+           return 0;\
+         }",
+    );
+    assert!(ir.contains("[23 x i8]"));
+    assert!(!ir.contains("[22 x i8] c\"map_get: key not found"));
+}
+
+#[test]
+fn test_map_set_named_type_is_ptr() {
+    // Bug: Type::Named("Map__string__int") fell to i64 fallback in llvm_type()
+    // because it wasn't in struct_layouts or enum_layouts. Should be ptr.
+    let ir = compile(
+        "fn main() -> int {\
+           let m: Map<string, int> = map_new();\
+           map_set(m, \"key\", 42);\
+           return 0;\
+         }",
+    );
+    // The map variable alloca should be ptr (not i64)
+    // map_new returns ptr, store into alloca should be: store ptr %tN, ptr %m.addr
+    assert!(
+        ir.contains("store ptr %"),
+        "map variable should be stored as ptr, not i64"
+    );
+}
+
+#[test]
+fn test_set_named_type_is_ptr() {
+    // Same bug as above but for Set
+    let ir = compile(
+        "fn main() -> int {\
+           let s: Set<int> = set_new();\
+           set_add(s, 42);\
+           return 0;\
+         }",
+    );
+    assert!(ir.contains("alloca ptr"));
+}
+
+#[test]
+fn test_collection_calls_in_if_block() {
+    // Bug: map/set builtin calls in nested blocks (if/while/for/match) were
+    // not rewritten to mangled names because var_types wasn't propagated.
+    let ir = compile(
+        "fn main() -> int {\
+           let s: Set<int> = set_new();\
+           set_add(s, 1);\
+           if true {\
+             set_add(s, 2);\
+             let sz: int = set_size(s);\
+           }\
+           return 0;\
+         }",
+    );
+    // All set calls should be mangled, no unmangled set_add/set_size remaining
+    assert!(!ir.contains("call ptr @set_add(") && !ir.contains("call i64 @set_size("));
+    assert!(ir.contains("set_add__int"));
+    assert!(ir.contains("set_size__int"));
+}
+
+#[test]
+fn test_collection_calls_in_while_block() {
+    let ir = compile(
+        "fn main() -> int {\
+           let m: Map<int, string> = map_new();\
+           let mut i: int = 0;\
+           while i < 3 {\
+             map_set(m, i, \"val\");\
+             i += 1;\
+           }\
+           return map_size(m);\
+         }",
+    );
+    assert!(ir.contains("map_set__int__string"));
+    assert!(ir.contains("map_size__int__string"));
+}
+
+#[test]
+fn test_collection_calls_in_for_block() {
+    let ir = compile(
+        "fn main() -> int {\
+           let s: Set<int> = set_new();\
+           for i in 0..5 {\
+             set_add(s, i);\
+           }\
+           return set_size(s);\
+         }",
+    );
+    assert!(ir.contains("set_add__int"));
+    assert!(ir.contains("set_size__int"));
+}
+
+#[test]
+fn test_collection_calls_in_match_block() {
+    let ir = compile(
+        "fn main() -> int {\
+           let s: Set<int> = set_new();\
+           let x: int = 1;\
+           match x {\
+             1 => { set_add(s, 10); },\
+             _ => { set_add(s, 20); },\
+           }\
+           return set_size(s);\
+         }",
+    );
+    assert!(ir.contains("set_add__int"));
+    assert!(ir.contains("set_size__int"));
+}

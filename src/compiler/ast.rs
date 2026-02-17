@@ -165,7 +165,6 @@ pub enum Type {
     Tuple(Vec<Type>),
     Task(Box<Type>),
     Chan(Box<Type>),
-    Map,
 }
 
 impl std::fmt::Display for Type {
@@ -216,7 +215,6 @@ impl std::fmt::Display for Type {
             }
             Type::Task(inner) => write!(f, "Task<{}>", inner),
             Type::Chan(inner) => write!(f, "Chan<{}>", inner),
-            Type::Map => write!(f, "Map"),
         }
     }
 }
@@ -362,6 +360,7 @@ pub enum ExprKind {
     TupleLit(Vec<Expr>),
     Spawn(Block),
     Range(Box<Expr>, Box<Expr>),
+    Try(Box<Expr>),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

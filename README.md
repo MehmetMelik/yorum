@@ -102,7 +102,8 @@ exactly one owner.
 | `own T` | Explicit ownership | `ptr` |
 | `(T, U)` | Tuple type | `%tuple.T.U` struct |
 | `[T]` | Dynamic array (heap-allocated) | `{ ptr, i64, i64 }` |
-| `Map` | Hash map (`string -> int`) | `ptr` |
+| `Map<K, V>` | Generic hash map (hashable keys) | `ptr` |
+| `Set<T>` | Generic hash set (hashable elements) | `ptr` |
 | `Task<T>` | Concurrent task handle | `ptr` |
 | `Chan<T>` | Synchronous channel | `ptr` |
 | `fn(T) -> U` | Function type (closures) | `ptr` |
@@ -370,20 +371,42 @@ let argv: [string] = args();      // command-line arguments
 exit(1);                           // terminate with exit code
 ```
 
-### HashMap
+### HashMap and Set
 
 ```
-let m: Map = map_new();
+let m: Map<string, int> = map_new();     // or bare `Map` for string->int compat
 map_set(m, "key", 42);
-let v: int = map_get(m, "key");   // 42
-let ok: bool = map_has(m, "key"); // true
-let n: int = map_size(m);         // 1
-let keys: [string] = map_keys(m); // ["key"]
+let v: int = map_get(m, "key");          // 42
+let ok: bool = map_has(m, "key");        // true
+let n: int = map_size(m);               // 1
+let keys: [string] = map_keys(m);       // ["key"]
+
+let ids: Map<int, string> = map_new();   // int keys, string values
+let s: Set<int> = set_new();
+set_add(s, 42);
+let found: bool = set_has(s, 42);       // true
 ```
 
-Maps use `string` keys and `int` values. Backed by a hash table with FNV-1a
-hashing and linear probing. Tombstone-aware load factor prevents infinite probe
-loops after insert/remove churn.
+Maps and sets are generic with keys/elements restricted to hashable primitives
+(`int`, `string`, `char`, `bool`). Backed by FNV-1a hashing with linear probing
+and tombstone-aware load factor.
+
+### Error Handling with ? Operator
+
+```
+fn parse_config() -> Result<int, string> {
+    return Ok(42);
+}
+
+fn run() -> Result<int, string> {
+    let val: int = parse_config()?;  // propagates Err automatically
+    return Ok(val + 1);
+}
+```
+
+The `?` operator extracts the value from `Option<T>` or `Result<T, E>`,
+returning early with `None` or `Err(e)` if the inner value is an error variant.
+The enclosing function must return a compatible `Option` or `Result` type.
 
 ### Structured Concurrency
 

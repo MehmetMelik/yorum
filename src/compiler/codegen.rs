@@ -5,7 +5,7 @@
 //! LLVM's mem2reg pass promotes stack slots to SSA registers automatically.
 
 use crate::compiler::ast::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 // ═══════════════════════════════════════════════════════════════
@@ -120,6 +120,9 @@ pub struct Codegen {
 
     // Expected enum type hint for variant constructor disambiguation
     current_expected_enum: Option<String>,
+
+    // Track which map/set helper suffixes have been emitted
+    emitted_map_helpers: HashSet<String>,
 }
 
 impl Default for Codegen {
@@ -157,6 +160,7 @@ impl Codegen {
             current_fn_name: String::new(),
             loop_labels: Vec::new(),
             current_expected_enum: None,
+            emitted_map_helpers: HashSet::new(),
         }
     }
 
@@ -211,7 +215,10 @@ impl Codegen {
             .insert("file_write".to_string(), Type::Bool);
         self.fn_ret_types
             .insert("print_err".to_string(), Type::Unit);
-        self.fn_ret_types.insert("map_new".to_string(), Type::Map);
+        self.fn_ret_types.insert(
+            "map_new".to_string(),
+            Type::Generic("Map".to_string(), vec![Type::Str, Type::Int]),
+        );
         self.fn_ret_types.insert("map_set".to_string(), Type::Unit);
         self.fn_ret_types.insert("map_get".to_string(), Type::Int);
         self.fn_ret_types.insert("map_has".to_string(), Type::Bool);
@@ -265,7 +272,7 @@ impl Codegen {
             .insert("sort_int".to_string(), Type::Array(Box::new(Type::Int)));
         self.fn_ret_types
             .insert("sort_str".to_string(), Type::Array(Box::new(Type::Str)));
-        // Map utility builtins
+        // Map utility builtins (backward compat for string->int maps)
         self.fn_ret_types.insert("map_size".to_string(), Type::Int);
         self.fn_ret_types
             .insert("map_remove".to_string(), Type::Bool);
@@ -273,6 +280,31 @@ impl Codegen {
             .insert("map_keys".to_string(), Type::Array(Box::new(Type::Str)));
         self.fn_ret_types
             .insert("map_values".to_string(), Type::Array(Box::new(Type::Int)));
+        // Mangled map builtins for monomorphized Map<string, int>
+        self.fn_ret_types.insert(
+            "map_new__string__int".to_string(),
+            Type::Generic("Map".to_string(), vec![Type::Str, Type::Int]),
+        );
+        self.fn_ret_types
+            .insert("map_set__string__int".to_string(), Type::Unit);
+        self.fn_ret_types
+            .insert("map_get__string__int".to_string(), Type::Int);
+        self.fn_ret_types
+            .insert("map_has__string__int".to_string(), Type::Bool);
+        self.fn_ret_types
+            .insert("map_size__string__int".to_string(), Type::Int);
+        self.fn_ret_types
+            .insert("map_remove__string__int".to_string(), Type::Bool);
+        self.fn_ret_types.insert(
+            "map_keys__string__int".to_string(),
+            Type::Array(Box::new(Type::Str)),
+        );
+        self.fn_ret_types.insert(
+            "map_values__string__int".to_string(),
+            Type::Array(Box::new(Type::Int)),
+        );
+        // Set builtins (registered when set helpers are emitted)
+        // set_new, set_add, set_has, set_remove, set_size, set_values
         // Enhanced I/O builtins
         self.fn_ret_types
             .insert("file_exists".to_string(), Type::Bool);
@@ -331,6 +363,9 @@ impl Codegen {
                 _ => {}
             }
         }
+
+        // Scan for non-string-int map instantiations and emit helpers
+        self.emit_generic_map_set_helpers(program);
 
         // Emit each function and impl methods
         for decl in &program.declarations {
@@ -1925,6 +1960,26 @@ impl Codegen {
              }\n\n",
         );
 
+        // ── Map<string, int> aliases for monomorphized names ──
+        // The hardcoded helpers above use unmangled names (map_new, map_set, etc.)
+        // After monomorphization, calls use mangled names (map_new__string__int, etc.)
+        // Emit LLVM aliases so the mangled names resolve to the existing definitions.
+        let map_fns = [
+            ("map_new", "map_new__string__int", "ptr ()"),
+            ("map_set", "map_set__string__int", "void (ptr, ptr, i64)"),
+            ("map_get", "map_get__string__int", "i64 (ptr, ptr)"),
+            ("map_has", "map_has__string__int", "i1 (ptr, ptr)"),
+            ("map_size", "map_size__string__int", "i64 (ptr)"),
+            ("map_remove", "map_remove__string__int", "i1 (ptr, ptr)"),
+            ("map_keys", "map_keys__string__int", "ptr (ptr)"),
+            ("map_values", "map_values__string__int", "ptr (ptr)"),
+        ];
+        for (orig, mangled, _ty) in &map_fns {
+            self.body
+                .push_str(&format!("@{} = alias ptr, ptr @{}\n", mangled, orig));
+        }
+        self.body.push('\n');
+
         // ── Enhanced I/O builtins ──
 
         // file_exists — check if file exists using access()
@@ -2562,6 +2617,1053 @@ impl Codegen {
              \x20 %result = or i32 %lo_shift, %hi_masked\n\
              \x20 ret i32 %result\n\
              }\n\n",
+        );
+    }
+
+    // ── Generic Map/Set helper emission ──────────────────────
+
+    /// Scan the program for Map/Set instantiations and emit helpers for each.
+    fn emit_generic_map_set_helpers(&mut self, program: &Program) {
+        let mut map_suffixes: Vec<(String, String, String)> = Vec::new(); // (suffix, key_llvm, val_llvm)
+        let mut set_suffixes: Vec<(String, String)> = Vec::new(); // (suffix, elem_llvm)
+                                                                  // Scan all let bindings for Map__* and Set__* types
+        for decl in &program.declarations {
+            let fns = match decl {
+                Declaration::Function(f) => vec![f],
+                Declaration::Impl(i) => i.methods.iter().collect(),
+                _ => continue,
+            };
+            for f in fns {
+                Self::collect_map_set_suffixes_from_block(
+                    &f.body,
+                    &mut map_suffixes,
+                    &mut set_suffixes,
+                );
+            }
+        }
+        // Emit map helpers (deduplicated)
+        let mut seen: HashSet<String> = HashSet::new();
+        for (suffix, key_llvm, val_llvm) in &map_suffixes {
+            if suffix == "string__int" {
+                continue; // Already have hardcoded helpers + aliases
+            }
+            if seen.contains(suffix) {
+                continue;
+            }
+            seen.insert(suffix.clone());
+            self.emit_map_helpers_for_suffix(suffix, key_llvm, val_llvm);
+        }
+        // Emit set helpers (deduplicated)
+        let mut seen_set: HashSet<String> = HashSet::new();
+        for (suffix, elem_llvm) in &set_suffixes {
+            if seen_set.contains(suffix) {
+                continue;
+            }
+            seen_set.insert(suffix.clone());
+            self.emit_set_helpers_for_suffix(suffix, elem_llvm);
+        }
+    }
+
+    fn collect_map_set_suffixes_from_block(
+        block: &Block,
+        map_out: &mut Vec<(String, String, String)>,
+        set_out: &mut Vec<(String, String)>,
+    ) {
+        for stmt in &block.stmts {
+            match stmt {
+                Stmt::Let(s) => {
+                    if let Type::Named(ref name) = s.ty {
+                        if let Some(suffix) = name.strip_prefix("Map__") {
+                            let parts: Vec<&str> = suffix.splitn(2, "__").collect();
+                            if parts.len() == 2 {
+                                let key_llvm = Self::yorum_name_to_llvm(parts[0]);
+                                let val_llvm = Self::yorum_name_to_llvm(parts[1]);
+                                map_out.push((suffix.to_string(), key_llvm, val_llvm));
+                            }
+                        } else if let Some(suffix) = name.strip_prefix("Set__") {
+                            let elem_llvm = Self::yorum_name_to_llvm(suffix);
+                            set_out.push((suffix.to_string(), elem_llvm));
+                        }
+                    }
+                }
+                Stmt::If(s) => {
+                    Self::collect_map_set_suffixes_from_block(&s.then_block, map_out, set_out);
+                    if let Some(ref else_branch) = s.else_branch {
+                        match else_branch.as_ref() {
+                            ElseBranch::ElseIf(elif) => {
+                                let if_stmt = Stmt::If(elif.clone());
+                                Self::collect_map_set_suffixes_from_block(
+                                    &Block {
+                                        stmts: vec![if_stmt],
+                                        span: elif.span,
+                                    },
+                                    map_out,
+                                    set_out,
+                                );
+                            }
+                            ElseBranch::Else(b) => {
+                                Self::collect_map_set_suffixes_from_block(b, map_out, set_out);
+                            }
+                        }
+                    }
+                }
+                Stmt::While(s) => {
+                    Self::collect_map_set_suffixes_from_block(&s.body, map_out, set_out);
+                }
+                Stmt::For(s) => {
+                    Self::collect_map_set_suffixes_from_block(&s.body, map_out, set_out);
+                }
+                Stmt::Match(s) => {
+                    for arm in &s.arms {
+                        Self::collect_map_set_suffixes_from_block(&arm.body, map_out, set_out);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn yorum_name_to_llvm(name: &str) -> String {
+        match name {
+            "int" => "i64".to_string(),
+            "float" => "double".to_string(),
+            "bool" => "i1".to_string(),
+            "char" => "i8".to_string(),
+            "string" => "ptr".to_string(),
+            _ => "ptr".to_string(), // Named types are ptr
+        }
+    }
+
+    fn key_elem_size(key_llvm: &str) -> usize {
+        match key_llvm {
+            "i64" | "ptr" | "double" => 8,
+            "i8" => 1,
+            "i1" => 1,
+            _ => 8,
+        }
+    }
+
+    fn val_elem_size(val_llvm: &str) -> usize {
+        match val_llvm {
+            "i64" | "ptr" | "double" => 8,
+            "i8" => 1,
+            "i1" => 1,
+            _ => 8,
+        }
+    }
+
+    /// Emit all map helper functions for a specific (K, V) type pair.
+    fn emit_map_helpers_for_suffix(&mut self, suffix: &str, key_llvm: &str, val_llvm: &str) {
+        if self.emitted_map_helpers.contains(suffix) {
+            return;
+        }
+        self.emitted_map_helpers.insert(suffix.to_string());
+
+        let key_size = Self::key_elem_size(key_llvm);
+        let val_size = Self::val_elem_size(val_llvm);
+        let key_is_string = key_llvm == "ptr";
+        let parts: Vec<&str> = suffix.splitn(2, "__").collect();
+        let key_name = parts[0];
+
+        // Emit hash function for this key type (if not already a string hash)
+        let hash_fn = if key_is_string {
+            "@__yorum_hash_string".to_string()
+        } else {
+            let hash_name = format!("__yorum_hash_{}", key_name);
+            self.emit_hash_function(&hash_name, key_llvm);
+            format!("@{}", hash_name)
+        };
+
+        // Emit find_slot function
+        self.emit_find_slot(suffix, key_llvm, &hash_fn, key_is_string, key_size);
+
+        // Emit grow function
+        self.emit_map_grow(suffix, key_llvm, val_llvm, key_size, val_size);
+
+        // Emit map_new
+        self.body.push_str(&format!(
+            "define ptr @map_new__{}() {{\n\
+             entry:\n\
+             \x20 %map = call ptr @malloc(i64 48)\n\
+             \x20 %kb = mul i64 16, {}\n\
+             \x20 %keys = call ptr @malloc(i64 %kb)\n\
+             \x20 %vb = mul i64 16, {}\n\
+             \x20 %vals = call ptr @malloc(i64 %vb)\n\
+             \x20 %flags = call ptr @malloc(i64 16)\n\
+             \x20 call ptr @memset(ptr %flags, i32 0, i64 16)\n\
+             \x20 store ptr %keys, ptr %map\n\
+             \x20 %vp = getelementptr i8, ptr %map, i64 8\n\
+             \x20 store ptr %vals, ptr %vp\n\
+             \x20 %fp = getelementptr i8, ptr %map, i64 16\n\
+             \x20 store ptr %flags, ptr %fp\n\
+             \x20 %cp = getelementptr i8, ptr %map, i64 24\n\
+             \x20 store i64 16, ptr %cp\n\
+             \x20 %sp = getelementptr i8, ptr %map, i64 32\n\
+             \x20 store i64 0, ptr %sp\n\
+             \x20 %tp = getelementptr i8, ptr %map, i64 40\n\
+             \x20 store i64 0, ptr %tp\n\
+             \x20 ret ptr %map\n\
+             }}\n\n",
+            suffix, key_size, val_size
+        ));
+
+        // Emit map_set
+        let key_copy = if key_is_string {
+            "\x20 ; copy key string\n\
+             \x20 %klen = call i64 @strlen(ptr %key)\n\
+             \x20 %kbuf_sz = add i64 %klen, 1\n\
+             \x20 %kbuf = call ptr @malloc(i64 %kbuf_sz)\n\
+             \x20 call ptr @strcpy(ptr %kbuf, ptr %key)\n\
+             \x20 %keys_p = load ptr, ptr %map\n\
+             \x20 %kslot = getelementptr ptr, ptr %keys_p, i64 %slot\n\
+             \x20 store ptr %kbuf, ptr %kslot\n"
+                .to_string()
+        } else {
+            format!(
+                "\x20 %keys_p = load ptr, ptr %map\n\
+                 \x20 %kslot = getelementptr {}, ptr %keys_p, i64 %slot\n\
+                 \x20 store {} %key, ptr %kslot\n",
+                key_llvm, key_llvm
+            )
+        };
+
+        self.body.push_str(&format!(
+            "define void @map_set__{suffix}(ptr %map, {key_llvm} %key, {val_llvm} %val) {{\n\
+             entry:\n\
+             \x20 %sp = getelementptr i8, ptr %map, i64 32\n\
+             \x20 %size = load i64, ptr %sp\n\
+             \x20 %tp = getelementptr i8, ptr %map, i64 40\n\
+             \x20 %tombs = load i64, ptr %tp\n\
+             \x20 %used = add i64 %size, %tombs\n\
+             \x20 %cap_p = getelementptr i8, ptr %map, i64 24\n\
+             \x20 %cap = load i64, ptr %cap_p\n\
+             \x20 %s4 = mul i64 %used, 4\n\
+             \x20 %c3 = mul i64 %cap, 3\n\
+             \x20 %need_grow = icmp sge i64 %s4, %c3\n\
+             \x20 br i1 %need_grow, label %grow, label %find\n\
+             grow:\n\
+             \x20 call void @__yorum_map_grow__{suffix}(ptr %map)\n\
+             \x20 br label %find\n\
+             find:\n\
+             \x20 %cap2 = load i64, ptr %cap_p\n\
+             \x20 %slot = call i64 @__yorum_map_find_slot__{suffix}(ptr %map, {key_llvm} %key, i64 %cap2)\n\
+             \x20 %flags_pp = getelementptr i8, ptr %map, i64 16\n\
+             \x20 %flags_p = load ptr, ptr %flags_pp\n\
+             \x20 %fslot = getelementptr i8, ptr %flags_p, i64 %slot\n\
+             \x20 %flag = load i8, ptr %fslot\n\
+             \x20 %is_occupied = icmp eq i8 %flag, 1\n\
+             \x20 br i1 %is_occupied, label %update, label %insert\n\
+             insert:\n\
+             {key_copy}\
+             \x20 store i8 1, ptr %fslot\n\
+             \x20 %new_size = add i64 %size, 1\n\
+             \x20 store i64 %new_size, ptr %sp\n\
+             \x20 br label %store_val\n\
+             update:\n\
+             \x20 br label %store_val\n\
+             store_val:\n\
+             \x20 %vals_pp = getelementptr i8, ptr %map, i64 8\n\
+             \x20 %vals_p = load ptr, ptr %vals_pp\n\
+             \x20 %vslot = getelementptr {val_llvm}, ptr %vals_p, i64 %slot\n\
+             \x20 store {val_llvm} %val, ptr %vslot\n\
+             \x20 ret void\n\
+             }}\n\n",
+            suffix = suffix,
+            key_llvm = key_llvm,
+            val_llvm = val_llvm,
+            key_copy = key_copy,
+        ));
+
+        // Emit map_get
+        self.body.push_str(&format!(
+            "define {val_llvm} @map_get__{suffix}(ptr %map, {key_llvm} %key) {{\n\
+             entry:\n\
+             \x20 %cap_p = getelementptr i8, ptr %map, i64 24\n\
+             \x20 %cap = load i64, ptr %cap_p\n\
+             \x20 %slot = call i64 @__yorum_map_find_slot__{suffix}(ptr %map, {key_llvm} %key, i64 %cap)\n\
+             \x20 %flags_pp = getelementptr i8, ptr %map, i64 16\n\
+             \x20 %flags_p = load ptr, ptr %flags_pp\n\
+             \x20 %fp = getelementptr i8, ptr %flags_p, i64 %slot\n\
+             \x20 %flag = load i8, ptr %fp\n\
+             \x20 %found = icmp eq i8 %flag, 1\n\
+             \x20 br i1 %found, label %ok, label %fail\n\
+             fail:\n\
+             \x20 call i32 (ptr, ...) @printf(ptr @.fmt.map_key_generic)\n\
+             \x20 call void @abort()\n\
+             \x20 unreachable\n\
+             ok:\n\
+             \x20 %vals_pp = getelementptr i8, ptr %map, i64 8\n\
+             \x20 %vals_p = load ptr, ptr %vals_pp\n\
+             \x20 %vp = getelementptr {val_llvm}, ptr %vals_p, i64 %slot\n\
+             \x20 %v = load {val_llvm}, ptr %vp\n\
+             \x20 ret {val_llvm} %v\n\
+             }}\n\n",
+            suffix = suffix,
+            key_llvm = key_llvm,
+            val_llvm = val_llvm,
+        ));
+
+        // Emit map_has
+        self.body.push_str(&format!(
+            "define i1 @map_has__{suffix}(ptr %map, {key_llvm} %key) {{\n\
+             entry:\n\
+             \x20 %cap_p = getelementptr i8, ptr %map, i64 24\n\
+             \x20 %cap = load i64, ptr %cap_p\n\
+             \x20 %slot = call i64 @__yorum_map_find_slot__{suffix}(ptr %map, {key_llvm} %key, i64 %cap)\n\
+             \x20 %flags_pp = getelementptr i8, ptr %map, i64 16\n\
+             \x20 %flags_p = load ptr, ptr %flags_pp\n\
+             \x20 %fp = getelementptr i8, ptr %flags_p, i64 %slot\n\
+             \x20 %flag = load i8, ptr %fp\n\
+             \x20 %found = icmp eq i8 %flag, 1\n\
+             \x20 ret i1 %found\n\
+             }}\n\n",
+            suffix = suffix,
+            key_llvm = key_llvm,
+        ));
+
+        // Emit map_size (same for all types)
+        self.body.push_str(&format!(
+            "define i64 @map_size__{suffix}(ptr %map) {{\n\
+             entry:\n\
+             \x20 %sp = getelementptr i8, ptr %map, i64 32\n\
+             \x20 %size = load i64, ptr %sp\n\
+             \x20 ret i64 %size\n\
+             }}\n\n",
+            suffix = suffix,
+        ));
+
+        // Emit map_remove
+        let key_free = if key_is_string {
+            "\x20 %keys_p = load ptr, ptr %map\n\
+             \x20 %kp = getelementptr ptr, ptr %keys_p, i64 %slot\n\
+             \x20 %k = load ptr, ptr %kp\n\
+             \x20 call void @free(ptr %k)\n"
+                .to_string()
+        } else {
+            String::new()
+        };
+
+        self.body.push_str(&format!(
+            "define i1 @map_remove__{suffix}(ptr %map, {key_llvm} %key) {{\n\
+             entry:\n\
+             \x20 %cap_p = getelementptr i8, ptr %map, i64 24\n\
+             \x20 %cap = load i64, ptr %cap_p\n\
+             \x20 %slot = call i64 @__yorum_map_find_slot__{suffix}(ptr %map, {key_llvm} %key, i64 %cap)\n\
+             \x20 %flags_pp = getelementptr i8, ptr %map, i64 16\n\
+             \x20 %flags_p = load ptr, ptr %flags_pp\n\
+             \x20 %fp = getelementptr i8, ptr %flags_p, i64 %slot\n\
+             \x20 %flag = load i8, ptr %fp\n\
+             \x20 %found = icmp eq i8 %flag, 1\n\
+             \x20 br i1 %found, label %remove, label %done\n\
+             remove:\n\
+             \x20 store i8 2, ptr %fp\n\
+             \x20 %sp = getelementptr i8, ptr %map, i64 32\n\
+             \x20 %size = load i64, ptr %sp\n\
+             \x20 %new_size = sub i64 %size, 1\n\
+             \x20 store i64 %new_size, ptr %sp\n\
+             \x20 %tomb_p = getelementptr i8, ptr %map, i64 40\n\
+             \x20 %tombs = load i64, ptr %tomb_p\n\
+             \x20 %new_tombs = add i64 %tombs, 1\n\
+             \x20 store i64 %new_tombs, ptr %tomb_p\n\
+             {key_free}\
+             \x20 ret i1 1\n\
+             done:\n\
+             \x20 ret i1 0\n\
+             }}\n\n",
+            suffix = suffix,
+            key_llvm = key_llvm,
+            key_free = key_free,
+        ));
+
+        // Emit map_keys — returns [K] array
+        self.body.push_str(&format!(
+            "define ptr @map_keys__{suffix}(ptr %map) {{\n\
+             entry:\n\
+             \x20 %sp = getelementptr i8, ptr %map, i64 32\n\
+             \x20 %size = load i64, ptr %sp\n\
+             \x20 %cap_p = getelementptr i8, ptr %map, i64 24\n\
+             \x20 %cap = load i64, ptr %cap_p\n\
+             \x20 %fat = call ptr @malloc(i64 24)\n\
+             \x20 %dbytes = mul i64 %size, {key_size}\n\
+             \x20 %data = call ptr @malloc(i64 %dbytes)\n\
+             \x20 %fd = getelementptr {{ ptr, i64, i64 }}, ptr %fat, i32 0, i32 0\n\
+             \x20 store ptr %data, ptr %fd\n\
+             \x20 %fl = getelementptr {{ ptr, i64, i64 }}, ptr %fat, i32 0, i32 1\n\
+             \x20 store i64 0, ptr %fl\n\
+             \x20 %fc = getelementptr {{ ptr, i64, i64 }}, ptr %fat, i32 0, i32 2\n\
+             \x20 store i64 %size, ptr %fc\n\
+             \x20 %keys_p = load ptr, ptr %map\n\
+             \x20 %flags_pp = getelementptr i8, ptr %map, i64 16\n\
+             \x20 %flags_p = load ptr, ptr %flags_pp\n\
+             \x20 br label %loop\n\
+             loop:\n\
+             \x20 %i = phi i64 [ 0, %entry ], [ %i_next, %loop_cont ]\n\
+             \x20 %out_idx = phi i64 [ 0, %entry ], [ %out_next, %loop_cont ]\n\
+             \x20 %done = icmp sge i64 %i, %cap\n\
+             \x20 br i1 %done, label %finish, label %check\n\
+             check:\n\
+             \x20 %fp = getelementptr i8, ptr %flags_p, i64 %i\n\
+             \x20 %flag = load i8, ptr %fp\n\
+             \x20 %occ = icmp eq i8 %flag, 1\n\
+             \x20 br i1 %occ, label %copy_key, label %skip\n\
+             copy_key:\n\
+             \x20 %kp = getelementptr {key_llvm}, ptr %keys_p, i64 %i\n\
+             \x20 %k = load {key_llvm}, ptr %kp\n\
+             \x20 %dp = getelementptr {key_llvm}, ptr %data, i64 %out_idx\n\
+             \x20 store {key_llvm} %k, ptr %dp\n\
+             \x20 %out_inc = add i64 %out_idx, 1\n\
+             \x20 br label %loop_cont\n\
+             skip:\n\
+             \x20 br label %loop_cont\n\
+             loop_cont:\n\
+             \x20 %out_next = phi i64 [ %out_inc, %copy_key ], [ %out_idx, %skip ]\n\
+             \x20 %i_next = add i64 %i, 1\n\
+             \x20 br label %loop\n\
+             finish:\n\
+             \x20 store i64 %out_idx, ptr %fl\n\
+             \x20 ret ptr %fat\n\
+             }}\n\n",
+            suffix = suffix,
+            key_llvm = key_llvm,
+            key_size = key_size,
+        ));
+
+        // Emit map_values — returns [V] array
+        self.body.push_str(&format!(
+            "define ptr @map_values__{suffix}(ptr %map) {{\n\
+             entry:\n\
+             \x20 %sp = getelementptr i8, ptr %map, i64 32\n\
+             \x20 %size = load i64, ptr %sp\n\
+             \x20 %cap_p = getelementptr i8, ptr %map, i64 24\n\
+             \x20 %cap = load i64, ptr %cap_p\n\
+             \x20 %fat = call ptr @malloc(i64 24)\n\
+             \x20 %dbytes = mul i64 %size, {val_size}\n\
+             \x20 %data = call ptr @malloc(i64 %dbytes)\n\
+             \x20 %fd = getelementptr {{ ptr, i64, i64 }}, ptr %fat, i32 0, i32 0\n\
+             \x20 store ptr %data, ptr %fd\n\
+             \x20 %fl = getelementptr {{ ptr, i64, i64 }}, ptr %fat, i32 0, i32 1\n\
+             \x20 store i64 0, ptr %fl\n\
+             \x20 %fc = getelementptr {{ ptr, i64, i64 }}, ptr %fat, i32 0, i32 2\n\
+             \x20 store i64 %size, ptr %fc\n\
+             \x20 %vals_pp = getelementptr i8, ptr %map, i64 8\n\
+             \x20 %vals_p = load ptr, ptr %vals_pp\n\
+             \x20 %flags_pp = getelementptr i8, ptr %map, i64 16\n\
+             \x20 %flags_p = load ptr, ptr %flags_pp\n\
+             \x20 br label %loop\n\
+             loop:\n\
+             \x20 %i = phi i64 [ 0, %entry ], [ %i_next, %loop_cont ]\n\
+             \x20 %out_idx = phi i64 [ 0, %entry ], [ %out_next, %loop_cont ]\n\
+             \x20 %done = icmp sge i64 %i, %cap\n\
+             \x20 br i1 %done, label %finish, label %check\n\
+             check:\n\
+             \x20 %fp = getelementptr i8, ptr %flags_p, i64 %i\n\
+             \x20 %flag = load i8, ptr %fp\n\
+             \x20 %occ = icmp eq i8 %flag, 1\n\
+             \x20 br i1 %occ, label %copy_val, label %skip\n\
+             copy_val:\n\
+             \x20 %vp = getelementptr {val_llvm}, ptr %vals_p, i64 %i\n\
+             \x20 %v = load {val_llvm}, ptr %vp\n\
+             \x20 %dp = getelementptr {val_llvm}, ptr %data, i64 %out_idx\n\
+             \x20 store {val_llvm} %v, ptr %dp\n\
+             \x20 %out_inc = add i64 %out_idx, 1\n\
+             \x20 br label %loop_cont\n\
+             skip:\n\
+             \x20 br label %loop_cont\n\
+             loop_cont:\n\
+             \x20 %out_next = phi i64 [ %out_inc, %copy_val ], [ %out_idx, %skip ]\n\
+             \x20 %i_next = add i64 %i, 1\n\
+             \x20 br label %loop\n\
+             finish:\n\
+             \x20 store i64 %out_idx, ptr %fl\n\
+             \x20 ret ptr %fat\n\
+             }}\n\n",
+            suffix = suffix,
+            val_llvm = val_llvm,
+            val_size = val_size,
+        ));
+
+        // Register fn_ret_types for all mangled names
+        let key_name_str = parts[0];
+        let val_name_str = parts[1];
+        let key_type = Self::yorum_name_to_ast_type(key_name_str);
+        let val_type = Self::yorum_name_to_ast_type(val_name_str);
+
+        self.fn_ret_types.insert(
+            format!("map_new__{}", suffix),
+            Type::Generic("Map".to_string(), vec![key_type.clone(), val_type.clone()]),
+        );
+        self.fn_ret_types
+            .insert(format!("map_set__{}", suffix), Type::Unit);
+        self.fn_ret_types
+            .insert(format!("map_get__{}", suffix), val_type.clone());
+        self.fn_ret_types
+            .insert(format!("map_has__{}", suffix), Type::Bool);
+        self.fn_ret_types
+            .insert(format!("map_size__{}", suffix), Type::Int);
+        self.fn_ret_types
+            .insert(format!("map_remove__{}", suffix), Type::Bool);
+        self.fn_ret_types.insert(
+            format!("map_keys__{}", suffix),
+            Type::Array(Box::new(key_type)),
+        );
+        self.fn_ret_types.insert(
+            format!("map_values__{}", suffix),
+            Type::Array(Box::new(val_type)),
+        );
+
+        // Add format string for generic map key error
+        if !self.globals.contains("@.fmt.map_key_generic") {
+            self.globals.push_str(
+                "@.fmt.map_key_generic = private constant [23 x i8] c\"map_get: key not found\\00\"\n",
+            );
+        }
+    }
+
+    fn yorum_name_to_ast_type(name: &str) -> Type {
+        match name {
+            "int" => Type::Int,
+            "float" => Type::Float,
+            "bool" => Type::Bool,
+            "char" => Type::Char,
+            "string" => Type::Str,
+            _ => Type::Named(name.to_string()),
+        }
+    }
+
+    fn emit_hash_function(&mut self, name: &str, key_llvm: &str) {
+        // For non-string keys: bit-mix hash
+        match key_llvm {
+            "i64" => {
+                self.body.push_str(&format!(
+                    "define i64 @{}(i64 %x) {{\n\
+                     entry:\n\
+                     \x20 %x1 = xor i64 %x, -4658895280553007687\n\
+                     \x20 %x2 = mul i64 %x1, -7723592293110705685\n\
+                     \x20 %x3 = lshr i64 %x2, 33\n\
+                     \x20 %x4 = xor i64 %x2, %x3\n\
+                     \x20 %x5 = mul i64 %x4, -4658895280553007687\n\
+                     \x20 ret i64 %x5\n\
+                     }}\n\n",
+                    name
+                ));
+            }
+            "i8" => {
+                self.body.push_str(&format!(
+                    "define i64 @{}(i8 %x) {{\n\
+                     entry:\n\
+                     \x20 %x64 = zext i8 %x to i64\n\
+                     \x20 %x1 = xor i64 %x64, -4658895280553007687\n\
+                     \x20 %x2 = mul i64 %x1, -7723592293110705685\n\
+                     \x20 ret i64 %x2\n\
+                     }}\n\n",
+                    name
+                ));
+            }
+            "i1" => {
+                self.body.push_str(&format!(
+                    "define i64 @{}(i1 %x) {{\n\
+                     entry:\n\
+                     \x20 %x64 = zext i1 %x to i64\n\
+                     \x20 %x1 = xor i64 %x64, -4658895280553007687\n\
+                     \x20 %x2 = mul i64 %x1, -7723592293110705685\n\
+                     \x20 ret i64 %x2\n\
+                     }}\n\n",
+                    name
+                ));
+            }
+            _ => {
+                // Fallback: treat as i64 (shouldn't happen for hashable types)
+                self.body.push_str(&format!(
+                    "define i64 @{}(i64 %x) {{\n\
+                     entry:\n\
+                     \x20 ret i64 %x\n\
+                     }}\n\n",
+                    name
+                ));
+            }
+        }
+    }
+
+    fn emit_find_slot(
+        &mut self,
+        suffix: &str,
+        key_llvm: &str,
+        hash_fn: &str,
+        key_is_string: bool,
+        key_size: usize,
+    ) {
+        let _ = key_size;
+        let key_compare = if key_is_string {
+            "\x20 %k = load ptr, ptr %kp\n\
+             \x20 %cmp = call i32 @strcmp(ptr %k, ptr %key)\n\
+             \x20 %eq = icmp eq i32 %cmp, 0\n"
+                .to_string()
+        } else {
+            format!(
+                "\x20 %k = load {}, ptr %kp\n\
+                 \x20 %eq = icmp eq {} %k, %key\n",
+                key_llvm, key_llvm
+            )
+        };
+
+        self.body.push_str(&format!(
+            "define i64 @__yorum_map_find_slot__{suffix}(ptr %map, {key_llvm} %key, i64 %cap) {{\n\
+             entry:\n\
+             \x20 %hash = call i64 {hash_fn}({key_llvm} %key)\n\
+             \x20 %mask = sub i64 %cap, 1\n\
+             \x20 %start = and i64 %hash, %mask\n\
+             \x20 %keys_p = load ptr, ptr %map\n\
+             \x20 %flags_pp = getelementptr i8, ptr %map, i64 16\n\
+             \x20 %flags_p = load ptr, ptr %flags_pp\n\
+             \x20 br label %probe\n\
+             probe:\n\
+             \x20 %idx = phi i64 [ %start, %entry ], [ %next, %advance ]\n\
+             \x20 %fp = getelementptr i8, ptr %flags_p, i64 %idx\n\
+             \x20 %flag = load i8, ptr %fp\n\
+             \x20 %is_empty = icmp eq i8 %flag, 0\n\
+             \x20 br i1 %is_empty, label %done, label %check_tombstone\n\
+             check_tombstone:\n\
+             \x20 %is_tomb = icmp eq i8 %flag, 2\n\
+             \x20 br i1 %is_tomb, label %advance, label %check_key\n\
+             check_key:\n\
+             \x20 %kp = getelementptr {key_llvm}, ptr %keys_p, i64 %idx\n\
+             {key_compare}\
+             \x20 br i1 %eq, label %done, label %advance\n\
+             advance:\n\
+             \x20 %next_raw = add i64 %idx, 1\n\
+             \x20 %next = and i64 %next_raw, %mask\n\
+             \x20 br label %probe\n\
+             done:\n\
+             \x20 ret i64 %idx\n\
+             }}\n\n",
+            suffix = suffix,
+            key_llvm = key_llvm,
+            hash_fn = hash_fn,
+            key_compare = key_compare,
+        ));
+    }
+
+    fn emit_map_grow(
+        &mut self,
+        suffix: &str,
+        key_llvm: &str,
+        val_llvm: &str,
+        key_size: usize,
+        val_size: usize,
+    ) {
+        self.body.push_str(&format!(
+            "define void @__yorum_map_grow__{suffix}(ptr %map) {{\n\
+             entry:\n\
+             \x20 %cap_p = getelementptr i8, ptr %map, i64 24\n\
+             \x20 %old_cap = load i64, ptr %cap_p\n\
+             \x20 %new_cap = mul i64 %old_cap, 2\n\
+             \x20 %kb = mul i64 %new_cap, {key_size}\n\
+             \x20 %vb = mul i64 %new_cap, {val_size}\n\
+             \x20 %new_keys = call ptr @malloc(i64 %kb)\n\
+             \x20 %new_vals = call ptr @malloc(i64 %vb)\n\
+             \x20 %new_flags = call ptr @malloc(i64 %new_cap)\n\
+             \x20 call ptr @memset(ptr %new_flags, i32 0, i64 %new_cap)\n\
+             \x20 %old_keys = load ptr, ptr %map\n\
+             \x20 %vals_p = getelementptr i8, ptr %map, i64 8\n\
+             \x20 %old_vals = load ptr, ptr %vals_p\n\
+             \x20 %flags_p = getelementptr i8, ptr %map, i64 16\n\
+             \x20 %old_flags = load ptr, ptr %flags_p\n\
+             \x20 store ptr %new_keys, ptr %map\n\
+             \x20 store ptr %new_vals, ptr %vals_p\n\
+             \x20 store ptr %new_flags, ptr %flags_p\n\
+             \x20 store i64 %new_cap, ptr %cap_p\n\
+             \x20 %tomb_p = getelementptr i8, ptr %map, i64 40\n\
+             \x20 store i64 0, ptr %tomb_p\n\
+             \x20 br label %rehash_loop\n\
+             rehash_loop:\n\
+             \x20 %i = phi i64 [ 0, %entry ], [ %i_next, %rehash_cont ]\n\
+             \x20 %cmp = icmp slt i64 %i, %old_cap\n\
+             \x20 br i1 %cmp, label %rehash_body, label %rehash_done\n\
+             rehash_body:\n\
+             \x20 %ofp = getelementptr i8, ptr %old_flags, i64 %i\n\
+             \x20 %of = load i8, ptr %ofp\n\
+             \x20 %occ = icmp eq i8 %of, 1\n\
+             \x20 br i1 %occ, label %rehash_insert, label %rehash_cont\n\
+             rehash_insert:\n\
+             \x20 %okp = getelementptr {key_llvm}, ptr %old_keys, i64 %i\n\
+             \x20 %ok = load {key_llvm}, ptr %okp\n\
+             \x20 %ovp = getelementptr {val_llvm}, ptr %old_vals, i64 %i\n\
+             \x20 %ov = load {val_llvm}, ptr %ovp\n\
+             \x20 %slot = call i64 @__yorum_map_find_slot__{suffix}(ptr %map, {key_llvm} %ok, i64 %new_cap)\n\
+             \x20 %nkp = getelementptr {key_llvm}, ptr %new_keys, i64 %slot\n\
+             \x20 store {key_llvm} %ok, ptr %nkp\n\
+             \x20 %nvp = getelementptr {val_llvm}, ptr %new_vals, i64 %slot\n\
+             \x20 store {val_llvm} %ov, ptr %nvp\n\
+             \x20 %nfp = getelementptr i8, ptr %new_flags, i64 %slot\n\
+             \x20 store i8 1, ptr %nfp\n\
+             \x20 br label %rehash_cont\n\
+             rehash_cont:\n\
+             \x20 %i_next = add i64 %i, 1\n\
+             \x20 br label %rehash_loop\n\
+             rehash_done:\n\
+             \x20 call void @free(ptr %old_keys)\n\
+             \x20 call void @free(ptr %old_vals)\n\
+             \x20 call void @free(ptr %old_flags)\n\
+             \x20 ret void\n\
+             }}\n\n",
+            suffix = suffix,
+            key_llvm = key_llvm,
+            val_llvm = val_llvm,
+            key_size = key_size,
+            val_size = val_size,
+        ));
+    }
+
+    /// Emit all set helper functions for a specific T type.
+    /// Set struct layout (40 bytes):
+    ///   offset 0:  ptr   keys
+    ///   offset 8:  ptr   flags
+    ///   offset 16: i64   capacity
+    ///   offset 24: i64   size
+    ///   offset 32: i64   tombstones
+    fn emit_set_helpers_for_suffix(&mut self, suffix: &str, elem_llvm: &str) {
+        let elem_size = Self::key_elem_size(elem_llvm);
+        let elem_is_string = elem_llvm == "ptr";
+
+        // Reuse hash function from map if already emitted, or emit new one
+        let hash_fn = if elem_is_string {
+            "@__yorum_hash_string".to_string()
+        } else {
+            let hash_name = format!("__yorum_hash_{}", suffix);
+            // Check if hash already emitted (might share with Map)
+            if !self.body.contains(&format!("@{}", hash_name)) {
+                self.emit_hash_function(&hash_name, elem_llvm);
+            }
+            format!("@{}", hash_name)
+        };
+
+        // Emit find_slot for set
+        let key_compare = if elem_is_string {
+            "\x20 %k = load ptr, ptr %kp\n\
+             \x20 %cmp = call i32 @strcmp(ptr %k, ptr %key)\n\
+             \x20 %eq = icmp eq i32 %cmp, 0\n"
+                .to_string()
+        } else {
+            format!(
+                "\x20 %k = load {}, ptr %kp\n\
+                 \x20 %eq = icmp eq {} %k, %key\n",
+                elem_llvm, elem_llvm
+            )
+        };
+
+        self.body.push_str(&format!(
+            "define i64 @__yorum_set_find_slot__{suffix}(ptr %set, {elem_llvm} %key, i64 %cap) {{\n\
+             entry:\n\
+             \x20 %hash = call i64 {hash_fn}({elem_llvm} %key)\n\
+             \x20 %mask = sub i64 %cap, 1\n\
+             \x20 %start = and i64 %hash, %mask\n\
+             \x20 %keys_p = load ptr, ptr %set\n\
+             \x20 %flags_pp = getelementptr i8, ptr %set, i64 8\n\
+             \x20 %flags_p = load ptr, ptr %flags_pp\n\
+             \x20 br label %probe\n\
+             probe:\n\
+             \x20 %idx = phi i64 [ %start, %entry ], [ %next, %advance ]\n\
+             \x20 %fp = getelementptr i8, ptr %flags_p, i64 %idx\n\
+             \x20 %flag = load i8, ptr %fp\n\
+             \x20 %is_empty = icmp eq i8 %flag, 0\n\
+             \x20 br i1 %is_empty, label %done, label %check_tombstone\n\
+             check_tombstone:\n\
+             \x20 %is_tomb = icmp eq i8 %flag, 2\n\
+             \x20 br i1 %is_tomb, label %advance, label %check_key\n\
+             check_key:\n\
+             \x20 %kp = getelementptr {elem_llvm}, ptr %keys_p, i64 %idx\n\
+             {key_compare}\
+             \x20 br i1 %eq, label %done, label %advance\n\
+             advance:\n\
+             \x20 %next_raw = add i64 %idx, 1\n\
+             \x20 %next = and i64 %next_raw, %mask\n\
+             \x20 br label %probe\n\
+             done:\n\
+             \x20 ret i64 %idx\n\
+             }}\n\n",
+            suffix = suffix,
+            elem_llvm = elem_llvm,
+            hash_fn = hash_fn,
+            key_compare = key_compare,
+        ));
+
+        // Emit set grow
+        self.body.push_str(&format!(
+            "define void @__yorum_set_grow__{suffix}(ptr %set) {{\n\
+             entry:\n\
+             \x20 %cap_p = getelementptr i8, ptr %set, i64 16\n\
+             \x20 %old_cap = load i64, ptr %cap_p\n\
+             \x20 %new_cap = mul i64 %old_cap, 2\n\
+             \x20 %kb = mul i64 %new_cap, {elem_size}\n\
+             \x20 %new_keys = call ptr @malloc(i64 %kb)\n\
+             \x20 %new_flags = call ptr @malloc(i64 %new_cap)\n\
+             \x20 call ptr @memset(ptr %new_flags, i32 0, i64 %new_cap)\n\
+             \x20 %old_keys = load ptr, ptr %set\n\
+             \x20 %flags_p = getelementptr i8, ptr %set, i64 8\n\
+             \x20 %old_flags = load ptr, ptr %flags_p\n\
+             \x20 store ptr %new_keys, ptr %set\n\
+             \x20 store ptr %new_flags, ptr %flags_p\n\
+             \x20 store i64 %new_cap, ptr %cap_p\n\
+             \x20 %tomb_p = getelementptr i8, ptr %set, i64 32\n\
+             \x20 store i64 0, ptr %tomb_p\n\
+             \x20 br label %rehash_loop\n\
+             rehash_loop:\n\
+             \x20 %i = phi i64 [ 0, %entry ], [ %i_next, %rehash_cont ]\n\
+             \x20 %cmp = icmp slt i64 %i, %old_cap\n\
+             \x20 br i1 %cmp, label %rehash_body, label %rehash_done\n\
+             rehash_body:\n\
+             \x20 %ofp = getelementptr i8, ptr %old_flags, i64 %i\n\
+             \x20 %of = load i8, ptr %ofp\n\
+             \x20 %occ = icmp eq i8 %of, 1\n\
+             \x20 br i1 %occ, label %rehash_insert, label %rehash_cont\n\
+             rehash_insert:\n\
+             \x20 %okp = getelementptr {elem_llvm}, ptr %old_keys, i64 %i\n\
+             \x20 %ok = load {elem_llvm}, ptr %okp\n\
+             \x20 %slot = call i64 @__yorum_set_find_slot__{suffix}(ptr %set, {elem_llvm} %ok, i64 %new_cap)\n\
+             \x20 %nkp = getelementptr {elem_llvm}, ptr %new_keys, i64 %slot\n\
+             \x20 store {elem_llvm} %ok, ptr %nkp\n\
+             \x20 %nfp = getelementptr i8, ptr %new_flags, i64 %slot\n\
+             \x20 store i8 1, ptr %nfp\n\
+             \x20 br label %rehash_cont\n\
+             rehash_cont:\n\
+             \x20 %i_next = add i64 %i, 1\n\
+             \x20 br label %rehash_loop\n\
+             rehash_done:\n\
+             \x20 call void @free(ptr %old_keys)\n\
+             \x20 call void @free(ptr %old_flags)\n\
+             \x20 ret void\n\
+             }}\n\n",
+            suffix = suffix,
+            elem_llvm = elem_llvm,
+            elem_size = elem_size,
+        ));
+
+        // set_new — allocate 40-byte set struct with capacity 16
+        self.body.push_str(&format!(
+            "define ptr @set_new__{suffix}() {{\n\
+             entry:\n\
+             \x20 %set = call ptr @malloc(i64 40)\n\
+             \x20 %kb = mul i64 16, {elem_size}\n\
+             \x20 %keys = call ptr @malloc(i64 %kb)\n\
+             \x20 %flags = call ptr @malloc(i64 16)\n\
+             \x20 call ptr @memset(ptr %flags, i32 0, i64 16)\n\
+             \x20 store ptr %keys, ptr %set\n\
+             \x20 %fp = getelementptr i8, ptr %set, i64 8\n\
+             \x20 store ptr %flags, ptr %fp\n\
+             \x20 %cp = getelementptr i8, ptr %set, i64 16\n\
+             \x20 store i64 16, ptr %cp\n\
+             \x20 %sp = getelementptr i8, ptr %set, i64 24\n\
+             \x20 store i64 0, ptr %sp\n\
+             \x20 %tp = getelementptr i8, ptr %set, i64 32\n\
+             \x20 store i64 0, ptr %tp\n\
+             \x20 ret ptr %set\n\
+             }}\n\n",
+            suffix = suffix,
+            elem_size = elem_size,
+        ));
+
+        // set_add — insert element into set
+        let key_copy = if elem_is_string {
+            "\x20 %klen = call i64 @strlen(ptr %key)\n\
+             \x20 %kbuf_sz = add i64 %klen, 1\n\
+             \x20 %kbuf = call ptr @malloc(i64 %kbuf_sz)\n\
+             \x20 call ptr @strcpy(ptr %kbuf, ptr %key)\n\
+             \x20 %keys_p = load ptr, ptr %set\n\
+             \x20 %kslot = getelementptr ptr, ptr %keys_p, i64 %slot\n\
+             \x20 store ptr %kbuf, ptr %kslot\n"
+                .to_string()
+        } else {
+            format!(
+                "\x20 %keys_p = load ptr, ptr %set\n\
+                 \x20 %kslot = getelementptr {}, ptr %keys_p, i64 %slot\n\
+                 \x20 store {} %key, ptr %kslot\n",
+                elem_llvm, elem_llvm
+            )
+        };
+
+        self.body.push_str(&format!(
+            "define void @set_add__{suffix}(ptr %set, {elem_llvm} %key) {{\n\
+             entry:\n\
+             \x20 %sp = getelementptr i8, ptr %set, i64 24\n\
+             \x20 %size = load i64, ptr %sp\n\
+             \x20 %tp = getelementptr i8, ptr %set, i64 32\n\
+             \x20 %tombs = load i64, ptr %tp\n\
+             \x20 %used = add i64 %size, %tombs\n\
+             \x20 %cap_p = getelementptr i8, ptr %set, i64 16\n\
+             \x20 %cap = load i64, ptr %cap_p\n\
+             \x20 %s4 = mul i64 %used, 4\n\
+             \x20 %c3 = mul i64 %cap, 3\n\
+             \x20 %need_grow = icmp sge i64 %s4, %c3\n\
+             \x20 br i1 %need_grow, label %grow, label %find\n\
+             grow:\n\
+             \x20 call void @__yorum_set_grow__{suffix}(ptr %set)\n\
+             \x20 br label %find\n\
+             find:\n\
+             \x20 %cap2 = load i64, ptr %cap_p\n\
+             \x20 %slot = call i64 @__yorum_set_find_slot__{suffix}(ptr %set, {elem_llvm} %key, i64 %cap2)\n\
+             \x20 %flags_pp = getelementptr i8, ptr %set, i64 8\n\
+             \x20 %flags_p = load ptr, ptr %flags_pp\n\
+             \x20 %fslot = getelementptr i8, ptr %flags_p, i64 %slot\n\
+             \x20 %flag = load i8, ptr %fslot\n\
+             \x20 %is_occupied = icmp eq i8 %flag, 1\n\
+             \x20 br i1 %is_occupied, label %done, label %insert\n\
+             insert:\n\
+             {key_copy}\
+             \x20 store i8 1, ptr %fslot\n\
+             \x20 %new_size = add i64 %size, 1\n\
+             \x20 store i64 %new_size, ptr %sp\n\
+             \x20 br label %done\n\
+             done:\n\
+             \x20 ret void\n\
+             }}\n\n",
+            suffix = suffix,
+            elem_llvm = elem_llvm,
+            key_copy = key_copy,
+        ));
+
+        // set_has — check if element exists
+        self.body.push_str(&format!(
+            "define i1 @set_has__{suffix}(ptr %set, {elem_llvm} %key) {{\n\
+             entry:\n\
+             \x20 %cap_p = getelementptr i8, ptr %set, i64 16\n\
+             \x20 %cap = load i64, ptr %cap_p\n\
+             \x20 %slot = call i64 @__yorum_set_find_slot__{suffix}(ptr %set, {elem_llvm} %key, i64 %cap)\n\
+             \x20 %flags_pp = getelementptr i8, ptr %set, i64 8\n\
+             \x20 %flags_p = load ptr, ptr %flags_pp\n\
+             \x20 %fp = getelementptr i8, ptr %flags_p, i64 %slot\n\
+             \x20 %flag = load i8, ptr %fp\n\
+             \x20 %found = icmp eq i8 %flag, 1\n\
+             \x20 ret i1 %found\n\
+             }}\n\n",
+            suffix = suffix,
+            elem_llvm = elem_llvm,
+        ));
+
+        // set_remove — mark slot as tombstone
+        let key_free = if elem_is_string {
+            "\x20 %keys_p = load ptr, ptr %set\n\
+             \x20 %kp = getelementptr ptr, ptr %keys_p, i64 %slot\n\
+             \x20 %k = load ptr, ptr %kp\n\
+             \x20 call void @free(ptr %k)\n"
+                .to_string()
+        } else {
+            String::new()
+        };
+
+        self.body.push_str(&format!(
+            "define i1 @set_remove__{suffix}(ptr %set, {elem_llvm} %key) {{\n\
+             entry:\n\
+             \x20 %cap_p = getelementptr i8, ptr %set, i64 16\n\
+             \x20 %cap = load i64, ptr %cap_p\n\
+             \x20 %slot = call i64 @__yorum_set_find_slot__{suffix}(ptr %set, {elem_llvm} %key, i64 %cap)\n\
+             \x20 %flags_pp = getelementptr i8, ptr %set, i64 8\n\
+             \x20 %flags_p = load ptr, ptr %flags_pp\n\
+             \x20 %fp = getelementptr i8, ptr %flags_p, i64 %slot\n\
+             \x20 %flag = load i8, ptr %fp\n\
+             \x20 %found = icmp eq i8 %flag, 1\n\
+             \x20 br i1 %found, label %remove, label %done\n\
+             remove:\n\
+             \x20 store i8 2, ptr %fp\n\
+             \x20 %sp = getelementptr i8, ptr %set, i64 24\n\
+             \x20 %size = load i64, ptr %sp\n\
+             \x20 %new_size = sub i64 %size, 1\n\
+             \x20 store i64 %new_size, ptr %sp\n\
+             \x20 %tomb_p = getelementptr i8, ptr %set, i64 32\n\
+             \x20 %tombs = load i64, ptr %tomb_p\n\
+             \x20 %new_tombs = add i64 %tombs, 1\n\
+             \x20 store i64 %new_tombs, ptr %tomb_p\n\
+             {key_free}\
+             \x20 ret i1 1\n\
+             done:\n\
+             \x20 ret i1 0\n\
+             }}\n\n",
+            suffix = suffix,
+            elem_llvm = elem_llvm,
+            key_free = key_free,
+        ));
+
+        // set_size — load size field
+        self.body.push_str(&format!(
+            "define i64 @set_size__{suffix}(ptr %set) {{\n\
+             entry:\n\
+             \x20 %sp = getelementptr i8, ptr %set, i64 24\n\
+             \x20 %size = load i64, ptr %sp\n\
+             \x20 ret i64 %size\n\
+             }}\n\n",
+            suffix = suffix,
+        ));
+
+        // set_values — collect all elements into [T] array
+        self.body.push_str(&format!(
+            "define ptr @set_values__{suffix}(ptr %set) {{\n\
+             entry:\n\
+             \x20 %sp = getelementptr i8, ptr %set, i64 24\n\
+             \x20 %size = load i64, ptr %sp\n\
+             \x20 %cap_p = getelementptr i8, ptr %set, i64 16\n\
+             \x20 %cap = load i64, ptr %cap_p\n\
+             \x20 %fat = call ptr @malloc(i64 24)\n\
+             \x20 %dbytes = mul i64 %size, {elem_size}\n\
+             \x20 %data = call ptr @malloc(i64 %dbytes)\n\
+             \x20 %fd = getelementptr {{ ptr, i64, i64 }}, ptr %fat, i32 0, i32 0\n\
+             \x20 store ptr %data, ptr %fd\n\
+             \x20 %fl = getelementptr {{ ptr, i64, i64 }}, ptr %fat, i32 0, i32 1\n\
+             \x20 store i64 0, ptr %fl\n\
+             \x20 %fc = getelementptr {{ ptr, i64, i64 }}, ptr %fat, i32 0, i32 2\n\
+             \x20 store i64 %size, ptr %fc\n\
+             \x20 %keys_p = load ptr, ptr %set\n\
+             \x20 %flags_pp = getelementptr i8, ptr %set, i64 8\n\
+             \x20 %flags_p = load ptr, ptr %flags_pp\n\
+             \x20 br label %loop\n\
+             loop:\n\
+             \x20 %i = phi i64 [ 0, %entry ], [ %i_next, %loop_cont ]\n\
+             \x20 %out_idx = phi i64 [ 0, %entry ], [ %out_next, %loop_cont ]\n\
+             \x20 %done = icmp sge i64 %i, %cap\n\
+             \x20 br i1 %done, label %finish, label %check\n\
+             check:\n\
+             \x20 %fp = getelementptr i8, ptr %flags_p, i64 %i\n\
+             \x20 %flag = load i8, ptr %fp\n\
+             \x20 %occ = icmp eq i8 %flag, 1\n\
+             \x20 br i1 %occ, label %copy_key, label %skip\n\
+             copy_key:\n\
+             \x20 %kp = getelementptr {elem_llvm}, ptr %keys_p, i64 %i\n\
+             \x20 %k = load {elem_llvm}, ptr %kp\n\
+             \x20 %dp = getelementptr {elem_llvm}, ptr %data, i64 %out_idx\n\
+             \x20 store {elem_llvm} %k, ptr %dp\n\
+             \x20 %out_inc = add i64 %out_idx, 1\n\
+             \x20 br label %loop_cont\n\
+             skip:\n\
+             \x20 br label %loop_cont\n\
+             loop_cont:\n\
+             \x20 %out_next = phi i64 [ %out_inc, %copy_key ], [ %out_idx, %skip ]\n\
+             \x20 %i_next = add i64 %i, 1\n\
+             \x20 br label %loop\n\
+             finish:\n\
+             \x20 store i64 %out_idx, ptr %fl\n\
+             \x20 ret ptr %fat\n\
+             }}\n\n",
+            suffix = suffix,
+            elem_llvm = elem_llvm,
+            elem_size = elem_size,
+        ));
+
+        // Register fn_ret_types for all mangled set names
+        let elem_type = Self::yorum_name_to_ast_type(suffix);
+
+        self.fn_ret_types.insert(
+            format!("set_new__{}", suffix),
+            Type::Generic("Set".to_string(), vec![elem_type.clone()]),
+        );
+        self.fn_ret_types
+            .insert(format!("set_add__{}", suffix), Type::Unit);
+        self.fn_ret_types
+            .insert(format!("set_has__{}", suffix), Type::Bool);
+        self.fn_ret_types
+            .insert(format!("set_remove__{}", suffix), Type::Bool);
+        self.fn_ret_types
+            .insert(format!("set_size__{}", suffix), Type::Int);
+        self.fn_ret_types.insert(
+            format!("set_values__{}", suffix),
+            Type::Array(Box::new(elem_type)),
         );
     }
 
@@ -4521,6 +5623,8 @@ impl Codegen {
                 message: "range expression is only valid in for loops".to_string(),
             })?,
 
+            ExprKind::Try(inner) => self.emit_try_expr(inner),
+
             ExprKind::StructInit(name, fields) => {
                 let _layout =
                     self.struct_layouts
@@ -4975,6 +6079,194 @@ impl Codegen {
         }
 
         Ok(ptr)
+    }
+
+    // ── Try (?) operator ─────────────────────────────────────
+
+    fn emit_try_expr(&mut self, inner: &Expr) -> Result<String, CodegenError> {
+        // 1. Determine the enum type of the inner expression
+        let inner_llvm_ty = self.expr_llvm_type(inner);
+        let enum_name = inner_llvm_ty
+            .strip_prefix('%')
+            .ok_or_else(|| CodegenError {
+                message: format!("? operator on non-enum type '{}'", inner_llvm_ty),
+            })?
+            .to_string();
+
+        let is_option = enum_name.starts_with("Option__");
+        let is_result = enum_name.starts_with("Result__");
+        if !is_option && !is_result {
+            return Err(CodegenError {
+                message: format!("? operator on non-Option/Result type '{}'", enum_name),
+            });
+        }
+
+        // 2. Emit inner expression and ensure we have a pointer for GEP
+        let inner_val = self.emit_expr(inner)?;
+        let enum_ptr = if self.expr_returns_ptr(inner) {
+            inner_val
+        } else {
+            let ptr = self.fresh_temp();
+            self.emit_line(&format!("{} = alloca %{}", ptr, enum_name));
+            self.emit_line(&format!("store %{} {}, ptr {}", enum_name, inner_val, ptr));
+            ptr
+        };
+
+        // 3. Extract tag (offset 0)
+        let tag_gep = self.fresh_temp();
+        self.emit_line(&format!(
+            "{} = getelementptr %{}, ptr {}, i32 0, i32 0",
+            tag_gep, enum_name, enum_ptr
+        ));
+        let tag_val = self.fresh_temp();
+        self.emit_line(&format!("{} = load i32, ptr {}", tag_val, tag_gep));
+
+        // 4. Branch: tag 0 = Some/Ok (success), tag != 0 = None/Err (early return)
+        let success_label = self.fresh_label("try.ok");
+        let error_label = self.fresh_label("try.err");
+        let cmp = self.fresh_temp();
+        self.emit_line(&format!("{} = icmp eq i32 {}, 0", cmp, tag_val));
+        self.emit_line(&format!(
+            "br i1 {}, label %{}, label %{}",
+            cmp, success_label, error_label
+        ));
+
+        // 5. Error path: early return None or Err(e)
+        self.emit_label(&error_label);
+        self.block_terminated = false;
+
+        let ret_ty = self
+            .current_fn_ret_ty
+            .clone()
+            .unwrap_or_else(|| "void".to_string());
+        let ret_enum_name = ret_ty.strip_prefix('%').unwrap_or(&ret_ty).to_string();
+
+        if is_option {
+            // Construct None for the function's return type and ret
+            let none_ptr = self.fresh_temp();
+            self.emit_line(&format!("{} = alloca %{}", none_ptr, ret_enum_name));
+            let none_tag_gep = self.fresh_temp();
+            self.emit_line(&format!(
+                "{} = getelementptr %{}, ptr {}, i32 0, i32 0",
+                none_tag_gep, ret_enum_name, none_ptr
+            ));
+            self.emit_line(&format!("store i32 1, ptr {}", none_tag_gep));
+            let none_val = self.fresh_temp();
+            self.emit_line(&format!("{} = load {}, ptr {}", none_val, ret_ty, none_ptr));
+            self.emit_line(&format!("ret {} {}", ret_ty, none_val));
+        } else {
+            // Extract Err payload from inner Result, construct Err(e) for return type
+            let inner_payload_gep = self.fresh_temp();
+            self.emit_line(&format!(
+                "{} = getelementptr %{}, ptr {}, i32 0, i32 1",
+                inner_payload_gep, enum_name, enum_ptr
+            ));
+
+            let err_variant_fields = self
+                .enum_layouts
+                .get(&enum_name)
+                .and_then(|layout| layout.variants.iter().find(|(vn, _)| vn == "Err"))
+                .map(|(_, fields)| fields.clone())
+                .unwrap_or_default();
+
+            if !err_variant_fields.is_empty() {
+                let err_llvm_ty = self.llvm_type(&err_variant_fields[0]);
+
+                // Load Err payload from inner
+                let err_field_ptr = self.fresh_temp();
+                self.emit_line(&format!(
+                    "{} = getelementptr [0 x i8], ptr {}, i64 0, i64 0",
+                    err_field_ptr, inner_payload_gep
+                ));
+                let err_val = self.fresh_temp();
+                self.emit_line(&format!(
+                    "{} = load {}, ptr {}",
+                    err_val, err_llvm_ty, err_field_ptr
+                ));
+
+                // Construct Err(e) for the return type
+                let ret_err_ptr = self.fresh_temp();
+                self.emit_line(&format!("{} = alloca %{}", ret_err_ptr, ret_enum_name));
+                let ret_tag_gep = self.fresh_temp();
+                self.emit_line(&format!(
+                    "{} = getelementptr %{}, ptr {}, i32 0, i32 0",
+                    ret_tag_gep, ret_enum_name, ret_err_ptr
+                ));
+                self.emit_line(&format!("store i32 1, ptr {}", ret_tag_gep));
+                let ret_payload_gep = self.fresh_temp();
+                self.emit_line(&format!(
+                    "{} = getelementptr %{}, ptr {}, i32 0, i32 1",
+                    ret_payload_gep, ret_enum_name, ret_err_ptr
+                ));
+                let ret_err_field_ptr = self.fresh_temp();
+                self.emit_line(&format!(
+                    "{} = getelementptr [0 x i8], ptr {}, i64 0, i64 0",
+                    ret_err_field_ptr, ret_payload_gep
+                ));
+                self.emit_line(&format!(
+                    "store {} {}, ptr {}",
+                    err_llvm_ty, err_val, ret_err_field_ptr
+                ));
+                let ret_val = self.fresh_temp();
+                self.emit_line(&format!(
+                    "{} = load {}, ptr {}",
+                    ret_val, ret_ty, ret_err_ptr
+                ));
+                self.emit_line(&format!("ret {} {}", ret_ty, ret_val));
+            } else {
+                // Err variant with no payload (unusual but handle gracefully)
+                let ret_err_ptr = self.fresh_temp();
+                self.emit_line(&format!("{} = alloca %{}", ret_err_ptr, ret_enum_name));
+                let ret_tag_gep = self.fresh_temp();
+                self.emit_line(&format!(
+                    "{} = getelementptr %{}, ptr {}, i32 0, i32 0",
+                    ret_tag_gep, ret_enum_name, ret_err_ptr
+                ));
+                self.emit_line(&format!("store i32 1, ptr {}", ret_tag_gep));
+                let ret_val = self.fresh_temp();
+                self.emit_line(&format!(
+                    "{} = load {}, ptr {}",
+                    ret_val, ret_ty, ret_err_ptr
+                ));
+                self.emit_line(&format!("ret {} {}", ret_ty, ret_val));
+            }
+        }
+        self.block_terminated = true;
+
+        // 6. Success path: extract T payload from Some/Ok
+        self.emit_label(&success_label);
+        self.block_terminated = false;
+
+        let ok_payload_gep = self.fresh_temp();
+        self.emit_line(&format!(
+            "{} = getelementptr %{}, ptr {}, i32 0, i32 1",
+            ok_payload_gep, enum_name, enum_ptr
+        ));
+        let ok_field_ptr = self.fresh_temp();
+        self.emit_line(&format!(
+            "{} = getelementptr [0 x i8], ptr {}, i64 0, i64 0",
+            ok_field_ptr, ok_payload_gep
+        ));
+
+        let ok_variant_name = if is_option { "Some" } else { "Ok" };
+        let ok_variant_fields = self
+            .enum_layouts
+            .get(&enum_name)
+            .and_then(|layout| layout.variants.iter().find(|(vn, _)| vn == ok_variant_name))
+            .map(|(_, fields)| fields.clone())
+            .unwrap_or_default();
+
+        if !ok_variant_fields.is_empty() {
+            let t_llvm_ty = self.llvm_type(&ok_variant_fields[0]);
+            let t_val = self.fresh_temp();
+            self.emit_line(&format!(
+                "{} = load {}, ptr {}",
+                t_val, t_llvm_ty, ok_field_ptr
+            ));
+            Ok(t_val)
+        } else {
+            Ok("0".to_string())
+        }
     }
 
     // ── to_str polymorphic dispatch ────────────────────────
@@ -5802,6 +7094,9 @@ impl Codegen {
                 Self::collect_idents_from_expr(start, locals, names);
                 Self::collect_idents_from_expr(end, locals, names);
             }
+            ExprKind::Try(inner) => {
+                Self::collect_idents_from_expr(inner, locals, names);
+            }
             ExprKind::Literal(_) => {}
         }
     }
@@ -5819,6 +7114,8 @@ impl Codegen {
             Type::Named(name) => {
                 if self.struct_layouts.contains_key(name) || self.enum_layouts.contains_key(name) {
                     format!("%{}", name)
+                } else if name.starts_with("Map__") || name.starts_with("Set__") {
+                    "ptr".to_string()
                 } else {
                     "i64".to_string() // fallback
                 }
@@ -5836,11 +7133,16 @@ impl Codegen {
                 );
                 "i64".to_string()
             }
-            Type::Generic(name, _) => format!("%{}", name),
+            Type::Generic(name, _) => {
+                if name == "Map" || name == "Set" {
+                    "ptr".to_string()
+                } else {
+                    format!("%{}", name)
+                }
+            }
             Type::Fn(_, _) => "ptr".to_string(),
             Type::Task(_) => "ptr".to_string(),
             Type::Chan(_) => "ptr".to_string(),
-            Type::Map => "ptr".to_string(),
         }
     }
 
@@ -6093,6 +7395,21 @@ impl Codegen {
             }
             ExprKind::Spawn(_) => "ptr".to_string(),
             ExprKind::Range(_, _) => "i64".to_string(),
+            ExprKind::Try(inner) => {
+                // The result type of ? is T from Option<T> or T from Result<T, E>
+                let inner_ty = self.expr_llvm_type(inner);
+                if let Some(enum_name) = inner_ty.strip_prefix('%') {
+                    if let Some(layout) = self.enum_layouts.get(enum_name) {
+                        // First variant is Some/Ok — its first field is T
+                        if let Some((_, fields)) = layout.variants.first() {
+                            if !fields.is_empty() {
+                                return self.llvm_type(&fields[0]);
+                            }
+                        }
+                    }
+                }
+                "i64".to_string()
+            }
         }
     }
 

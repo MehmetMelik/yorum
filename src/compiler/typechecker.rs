@@ -282,21 +282,7 @@ impl TypeChecker {
             "exit".to_string(),
             builtin(vec![Type::Int], Type::Unit, false),
         );
-        // HashMap builtins
-        self.functions
-            .insert("map_new".to_string(), builtin(vec![], Type::Map, false));
-        self.functions.insert(
-            "map_set".to_string(),
-            builtin(vec![Type::Map, Type::Str, Type::Int], Type::Unit, false),
-        );
-        self.functions.insert(
-            "map_get".to_string(),
-            builtin(vec![Type::Map, Type::Str], Type::Int, true),
-        );
-        self.functions.insert(
-            "map_has".to_string(),
-            builtin(vec![Type::Map, Type::Str], Type::Bool, true),
-        );
+        // Map and Set are now generic — their builtins are special-cased in infer_expr
         // Math builtins
         self.functions.insert(
             "abs_int".to_string(),
@@ -436,23 +422,7 @@ impl TypeChecker {
                 false,
             ),
         );
-        // Map utility builtins
-        self.functions.insert(
-            "map_size".to_string(),
-            builtin(vec![Type::Map], Type::Int, true),
-        );
-        self.functions.insert(
-            "map_remove".to_string(),
-            builtin(vec![Type::Map, Type::Str], Type::Bool, false),
-        );
-        self.functions.insert(
-            "map_keys".to_string(),
-            builtin(vec![Type::Map], Type::Array(Box::new(Type::Str)), false),
-        );
-        self.functions.insert(
-            "map_values".to_string(),
-            builtin(vec![Type::Map], Type::Array(Box::new(Type::Int)), false),
-        );
+        // (map_size, map_remove, map_keys, map_values are now special-cased in infer_expr)
         // Enhanced I/O builtins
         self.functions.insert(
             "file_exists".to_string(),
@@ -906,7 +876,28 @@ impl TypeChecker {
                         span: s.span,
                     });
                 }
-                if let Some(val_ty) = self.infer_expr(&s.value) {
+                // Validate hashable key constraint for Map<K, V> and Set<T>
+                if let Type::Generic(ref name, ref args) = s.ty {
+                    if name == "Map" && args.len() == 2 && !self.is_hashable_key(&args[0]) {
+                        self.errors.push(TypeError {
+                            message: format!(
+                                "Map key type '{}' is not hashable; only int, string, char, bool are allowed",
+                                args[0]
+                            ),
+                            span: s.span,
+                        });
+                    }
+                    if name == "Set" && args.len() == 1 && !self.is_hashable_key(&args[0]) {
+                        self.errors.push(TypeError {
+                            message: format!(
+                                "Set element type '{}' is not hashable; only int, string, char, bool are allowed",
+                                args[0]
+                            ),
+                            span: s.span,
+                        });
+                    }
+                }
+                if let Some(val_ty) = self.infer_expr_with_expectation(&s.value, Some(&s.ty)) {
                     // For generic types, compare base name
                     let compatible = match (&s.ty, &val_ty) {
                         (Type::Generic(name, _), Type::Named(vname)) => name == vname,
@@ -1017,7 +1008,7 @@ impl TypeChecker {
                 }
 
                 let target_ty = self.infer_expr(&s.target);
-                let value_ty = self.infer_expr(&s.value);
+                let value_ty = self.infer_expr_with_expectation(&s.value, target_ty.as_ref());
                 if let (Some(tt), Some(vt)) = (target_ty, value_ty) {
                     if tt != vt {
                         self.errors.push(TypeError {
@@ -1031,7 +1022,9 @@ impl TypeChecker {
             Stmt::Return(s) => {
                 if let Some(expected) = &self.current_fn_ret {
                     let expected = expected.clone();
-                    if let Some(actual) = self.infer_expr(&s.value) {
+                    if let Some(actual) =
+                        self.infer_expr_with_expectation(&s.value, Some(&expected))
+                    {
                         let compatible = match (&expected, &actual) {
                             (Type::Generic(name1, args1), Type::Generic(name2, args2)) => {
                                 name1 == name2
@@ -1154,6 +1147,7 @@ impl TypeChecker {
                     self.check_block(&arm.body);
                     self.pop_scope();
                 }
+                self.check_match_exhaustiveness(&s.arms, &subject_ty, s.span);
             }
 
             Stmt::Expr(s) => {
@@ -1314,9 +1308,80 @@ impl TypeChecker {
         }
     }
 
+    fn check_match_exhaustiveness(
+        &mut self,
+        arms: &[MatchArm],
+        subject_ty: &Option<Type>,
+        span: Span,
+    ) {
+        // Only check exhaustiveness for enum types
+        let enum_info = self.subject_enum_info(subject_ty);
+        let (enum_name, _) = match enum_info {
+            Some(info) => info,
+            None => return,
+        };
+        let all_variants: Vec<String> = match self.enums.get(&enum_name) {
+            Some(info) => info.variants.iter().map(|(name, _)| name.clone()).collect(),
+            None => return,
+        };
+
+        // Check if any arm is a catch-all (wildcard or binding that isn't a variant name)
+        for arm in arms {
+            match &arm.pattern {
+                Pattern::Wildcard(_) => return,
+                Pattern::Binding(name, _) => {
+                    if !all_variants.contains(name) {
+                        return; // It's a catch-all binding
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Collect covered variant names
+        let mut covered: HashSet<String> = HashSet::new();
+        for arm in arms {
+            match &arm.pattern {
+                Pattern::Variant(name, _, _) => {
+                    covered.insert(name.clone());
+                }
+                Pattern::Binding(name, _) => {
+                    // Data-less variant matched as binding
+                    if all_variants.contains(name) {
+                        covered.insert(name.clone());
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let missing: Vec<&String> = all_variants
+            .iter()
+            .filter(|v| !covered.contains(*v))
+            .collect();
+        if !missing.is_empty() {
+            let names: Vec<&str> = missing.iter().map(|s| s.as_str()).collect();
+            self.errors.push(TypeError {
+                message: format!(
+                    "non-exhaustive match: missing variant(s) {}",
+                    names.join(", ")
+                ),
+                span,
+            });
+        }
+    }
+
     // ── Expression type inference ────────────────────────────
 
     fn infer_expr(&mut self, expr: &Expr) -> Option<Type> {
+        self.infer_expr_with_expectation(expr, None)
+    }
+
+    fn infer_expr_with_expectation(
+        &mut self,
+        expr: &Expr,
+        expected_type: Option<&Type>,
+    ) -> Option<Type> {
         match &expr.kind {
             ExprKind::Literal(lit) => Some(match lit {
                 Literal::Int(_) => Type::Int,
@@ -1763,6 +1828,537 @@ impl TypeChecker {
                         return None;
                     }
 
+                    // ── Generic Map<K, V> builtins ──
+                    if name == "map_new" {
+                        if !args.is_empty() {
+                            self.errors.push(TypeError {
+                                message: "map_new() takes no arguments".to_string(),
+                                span: expr.span,
+                            });
+                        }
+                        if self.current_fn_is_pure {
+                            self.errors.push(TypeError {
+                                message: "pure function cannot call impure function 'map_new'"
+                                    .to_string(),
+                                span: expr.span,
+                            });
+                        }
+                        // K, V resolved by let-binding compatibility (TypeVar acts as wildcard)
+                        return Some(Type::Generic(
+                            "Map".to_string(),
+                            vec![
+                                Type::TypeVar("K".to_string()),
+                                Type::TypeVar("V".to_string()),
+                            ],
+                        ));
+                    }
+                    if name == "map_set" {
+                        if args.len() != 3 {
+                            self.errors.push(TypeError {
+                                message: format!(
+                                    "'map_set' expects 3 arguments, found {}",
+                                    args.len()
+                                ),
+                                span: expr.span,
+                            });
+                            return None;
+                        }
+                        if self.current_fn_is_pure {
+                            self.errors.push(TypeError {
+                                message: "pure function cannot call impure function 'map_set'"
+                                    .to_string(),
+                                span: expr.span,
+                            });
+                        }
+                        if let Some(map_ty) = self.infer_expr(&args[0]) {
+                            if let Some((k_ty, v_ty)) = self.map_kv_types(&map_ty) {
+                                if let Some(key_ty) = self.infer_expr(&args[1]) {
+                                    if !matches!(key_ty, Type::TypeVar(_))
+                                        && !matches!(k_ty, Type::TypeVar(_))
+                                        && key_ty != k_ty
+                                    {
+                                        self.errors.push(TypeError {
+                                            message: format!(
+                                                "map_set: key type mismatch, expected '{}', found '{}'",
+                                                k_ty, key_ty
+                                            ),
+                                            span: args[1].span,
+                                        });
+                                    }
+                                    if !self.is_hashable_key(&key_ty)
+                                        && !matches!(key_ty, Type::TypeVar(_))
+                                    {
+                                        self.errors.push(TypeError {
+                                            message: format!(
+                                                "map key type '{}' is not hashable (must be int, string, char, or bool)",
+                                                key_ty
+                                            ),
+                                            span: args[1].span,
+                                        });
+                                    }
+                                }
+                                if let Some(val_ty) = self.infer_expr(&args[2]) {
+                                    if !matches!(val_ty, Type::TypeVar(_))
+                                        && !matches!(v_ty, Type::TypeVar(_))
+                                        && val_ty != v_ty
+                                    {
+                                        self.errors.push(TypeError {
+                                            message: format!(
+                                                "map_set: value type mismatch, expected '{}', found '{}'",
+                                                v_ty, val_ty
+                                            ),
+                                            span: args[2].span,
+                                        });
+                                    }
+                                }
+                            } else {
+                                self.errors.push(TypeError {
+                                    message: format!(
+                                        "map_set: first argument must be a Map, found '{}'",
+                                        map_ty
+                                    ),
+                                    span: args[0].span,
+                                });
+                            }
+                        }
+                        return Some(Type::Unit);
+                    }
+                    if name == "map_get" {
+                        if args.len() != 2 {
+                            self.errors.push(TypeError {
+                                message: format!(
+                                    "'map_get' expects 2 arguments, found {}",
+                                    args.len()
+                                ),
+                                span: expr.span,
+                            });
+                            return None;
+                        }
+                        if let Some(map_ty) = self.infer_expr(&args[0]) {
+                            if let Some((k_ty, v_ty)) = self.map_kv_types(&map_ty) {
+                                if let Some(key_ty) = self.infer_expr(&args[1]) {
+                                    if !matches!(key_ty, Type::TypeVar(_))
+                                        && !matches!(k_ty, Type::TypeVar(_))
+                                        && key_ty != k_ty
+                                    {
+                                        self.errors.push(TypeError {
+                                            message: format!(
+                                                "map_get: key type mismatch, expected '{}', found '{}'",
+                                                k_ty, key_ty
+                                            ),
+                                            span: args[1].span,
+                                        });
+                                    }
+                                }
+                                return Some(v_ty);
+                            } else {
+                                self.errors.push(TypeError {
+                                    message: format!(
+                                        "map_get: first argument must be a Map, found '{}'",
+                                        map_ty
+                                    ),
+                                    span: args[0].span,
+                                });
+                            }
+                        }
+                        return None;
+                    }
+                    if name == "map_has" {
+                        if args.len() != 2 {
+                            self.errors.push(TypeError {
+                                message: format!(
+                                    "'map_has' expects 2 arguments, found {}",
+                                    args.len()
+                                ),
+                                span: expr.span,
+                            });
+                            return None;
+                        }
+                        if let Some(map_ty) = self.infer_expr(&args[0]) {
+                            if let Some((k_ty, _)) = self.map_kv_types(&map_ty) {
+                                if let Some(key_ty) = self.infer_expr(&args[1]) {
+                                    if !matches!(key_ty, Type::TypeVar(_))
+                                        && !matches!(k_ty, Type::TypeVar(_))
+                                        && key_ty != k_ty
+                                    {
+                                        self.errors.push(TypeError {
+                                            message: format!(
+                                                "map_has: key type mismatch, expected '{}', found '{}'",
+                                                k_ty, key_ty
+                                            ),
+                                            span: args[1].span,
+                                        });
+                                    }
+                                }
+                            } else {
+                                self.errors.push(TypeError {
+                                    message: format!(
+                                        "map_has: first argument must be a Map, found '{}'",
+                                        map_ty
+                                    ),
+                                    span: args[0].span,
+                                });
+                            }
+                        }
+                        return Some(Type::Bool);
+                    }
+                    if name == "map_size" {
+                        if args.len() != 1 {
+                            self.errors.push(TypeError {
+                                message: format!(
+                                    "'map_size' expects 1 argument, found {}",
+                                    args.len()
+                                ),
+                                span: expr.span,
+                            });
+                            return None;
+                        }
+                        if let Some(map_ty) = self.infer_expr(&args[0]) {
+                            if self.map_kv_types(&map_ty).is_none() {
+                                self.errors.push(TypeError {
+                                    message: format!(
+                                        "map_size: argument must be a Map, found '{}'",
+                                        map_ty
+                                    ),
+                                    span: args[0].span,
+                                });
+                            }
+                        }
+                        return Some(Type::Int);
+                    }
+                    if name == "map_remove" {
+                        if args.len() != 2 {
+                            self.errors.push(TypeError {
+                                message: format!(
+                                    "'map_remove' expects 2 arguments, found {}",
+                                    args.len()
+                                ),
+                                span: expr.span,
+                            });
+                            return None;
+                        }
+                        if self.current_fn_is_pure {
+                            self.errors.push(TypeError {
+                                message: "pure function cannot call impure function 'map_remove'"
+                                    .to_string(),
+                                span: expr.span,
+                            });
+                        }
+                        if let Some(map_ty) = self.infer_expr(&args[0]) {
+                            if let Some((k_ty, _)) = self.map_kv_types(&map_ty) {
+                                if let Some(key_ty) = self.infer_expr(&args[1]) {
+                                    if !matches!(key_ty, Type::TypeVar(_))
+                                        && !matches!(k_ty, Type::TypeVar(_))
+                                        && key_ty != k_ty
+                                    {
+                                        self.errors.push(TypeError {
+                                            message: format!(
+                                                "map_remove: key type mismatch, expected '{}', found '{}'",
+                                                k_ty, key_ty
+                                            ),
+                                            span: args[1].span,
+                                        });
+                                    }
+                                }
+                            } else {
+                                self.errors.push(TypeError {
+                                    message: format!(
+                                        "map_remove: first argument must be a Map, found '{}'",
+                                        map_ty
+                                    ),
+                                    span: args[0].span,
+                                });
+                            }
+                        }
+                        return Some(Type::Bool);
+                    }
+                    if name == "map_keys" {
+                        if args.len() != 1 {
+                            self.errors.push(TypeError {
+                                message: format!(
+                                    "'map_keys' expects 1 argument, found {}",
+                                    args.len()
+                                ),
+                                span: expr.span,
+                            });
+                            return None;
+                        }
+                        if self.current_fn_is_pure {
+                            self.errors.push(TypeError {
+                                message: "pure function cannot call impure function 'map_keys'"
+                                    .to_string(),
+                                span: expr.span,
+                            });
+                        }
+                        if let Some(map_ty) = self.infer_expr(&args[0]) {
+                            if let Some((k_ty, _)) = self.map_kv_types(&map_ty) {
+                                return Some(Type::Array(Box::new(k_ty)));
+                            } else {
+                                self.errors.push(TypeError {
+                                    message: format!(
+                                        "map_keys: argument must be a Map, found '{}'",
+                                        map_ty
+                                    ),
+                                    span: args[0].span,
+                                });
+                            }
+                        }
+                        return None;
+                    }
+                    if name == "map_values" {
+                        if args.len() != 1 {
+                            self.errors.push(TypeError {
+                                message: format!(
+                                    "'map_values' expects 1 argument, found {}",
+                                    args.len()
+                                ),
+                                span: expr.span,
+                            });
+                            return None;
+                        }
+                        if self.current_fn_is_pure {
+                            self.errors.push(TypeError {
+                                message: "pure function cannot call impure function 'map_values'"
+                                    .to_string(),
+                                span: expr.span,
+                            });
+                        }
+                        if let Some(map_ty) = self.infer_expr(&args[0]) {
+                            if let Some((_, v_ty)) = self.map_kv_types(&map_ty) {
+                                return Some(Type::Array(Box::new(v_ty)));
+                            } else {
+                                self.errors.push(TypeError {
+                                    message: format!(
+                                        "map_values: argument must be a Map, found '{}'",
+                                        map_ty
+                                    ),
+                                    span: args[0].span,
+                                });
+                            }
+                        }
+                        return None;
+                    }
+
+                    // ── Generic Set<T> builtins ──
+                    if name == "set_new" {
+                        if !args.is_empty() {
+                            self.errors.push(TypeError {
+                                message: "set_new() takes no arguments".to_string(),
+                                span: expr.span,
+                            });
+                        }
+                        if self.current_fn_is_pure {
+                            self.errors.push(TypeError {
+                                message: "pure function cannot call impure function 'set_new'"
+                                    .to_string(),
+                                span: expr.span,
+                            });
+                        }
+                        return Some(Type::Generic(
+                            "Set".to_string(),
+                            vec![Type::TypeVar("T".to_string())],
+                        ));
+                    }
+                    if name == "set_add" {
+                        if args.len() != 2 {
+                            self.errors.push(TypeError {
+                                message: format!(
+                                    "'set_add' expects 2 arguments, found {}",
+                                    args.len()
+                                ),
+                                span: expr.span,
+                            });
+                            return None;
+                        }
+                        if self.current_fn_is_pure {
+                            self.errors.push(TypeError {
+                                message: "pure function cannot call impure function 'set_add'"
+                                    .to_string(),
+                                span: expr.span,
+                            });
+                        }
+                        if let Some(set_ty) = self.infer_expr(&args[0]) {
+                            if let Some(elem_ty) = self.set_elem_type(&set_ty) {
+                                if let Some(val_ty) = self.infer_expr(&args[1]) {
+                                    if !matches!(val_ty, Type::TypeVar(_))
+                                        && !matches!(elem_ty, Type::TypeVar(_))
+                                        && val_ty != elem_ty
+                                    {
+                                        self.errors.push(TypeError {
+                                            message: format!(
+                                                "set_add: element type mismatch, expected '{}', found '{}'",
+                                                elem_ty, val_ty
+                                            ),
+                                            span: args[1].span,
+                                        });
+                                    }
+                                    if !self.is_hashable_key(&val_ty)
+                                        && !matches!(val_ty, Type::TypeVar(_))
+                                    {
+                                        self.errors.push(TypeError {
+                                            message: format!(
+                                                "set element type '{}' is not hashable (must be int, string, char, or bool)",
+                                                val_ty
+                                            ),
+                                            span: args[1].span,
+                                        });
+                                    }
+                                }
+                            } else {
+                                self.errors.push(TypeError {
+                                    message: format!(
+                                        "set_add: first argument must be a Set, found '{}'",
+                                        set_ty
+                                    ),
+                                    span: args[0].span,
+                                });
+                            }
+                        }
+                        return Some(Type::Unit);
+                    }
+                    if name == "set_has" {
+                        if args.len() != 2 {
+                            self.errors.push(TypeError {
+                                message: format!(
+                                    "'set_has' expects 2 arguments, found {}",
+                                    args.len()
+                                ),
+                                span: expr.span,
+                            });
+                            return None;
+                        }
+                        if let Some(set_ty) = self.infer_expr(&args[0]) {
+                            if let Some(elem_ty) = self.set_elem_type(&set_ty) {
+                                if let Some(val_ty) = self.infer_expr(&args[1]) {
+                                    if !matches!(val_ty, Type::TypeVar(_))
+                                        && !matches!(elem_ty, Type::TypeVar(_))
+                                        && val_ty != elem_ty
+                                    {
+                                        self.errors.push(TypeError {
+                                            message: format!(
+                                                "set_has: element type mismatch, expected '{}', found '{}'",
+                                                elem_ty, val_ty
+                                            ),
+                                            span: args[1].span,
+                                        });
+                                    }
+                                }
+                            } else {
+                                self.errors.push(TypeError {
+                                    message: format!(
+                                        "set_has: first argument must be a Set, found '{}'",
+                                        set_ty
+                                    ),
+                                    span: args[0].span,
+                                });
+                            }
+                        }
+                        return Some(Type::Bool);
+                    }
+                    if name == "set_remove" {
+                        if args.len() != 2 {
+                            self.errors.push(TypeError {
+                                message: format!(
+                                    "'set_remove' expects 2 arguments, found {}",
+                                    args.len()
+                                ),
+                                span: expr.span,
+                            });
+                            return None;
+                        }
+                        if self.current_fn_is_pure {
+                            self.errors.push(TypeError {
+                                message: "pure function cannot call impure function 'set_remove'"
+                                    .to_string(),
+                                span: expr.span,
+                            });
+                        }
+                        if let Some(set_ty) = self.infer_expr(&args[0]) {
+                            if let Some(elem_ty) = self.set_elem_type(&set_ty) {
+                                if let Some(val_ty) = self.infer_expr(&args[1]) {
+                                    if !matches!(val_ty, Type::TypeVar(_))
+                                        && !matches!(elem_ty, Type::TypeVar(_))
+                                        && val_ty != elem_ty
+                                    {
+                                        self.errors.push(TypeError {
+                                            message: format!(
+                                                "set_remove: element type mismatch, expected '{}', found '{}'",
+                                                elem_ty, val_ty
+                                            ),
+                                            span: args[1].span,
+                                        });
+                                    }
+                                }
+                            } else {
+                                self.errors.push(TypeError {
+                                    message: format!(
+                                        "set_remove: first argument must be a Set, found '{}'",
+                                        set_ty
+                                    ),
+                                    span: args[0].span,
+                                });
+                            }
+                        }
+                        return Some(Type::Bool);
+                    }
+                    if name == "set_size" {
+                        if args.len() != 1 {
+                            self.errors.push(TypeError {
+                                message: format!(
+                                    "'set_size' expects 1 argument, found {}",
+                                    args.len()
+                                ),
+                                span: expr.span,
+                            });
+                            return None;
+                        }
+                        if let Some(set_ty) = self.infer_expr(&args[0]) {
+                            if self.set_elem_type(&set_ty).is_none() {
+                                self.errors.push(TypeError {
+                                    message: format!(
+                                        "set_size: argument must be a Set, found '{}'",
+                                        set_ty
+                                    ),
+                                    span: args[0].span,
+                                });
+                            }
+                        }
+                        return Some(Type::Int);
+                    }
+                    if name == "set_values" {
+                        if args.len() != 1 {
+                            self.errors.push(TypeError {
+                                message: format!(
+                                    "'set_values' expects 1 argument, found {}",
+                                    args.len()
+                                ),
+                                span: expr.span,
+                            });
+                            return None;
+                        }
+                        if self.current_fn_is_pure {
+                            self.errors.push(TypeError {
+                                message: "pure function cannot call impure function 'set_values'"
+                                    .to_string(),
+                                span: expr.span,
+                            });
+                        }
+                        if let Some(set_ty) = self.infer_expr(&args[0]) {
+                            if let Some(elem_ty) = self.set_elem_type(&set_ty) {
+                                return Some(Type::Array(Box::new(elem_ty)));
+                            } else {
+                                self.errors.push(TypeError {
+                                    message: format!(
+                                        "set_values: argument must be a Set, found '{}'",
+                                        set_ty
+                                    ),
+                                    span: args[0].span,
+                                });
+                            }
+                        }
+                        return None;
+                    }
+
                     if let Some(sig) = self.functions.get(name).cloned() {
                         if self.collect_symbols {
                             let def_span = if sig.span.line == 0 {
@@ -1813,6 +2409,17 @@ impl TypeChecker {
                                     }
                                 }
                             }
+
+                            // Infer from expected return type (target typing)
+                            if let Some(expected) = expected_type {
+                                self.infer_type_vars_from_expected(
+                                    &sig.ret,
+                                    expected,
+                                    &sig.type_params,
+                                    &mut bindings,
+                                );
+                            }
+
                             // Substitute return type
                             let ret = self.substitute_type_vars(&sig.ret, &bindings);
                             return Some(ret);
@@ -2343,6 +2950,79 @@ impl TypeChecker {
                 None
             }
 
+            ExprKind::Try(inner) => {
+                // ? operator: inner must be Option<T> or Result<T, E>
+                // Enclosing function must return compatible Option/Result
+                let inner_ty = self.infer_expr(inner);
+                match inner_ty {
+                    Some(Type::Generic(ref name, ref args))
+                        if name == "Option" && args.len() == 1 =>
+                    {
+                        // Option<T>? → T, but enclosing fn must return Option<_>
+                        if let Some(ref ret) = self.current_fn_ret {
+                            match ret {
+                                Type::Generic(rn, _) if rn == "Option" => {}
+                                _ => {
+                                    self.errors.push(TypeError {
+                                        message: format!(
+                                            "'?' on Option<{}> requires function to return Option, found '{}'",
+                                            args[0], ret
+                                        ),
+                                        span: expr.span,
+                                    });
+                                }
+                            }
+                        }
+                        Some(args[0].clone())
+                    }
+                    Some(Type::Generic(ref name, ref args))
+                        if name == "Result" && args.len() == 2 =>
+                    {
+                        // Result<T, E>? → T, but enclosing fn must return Result<_, E>
+                        if let Some(ref ret) = self.current_fn_ret {
+                            match ret {
+                                Type::Generic(rn, rargs) if rn == "Result" && rargs.len() == 2 => {
+                                    // E types must match
+                                    if rargs[1] != args[1]
+                                        && !matches!(rargs[1], Type::TypeVar(_))
+                                        && !matches!(args[1], Type::TypeVar(_))
+                                    {
+                                        self.errors.push(TypeError {
+                                            message: format!(
+                                                "'?' error type mismatch: expression has Result<{}, {}> but function returns Result<{}, {}>",
+                                                args[0], args[1], rargs[0], rargs[1]
+                                            ),
+                                            span: expr.span,
+                                        });
+                                    }
+                                }
+                                _ => {
+                                    self.errors.push(TypeError {
+                                        message: format!(
+                                            "'?' on Result<{}, {}> requires function to return Result, found '{}'",
+                                            args[0], args[1], ret
+                                        ),
+                                        span: expr.span,
+                                    });
+                                }
+                            }
+                        }
+                        Some(args[0].clone())
+                    }
+                    Some(ty) => {
+                        self.errors.push(TypeError {
+                            message: format!(
+                                "'?' operator requires Option or Result type, found '{}'",
+                                ty
+                            ),
+                            span: expr.span,
+                        });
+                        None
+                    }
+                    None => None,
+                }
+            }
+
             ExprKind::StructInit(name, fields) => {
                 if let Some(info) = self.structs.get(name).cloned() {
                     // Check that all fields are provided
@@ -2555,19 +3235,71 @@ impl TypeChecker {
             ),
             Type::Task(inner) => Type::Task(Box::new(self.substitute_type_vars(inner, bindings))),
             Type::Chan(inner) => Type::Chan(Box::new(self.substitute_type_vars(inner, bindings))),
+            Type::Generic(name, args) => Type::Generic(
+                name.clone(),
+                args.iter()
+                    .map(|t| self.substitute_type_vars(t, bindings))
+                    .collect(),
+            ),
+            Type::Tuple(elems) => Type::Tuple(
+                elems
+                    .iter()
+                    .map(|t| self.substitute_type_vars(t, bindings))
+                    .collect(),
+            ),
             other => other.clone(),
+        }
+    }
+
+    fn infer_type_vars_from_expected(
+        &self,
+        generic: &Type,
+        concrete: &Type,
+        type_params: &[String],
+        bindings: &mut HashMap<String, Type>,
+    ) {
+        match (generic, concrete) {
+            (Type::Named(name), ty) => {
+                if type_params.contains(name) {
+                    bindings.entry(name.clone()).or_insert_with(|| ty.clone());
+                }
+            }
+            (Type::TypeVar(name), ty) => {
+                if type_params.contains(name) {
+                    bindings.entry(name.clone()).or_insert_with(|| ty.clone());
+                }
+            }
+            (Type::Generic(g_name, g_args), Type::Generic(c_name, c_args)) => {
+                if g_name == c_name && g_args.len() == c_args.len() {
+                    for (g, c) in g_args.iter().zip(c_args.iter()) {
+                        self.infer_type_vars_from_expected(g, c, type_params, bindings);
+                    }
+                }
+            }
+            (Type::Array(g_inner), Type::Array(c_inner)) => {
+                self.infer_type_vars_from_expected(g_inner, c_inner, type_params, bindings);
+            }
+            (Type::Tuple(g_elems), Type::Tuple(c_elems)) => {
+                if g_elems.len() == c_elems.len() {
+                    for (g, c) in g_elems.iter().zip(c_elems.iter()) {
+                        self.infer_type_vars_from_expected(g, c, type_params, bindings);
+                    }
+                }
+            }
+            (Type::Ref(g), Type::Ref(c))
+            | (Type::MutRef(g), Type::MutRef(c))
+            | (Type::Own(g), Type::Own(c))
+            | (Type::Task(g), Type::Task(c))
+            | (Type::Chan(g), Type::Chan(c)) => {
+                self.infer_type_vars_from_expected(g, c, type_params, bindings);
+            }
+            _ => {}
         }
     }
 
     fn is_valid_type(&self, ty: &Type) -> bool {
         match ty {
-            Type::Int
-            | Type::Float
-            | Type::Bool
-            | Type::Char
-            | Type::Str
-            | Type::Unit
-            | Type::Map => true,
+            Type::Int | Type::Float | Type::Bool | Type::Char | Type::Str | Type::Unit => true,
             Type::Named(name) => {
                 self.structs.contains_key(name)
                     || self.enums.contains_key(name)
@@ -2578,12 +3310,35 @@ impl TypeChecker {
             Type::SelfType => self.current_self_type.is_some(),
             Type::TypeVar(_) => true,
             Type::Generic(name, _) => {
-                self.structs.contains_key(name) || self.enums.contains_key(name)
+                self.structs.contains_key(name)
+                    || self.enums.contains_key(name)
+                    || name == "Map"
+                    || name == "Set"
             }
             Type::Fn(_, _) => true,
             Type::Task(inner) => self.is_valid_type(inner),
             Type::Chan(inner) => self.is_valid_type(inner),
             Type::Tuple(types) => types.iter().all(|t| self.is_valid_type(t)),
+        }
+    }
+
+    fn is_hashable_key(&self, ty: &Type) -> bool {
+        matches!(ty, Type::Int | Type::Str | Type::Char | Type::Bool)
+    }
+
+    fn map_kv_types(&self, map_ty: &Type) -> Option<(Type, Type)> {
+        match map_ty {
+            Type::Generic(name, args) if name == "Map" && args.len() == 2 => {
+                Some((args[0].clone(), args[1].clone()))
+            }
+            _ => None,
+        }
+    }
+
+    fn set_elem_type(&self, set_ty: &Type) -> Option<Type> {
+        match set_ty {
+            Type::Generic(name, args) if name == "Set" && args.len() == 1 => Some(args[0].clone()),
+            _ => None,
         }
     }
 

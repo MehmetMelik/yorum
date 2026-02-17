@@ -23,16 +23,12 @@ The language is functionally complete but has daily-use paper cuts.
 
 ---
 
-## v1.3 — Generic Collections & Error Handling Sugar
+## v1.3 — Generic Collections & Error Handling Sugar (Done)
 
-With `Option<T>` and `Result<T, E>` in place, add generic collections and ergonomic error propagation.
-
-- **`Map<K, V>`** — generic hash map. Keys need a hash/equality constraint (either built-in for primitive types, or a `Hashable` trait)
-- **`Set<T>`** — built on top of `Map<T, unit>` or similar
-- **`?` operator** or `try` expression — propagates `Err`/`None` up the call stack without manual match boilerplate
-- **`match` exhaustiveness checking** — warn or error when not all variants are covered
-
-Rationale: Generic collections unblock real-world data structures. The `?` operator makes error handling ergonomic at scale.
+- ~~**`Map<K, V>`** — generic hash map with keys restricted to hashable primitives (`int`, `string`, `char`, `bool`). Bare `Map` still works as `Map<string, int>` for backward compat~~
+- ~~**`Set<T>`** — generic hash set with T restricted to hashable primitives. 40-byte struct layout (no value array)~~
+- ~~**`?` operator** — postfix try operator, propagates `None`/`Err` up the call stack. Works in `Option`-returning and `Result`-returning functions with matching error types~~
+- ~~**`match` exhaustiveness checking** — error when not all enum variants are covered (wildcard and binding catch-alls accepted)~~
 
 ---
 
@@ -120,7 +116,7 @@ The top 3 highest-impact releases:
 
 1. ~~**v1.1 (Ergonomics)** — removes friction that makes users bounce immediately~~ **Done**
 2. ~~**v1.2 (String Interpolation, Tuples, Option/Result)** — unblocks real-world programs~~ **Done**
-3. **v1.3 (Generic Collections & Error Sugar)** — `Map<K,V>`, `Set<T>`, `?` operator
+3. ~~**v1.3 (Generic Collections & Error Sugar)** — `Map<K,V>`, `Set<T>`, `?` operator~~ **Done**
 4. **v1.4 (Effect System)** — the unique differentiator that no other language has done well
 
 The collections work is "catch-up" to be competitive. The effect system is where Yorum can lead.

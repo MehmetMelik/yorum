@@ -202,6 +202,8 @@ impl Lexer {
                 return self.lex_ident_or_keyword(start, start_line, start_col);
             }
 
+            '?' => TokenKind::QuestionMark,
+
             other => {
                 return Err(LexError {
                     message: format!("unexpected character '{}'", other),

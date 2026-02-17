@@ -126,7 +126,8 @@ pub enum TokenKind {
     PercentEq, // %=
 
     // ── Special ──────────────────────────────────────────────
-    Underscore, // _
+    QuestionMark, // ?
+    Underscore,   // _
     EOF,
 }
 
@@ -262,6 +263,7 @@ impl fmt::Display for TokenKind {
             TokenKind::StarEq => write!(f, "*="),
             TokenKind::SlashEq => write!(f, "/="),
             TokenKind::PercentEq => write!(f, "%="),
+            TokenKind::QuestionMark => write!(f, "?"),
             TokenKind::Underscore => write!(f, "_"),
             TokenKind::EOF => write!(f, "<EOF>"),
         }

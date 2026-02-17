@@ -329,6 +329,9 @@ impl OwnershipChecker {
                 self.check_expr_use(start);
                 self.check_expr_use(end);
             }
+            ExprKind::Try(inner) => {
+                self.check_expr_use(inner);
+            }
             ExprKind::Literal(_) => {}
         }
     }

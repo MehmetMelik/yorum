@@ -74,7 +74,8 @@ and  or  not
 - **Structs:** Named product types with ordered fields. May be generic (`struct Pair<T, U>`).
 - **Enums:** Tagged unions (sum types) with optional payload per variant. May be generic.
 - **Arrays:** `[T]` — homogeneous, heap-allocated dynamic arrays with runtime bounds checking, `push`/`pop` support.
-- **Maps:** `Map` — hash map with `string` keys and `int` values. Built-in type backed by FNV-1a hashing with linear probing.
+- **Maps:** `Map<K, V>` — generic hash map. Keys restricted to hashable primitives (`int`, `string`, `char`, `bool`). Bare `Map` is shorthand for `Map<string, int>`. Built-in type backed by FNV-1a hashing with linear probing.
+- **Sets:** `Set<T>` — generic hash set. Elements restricted to hashable primitives (`int`, `string`, `char`, `bool`).
 - **Tasks:** `Task<T>` — handle to a spawned concurrent task that produces a value of type `T`.
 - **Channels:** `Chan<T>` — synchronized channel for sending values of type `T` between tasks.
 - **References:** `&T` (immutable), `&mut T` (mutable).
@@ -224,7 +225,7 @@ All statements are semicolon-terminated (except block-bearing statements like
 | 9 | `+` `-` | left |
 | 10 | `*` `/` `%` | left |
 | 11 | `-` (unary) `not` | prefix |
-| 12 | `()` `.field` `.method()` `[]` | postfix |
+| 12 | `()` `.field` `.method()` `[]` `?` | postfix |
 
 ### 7.2 Logical Operators
 Yorum uses **keyword-based** logical operators (`and`, `or`, `not`) rather than
@@ -474,6 +475,35 @@ wildcard, or binding.  The compiler validates that variant names exist and that
 the number of sub-patterns matches the variant's field count.
 
 Arms are checked top-to-bottom.  The first matching arm executes.
+
+**Exhaustiveness checking:** When matching on an enum type, the compiler verifies
+that all variants are covered.  A wildcard (`_`) or binding pattern covers all
+remaining variants.  If variants are missing, a compile-time error is emitted
+listing the uncovered variants.  Exhaustiveness checking applies only to enum
+types — integer and string matches are not checked.
+
+### 7.8.1 Try Operator (`?`)
+
+The postfix `?` operator extracts the success value from `Option<T>` or
+`Result<T, E>`, returning early with the error variant if present:
+
+```
+fn parse() -> Result<int, string> {
+    return Ok(42);
+}
+
+fn run() -> Result<int, string> {
+    let v: int = parse()?;   // extracts Ok value, or returns Err early
+    return Ok(v + 1);
+}
+```
+
+Rules:
+- The inner expression must be `Option<T>` or `Result<T, E>`.
+- For `Option<T>?`: the enclosing function must return `Option<_>`.
+- For `Result<T, E>?`: the enclosing function must return `Result<_, E>` with a
+  matching error type `E`.
+- The result type of `expr?` is `T`.
 
 ### 7.9 Spawn and Join
 The `spawn` expression creates a new concurrent task:

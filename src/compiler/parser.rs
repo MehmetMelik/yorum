@@ -510,9 +510,9 @@ impl Parser {
             }
             TokenKind::Ident(_) => {
                 let name = self.expect_ident()?;
-                // Built-in Map type
-                if name == "Map" {
-                    return Ok(Type::Map);
+                // Built-in Map type: bare "Map" defaults to Map<string, int>
+                if name == "Map" && !self.check(&TokenKind::Lt) {
+                    return Ok(Type::Generic("Map".to_string(), vec![Type::Str, Type::Int]));
                 }
                 // Check for type args: Name<T, U>
                 if self.check(&TokenKind::Lt) {
@@ -1044,6 +1044,14 @@ impl Parser {
                 let span = expr.span.merge(self.prev_span());
                 expr = Expr {
                     kind: ExprKind::Index(Box::new(expr), Box::new(index)),
+                    span,
+                };
+            } else if self.check(&TokenKind::QuestionMark) {
+                // Try operator: expr?
+                let q_span = self.advance().span;
+                let span = expr.span.merge(q_span);
+                expr = Expr {
+                    kind: ExprKind::Try(Box::new(expr)),
                     span,
                 };
             } else {

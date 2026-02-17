@@ -32,16 +32,12 @@ The language is functionally complete but has daily-use paper cuts.
 
 ---
 
-## v1.4 — Effect System Enforcement
+## v1.4 — Effect System Enforcement (Done)
 
-The `effects` clause is parsed but not enforced. This is Yorum's most unique design element.
-
-- **Effect tracking**: the compiler tracks which effects each function uses (`io`, `net`, `fs`, `time`, etc.)
-- **Effect propagation**: calling an effectful function requires declaring the effect in the caller
-- **Effect polymorphism**: generic functions that are agnostic about effects
-- **Effect inference** (optional): infer effects for non-`pub` functions, require explicit annotation for `pub` functions
-
-Rationale: The "killer feature" for LLM-first development. An AI agent could look at `effects io, net` and know exactly what a function can touch, making automated refactoring provably safe.
+- ~~**Effect tracking**: 6 categories (`io`, `fs`, `net`, `time`, `env`, `concurrency`) — every builtin annotated~~
+- ~~**Effect propagation**: calling an effectful function requires declaring the effect in the caller~~
+- ~~**Effect inference**: fixed-point call graph iteration infers effects for unannotated functions~~
+- ~~**Backward compatible**: functions without `effects` clause remain unchecked; `main` always unchecked~~
 
 ---
 
@@ -117,6 +113,5 @@ The top 3 highest-impact releases:
 1. ~~**v1.1 (Ergonomics)** — removes friction that makes users bounce immediately~~ **Done**
 2. ~~**v1.2 (String Interpolation, Tuples, Option/Result)** — unblocks real-world programs~~ **Done**
 3. ~~**v1.3 (Generic Collections & Error Sugar)** — `Map<K,V>`, `Set<T>`, `?` operator~~ **Done**
-4. **v1.4 (Effect System)** — the unique differentiator that no other language has done well
-
-The collections work is "catch-up" to be competitive. The effect system is where Yorum can lead.
+4. ~~**v1.4 (Effect System)** — the unique differentiator that no other language has done well~~ **Done**
+5. **v1.5 (Tooling)** — `yorum fmt`, LSP completions, REPL, `yorum run`

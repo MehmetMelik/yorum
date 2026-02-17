@@ -42,6 +42,10 @@ struct VarInfo {
 fn is_copy_type(ty: &Type) -> bool {
     match ty {
         Type::Int | Type::Float | Type::Bool | Type::Char | Type::Str | Type::Unit => true,
+        // Arrays, Maps, and Sets use reference semantics at runtime (heap-allocated,
+        // accessed via pointer), so copying is cheap and safe — like string.
+        Type::Array(_) => true,
+        Type::Generic(name, _) if name == "Map" || name == "Set" => true,
         Type::Tuple(types) => types.iter().all(is_copy_type),
         _ => false,
     }

@@ -236,6 +236,18 @@ fn lex_string(source: string, start: int, slen: int, tokens: [Token]) -> int {
                 print_err("error: unknown escape in string\n");
                 exit(1);
             }
+        } else if c == 123 {
+            if pos < slen {
+                let nb: int = char_to_int(str_charAt(source, pos));
+                if nb == 123 { pos = pos + 1; }
+            }
+            val = str_concat(val, str_from_char(int_to_char(123)));
+        } else if c == 125 {
+            if pos < slen {
+                let nb2: int = char_to_int(str_charAt(source, pos));
+                if nb2 == 125 { pos = pos + 1; }
+            }
+            val = str_concat(val, str_from_char(int_to_char(125)));
         } else {
             val = str_concat(val, str_from_char(int_to_char(c)));
         }
@@ -2920,7 +2932,7 @@ fn cg_expr_ty(ei: int, exprs: [Expr], idx_lists: [int],
         return "i64";
     }
     if e.tag == 12 { return str_concat("%", e.s1); }
-    if e.tag == 13 { return "{ ptr, i64, i64 }"; }
+    if e.tag == 13 { return "{{ ptr, i64, i64 }}"; }
     return "i64";
 }
 
@@ -3243,7 +3255,7 @@ fn cg_expr(ei: int, exprs: [Expr], idx_lists: [int],
     // Ident
     if e.tag == 5 {
         let id_ty: string = cg_var_ty(scopes, vtys, e.s1);
-        if str_eq(id_ty, "{ ptr, i64, i64 }") {
+        if str_eq(id_ty, "{{ ptr, i64, i64 }}") {
             return cg_var_ptr(scopes, vptrs, e.s1);
         }
         let id_t: string = cg_fresh(tc, "%t");
@@ -3303,7 +3315,7 @@ fn cg_expr(ei: int, exprs: [Expr], idx_lists: [int],
                     enum_decls, variants, fn_ret_map, nt, tn, term);
                 let cl_g: string = cg_fresh(tc, "%t");
                 si(body, str_concat(cl_g, str_concat(
-                    " = getelementptr { ptr, i64, i64 }, ptr ",
+                    " = getelementptr {{ ptr, i64, i64 }}, ptr ",
                     str_concat(cl_ap, ", i32 0, i32 1"))));
                 let cl_v: string = cg_fresh(tc, "%t");
                 si(body, str_concat(cl_v, str_concat(" = load i64, ptr ", cl_g)));
@@ -3325,19 +3337,19 @@ fn cg_expr(ei: int, exprs: [Expr], idx_lists: [int],
                 let cp_esz: int = cg_sizeof(cp_ety, struct_decls, fields, types, tn, nt);
                 let cp_dg: string = cg_fresh(tc, "%t");
                 si(body, str_concat(cp_dg, str_concat(
-                    " = getelementptr { ptr, i64, i64 }, ptr ",
+                    " = getelementptr {{ ptr, i64, i64 }}, ptr ",
                     str_concat(cp_ap, ", i32 0, i32 0"))));
                 let cp_dp: string = cg_fresh(tc, "%t");
                 si(body, str_concat(cp_dp, str_concat(" = load ptr, ptr ", cp_dg)));
                 let cp_lg: string = cg_fresh(tc, "%t");
                 si(body, str_concat(cp_lg, str_concat(
-                    " = getelementptr { ptr, i64, i64 }, ptr ",
+                    " = getelementptr {{ ptr, i64, i64 }}, ptr ",
                     str_concat(cp_ap, ", i32 0, i32 1"))));
                 let cp_lv: string = cg_fresh(tc, "%t");
                 si(body, str_concat(cp_lv, str_concat(" = load i64, ptr ", cp_lg)));
                 let cp_cg: string = cg_fresh(tc, "%t");
                 si(body, str_concat(cp_cg, str_concat(
-                    " = getelementptr { ptr, i64, i64 }, ptr ",
+                    " = getelementptr {{ ptr, i64, i64 }}, ptr ",
                     str_concat(cp_ap, ", i32 0, i32 2"))));
                 let cp_cv: string = cg_fresh(tc, "%t");
                 si(body, str_concat(cp_cv, str_concat(" = load i64, ptr ", cp_cg)));
@@ -3437,7 +3449,7 @@ fn cg_expr(ei: int, exprs: [Expr], idx_lists: [int],
                 }
                 let pp_lg: string = cg_fresh(tc, "%t");
                 si(body, str_concat(pp_lg, str_concat(
-                    " = getelementptr { ptr, i64, i64 }, ptr ",
+                    " = getelementptr {{ ptr, i64, i64 }}, ptr ",
                     str_concat(pp_ap, ", i32 0, i32 1"))));
                 let pp_lv: string = cg_fresh(tc, "%t");
                 si(body, str_concat(pp_lv, str_concat(" = load i64, ptr ", pp_lg)));
@@ -3458,7 +3470,7 @@ fn cg_expr(ei: int, exprs: [Expr], idx_lists: [int],
                 si(body, str_concat("store i64 ", str_concat(pp_nl, str_concat(", ptr ", pp_lg))));
                 let pp_dg: string = cg_fresh(tc, "%t");
                 si(body, str_concat(pp_dg, str_concat(
-                    " = getelementptr { ptr, i64, i64 }, ptr ",
+                    " = getelementptr {{ ptr, i64, i64 }}, ptr ",
                     str_concat(pp_ap, ", i32 0, i32 0"))));
                 let pp_dp: string = cg_fresh(tc, "%t");
                 si(body, str_concat(pp_dp, str_concat(" = load ptr, ptr ", pp_dg)));
@@ -3508,20 +3520,20 @@ fn cg_expr(ei: int, exprs: [Expr], idx_lists: [int],
                 si(body, str_concat("call ptr @memcpy(ptr ", str_concat(ar_dt,
                     str_concat(", ptr ", str_concat(ar_av, str_concat(", i64 ", str_concat(ar_by, ")")))))));
                 let ar_fat: string = cg_fresh(tc, "%t");
-                si(body, str_concat(ar_fat, " = alloca { ptr, i64, i64 }"));
+                si(body, str_concat(ar_fat, " = alloca {{ ptr, i64, i64 }}"));
                 let ar_g1: string = cg_fresh(tc, "%t");
                 si(body, str_concat(ar_g1, str_concat(
-                    " = getelementptr { ptr, i64, i64 }, ptr ",
+                    " = getelementptr {{ ptr, i64, i64 }}, ptr ",
                     str_concat(ar_fat, ", i32 0, i32 0"))));
                 si(body, str_concat("store ptr ", str_concat(ar_dt, str_concat(", ptr ", ar_g1))));
                 let ar_g2: string = cg_fresh(tc, "%t");
                 si(body, str_concat(ar_g2, str_concat(
-                    " = getelementptr { ptr, i64, i64 }, ptr ",
+                    " = getelementptr {{ ptr, i64, i64 }}, ptr ",
                     str_concat(ar_fat, ", i32 0, i32 1"))));
                 si(body, str_concat("store i64 ", str_concat(ar_ac, str_concat(", ptr ", ar_g2))));
                 let ar_g3: string = cg_fresh(tc, "%t");
                 si(body, str_concat(ar_g3, str_concat(
-                    " = getelementptr { ptr, i64, i64 }, ptr ",
+                    " = getelementptr {{ ptr, i64, i64 }}, ptr ",
                     str_concat(ar_fat, ", i32 0, i32 2"))));
                 si(body, str_concat("store i64 ", str_concat(ar_ac, str_concat(", ptr ", ar_g3))));
                 return ar_fat;
@@ -3580,7 +3592,7 @@ fn cg_expr(ei: int, exprs: [Expr], idx_lists: [int],
                     let mut nc_at: string = cg_expr_ty(nc_aex, exprs, idx_lists,
                         scopes, vtys, vtids, arr_map, arr_etypes, fn_ret_map, nt, tn,
                         struct_decls, fields, types, enum_decls, variants);
-                    if str_eq(nc_at, "{ ptr, i64, i64 }") { nc_at = "ptr"; }
+                    if str_eq(nc_at, "{{ ptr, i64, i64 }}") { nc_at = "ptr"; }
                     let mut nc_fv: string = nc_av;
                     let nc_ae: Expr = exprs[nc_aex];
                     if str_charAt(nc_at, 0) == '%' {
@@ -3653,13 +3665,13 @@ fn cg_expr(ei: int, exprs: [Expr], idx_lists: [int],
             enum_decls, variants, fn_ret_map, nt, tn, term);
         let ix_dg: string = cg_fresh(tc, "%t");
         si(body, str_concat(ix_dg, str_concat(
-            " = getelementptr { ptr, i64, i64 }, ptr ",
+            " = getelementptr {{ ptr, i64, i64 }}, ptr ",
             str_concat(ix_ap, ", i32 0, i32 0"))));
         let ix_dp: string = cg_fresh(tc, "%t");
         si(body, str_concat(ix_dp, str_concat(" = load ptr, ptr ", ix_dg)));
         let ix_lg: string = cg_fresh(tc, "%t");
         si(body, str_concat(ix_lg, str_concat(
-            " = getelementptr { ptr, i64, i64 }, ptr ",
+            " = getelementptr {{ ptr, i64, i64 }}, ptr ",
             str_concat(ix_ap, ", i32 0, i32 1"))));
         let ix_lv: string = cg_fresh(tc, "%t");
         si(body, str_concat(ix_lv, str_concat(" = load i64, ptr ", ix_lg)));
@@ -3715,21 +3727,21 @@ fn cg_expr(ei: int, exprs: [Expr], idx_lists: [int],
     if e.tag == 13 {
         let al_cnt: int = e.n2;
         let al_fat: string = cg_fresh(tc, "%t");
-        si(body, str_concat(al_fat, " = alloca { ptr, i64, i64 }"));
+        si(body, str_concat(al_fat, " = alloca {{ ptr, i64, i64 }}"));
         if al_cnt == 0 {
             let al_dg0: string = cg_fresh(tc, "%t");
             si(body, str_concat(al_dg0, str_concat(
-                " = getelementptr { ptr, i64, i64 }, ptr ",
+                " = getelementptr {{ ptr, i64, i64 }}, ptr ",
                 str_concat(al_fat, ", i32 0, i32 0"))));
             si(body, str_concat("store ptr null, ptr ", al_dg0));
             let al_lg0: string = cg_fresh(tc, "%t");
             si(body, str_concat(al_lg0, str_concat(
-                " = getelementptr { ptr, i64, i64 }, ptr ",
+                " = getelementptr {{ ptr, i64, i64 }}, ptr ",
                 str_concat(al_fat, ", i32 0, i32 1"))));
             si(body, str_concat("store i64 0, ptr ", al_lg0));
             let al_cg0: string = cg_fresh(tc, "%t");
             si(body, str_concat(al_cg0, str_concat(
-                " = getelementptr { ptr, i64, i64 }, ptr ",
+                " = getelementptr {{ ptr, i64, i64 }}, ptr ",
                 str_concat(al_fat, ", i32 0, i32 2"))));
             si(body, str_concat("store i64 0, ptr ", al_cg0));
             return al_fat;
@@ -3793,18 +3805,18 @@ fn cg_expr(ei: int, exprs: [Expr], idx_lists: [int],
         }
         let al_fg1: string = cg_fresh(tc, "%t");
         si(body, str_concat(al_fg1, str_concat(
-            " = getelementptr { ptr, i64, i64 }, ptr ",
+            " = getelementptr {{ ptr, i64, i64 }}, ptr ",
             str_concat(al_fat, ", i32 0, i32 0"))));
         si(body, str_concat("store ptr ", str_concat(al_dt, str_concat(", ptr ", al_fg1))));
         let al_fg2: string = cg_fresh(tc, "%t");
         si(body, str_concat(al_fg2, str_concat(
-            " = getelementptr { ptr, i64, i64 }, ptr ",
+            " = getelementptr {{ ptr, i64, i64 }}, ptr ",
             str_concat(al_fat, ", i32 0, i32 1"))));
         si(body, str_concat("store i64 ", str_concat(int_to_str(al_cnt),
             str_concat(", ptr ", al_fg2))));
         let al_fg3: string = cg_fresh(tc, "%t");
         si(body, str_concat(al_fg3, str_concat(
-            " = getelementptr { ptr, i64, i64 }, ptr ",
+            " = getelementptr {{ ptr, i64, i64 }}, ptr ",
             str_concat(al_fat, ", i32 0, i32 2"))));
         si(body, str_concat("store i64 ", str_concat(int_to_str(al_cnt),
             str_concat(", ptr ", al_fg3))));
@@ -3874,7 +3886,7 @@ fn cg_stmt(si_p: int, stmts: [Stmt], blocks: [Block], exprs: [Expr], idx_lists: 
                 tc, lc, sc, scopes, vptrs, vtys, vtids,
                 arr_map, arr_etypes, struct_decls, fields, types,
                 enum_decls, variants, fn_ret_map, nt, tn, term);
-            cg_def_var(scopes, vptrs, vtys, vtids, s.s1, lt_aval, "{ ptr, i64, i64 }", lt_tid);
+            cg_def_var(scopes, vptrs, vtys, vtids, s.s1, lt_aval, "{{ ptr, i64, i64 }}", lt_tid);
             map_set(arr_map, s.s1, len(arr_etypes));
             let mut lt_aet: [string] = arr_etypes;
             push(lt_aet, lt_elem_ty);
@@ -3957,13 +3969,13 @@ fn cg_stmt(si_p: int, stmts: [Stmt], blocks: [Block], exprs: [Expr], idx_lists: 
                 enum_decls, variants, fn_ret_map, nt, tn, term);
             let as_dg: string = cg_fresh(tc, "%t");
             si(body, str_concat(as_dg, str_concat(
-                " = getelementptr { ptr, i64, i64 }, ptr ",
+                " = getelementptr {{ ptr, i64, i64 }}, ptr ",
                 str_concat(as_ap, ", i32 0, i32 0"))));
             let as_dp: string = cg_fresh(tc, "%t");
             si(body, str_concat(as_dp, str_concat(" = load ptr, ptr ", as_dg)));
             let as_lg: string = cg_fresh(tc, "%t");
             si(body, str_concat(as_lg, str_concat(
-                " = getelementptr { ptr, i64, i64 }, ptr ",
+                " = getelementptr {{ ptr, i64, i64 }}, ptr ",
                 str_concat(as_ap, ", i32 0, i32 1"))));
             let as_lv: string = cg_fresh(tc, "%t");
             si(body, str_concat(as_lv, str_concat(" = load i64, ptr ", as_lg)));
@@ -4119,13 +4131,13 @@ fn cg_stmt(si_p: int, stmts: [Stmt], blocks: [Block], exprs: [Expr], idx_lists: 
         // Load data ptr and length
         let fo_dg: string = cg_fresh(tc, "%t");
         si(body, str_concat(fo_dg, str_concat(
-            " = getelementptr { ptr, i64, i64 }, ptr ",
+            " = getelementptr {{ ptr, i64, i64 }}, ptr ",
             str_concat(fo_arr, ", i32 0, i32 0"))));
         let fo_dp: string = cg_fresh(tc, "%t");
         si(body, str_concat(fo_dp, str_concat(" = load ptr, ptr ", fo_dg)));
         let fo_lg: string = cg_fresh(tc, "%t");
         si(body, str_concat(fo_lg, str_concat(
-            " = getelementptr { ptr, i64, i64 }, ptr ",
+            " = getelementptr {{ ptr, i64, i64 }}, ptr ",
             str_concat(fo_arr, ", i32 0, i32 1"))));
         let fo_lv: string = cg_fresh(tc, "%t");
         si(body, str_concat(fo_lv, str_concat(" = load i64, ptr ", fo_lg)));
@@ -4410,21 +4422,21 @@ fn cg_stmt(si_p: int, stmts: [Stmt], blocks: [Block], exprs: [Expr], idx_lists: 
 
 fn cg_builtins(body: [string]) -> int {
     // print_int
-    sa(body, "define void @print_int(i64 %x) {");
+    sa(body, "define void @print_int(i64 %x) {{");
     sa(body, "entry:");
     si(body, "call i32 (ptr, ...) @printf(ptr @.fmt.int, i64 %x)");
     si(body, "ret void");
-    sa(body, "}");
+    sa(body, "}}");
     sa(body, "");
     // print_float
-    sa(body, "define void @print_float(double %x) {");
+    sa(body, "define void @print_float(double %x) {{");
     sa(body, "entry:");
     si(body, "call i32 (ptr, ...) @printf(ptr @.fmt.float, double %x)");
     si(body, "ret void");
-    sa(body, "}");
+    sa(body, "}}");
     sa(body, "");
     // print_bool
-    sa(body, "define void @print_bool(i1 %x) {");
+    sa(body, "define void @print_bool(i1 %x) {{");
     sa(body, "entry:");
     si(body, "br i1 %x, label %is_true, label %is_false");
     sa(body, "is_true:");
@@ -4433,17 +4445,17 @@ fn cg_builtins(body: [string]) -> int {
     sa(body, "is_false:");
     si(body, "call i32 (ptr, ...) @printf(ptr @.fmt.false)");
     si(body, "ret void");
-    sa(body, "}");
+    sa(body, "}}");
     sa(body, "");
     // print_str
-    sa(body, "define void @print_str(ptr %s) {");
+    sa(body, "define void @print_str(ptr %s) {{");
     sa(body, "entry:");
     si(body, "call i32 @puts(ptr %s)");
     si(body, "ret void");
-    sa(body, "}");
+    sa(body, "}}");
     sa(body, "");
     // __yorum_bounds_check
-    sa(body, "define void @__yorum_bounds_check(i64 %idx, i64 %len) {");
+    sa(body, "define void @__yorum_bounds_check(i64 %idx, i64 %len) {{");
     sa(body, "entry:");
     si(body, "%neg = icmp slt i64 %idx, 0");
     si(body, "br i1 %neg, label %fail, label %check_upper");
@@ -4456,17 +4468,17 @@ fn cg_builtins(body: [string]) -> int {
     si(body, "unreachable");
     sa(body, "ok:");
     si(body, "ret void");
-    sa(body, "}");
+    sa(body, "}}");
     sa(body, "");
     // str_len
-    sa(body, "define i64 @str_len(ptr %s) {");
+    sa(body, "define i64 @str_len(ptr %s) {{");
     sa(body, "entry:");
     si(body, "%len = call i64 @strlen(ptr %s)");
     si(body, "ret i64 %len");
-    sa(body, "}");
+    sa(body, "}}");
     sa(body, "");
     // str_concat
-    sa(body, "define ptr @str_concat(ptr %a, ptr %b) {");
+    sa(body, "define ptr @str_concat(ptr %a, ptr %b) {{");
     sa(body, "entry:");
     si(body, "%la = call i64 @strlen(ptr %a)");
     si(body, "%lb = call i64 @strlen(ptr %b)");
@@ -4476,87 +4488,87 @@ fn cg_builtins(body: [string]) -> int {
     si(body, "call ptr @strcpy(ptr %buf, ptr %a)");
     si(body, "call ptr @strcat(ptr %buf, ptr %b)");
     si(body, "ret ptr %buf");
-    sa(body, "}");
+    sa(body, "}}");
     sa(body, "");
     // str_eq
-    sa(body, "define i1 @str_eq(ptr %a, ptr %b) {");
+    sa(body, "define i1 @str_eq(ptr %a, ptr %b) {{");
     sa(body, "entry:");
     si(body, "%cmp = call i32 @strcmp(ptr %a, ptr %b)");
     si(body, "%eq = icmp eq i32 %cmp, 0");
     si(body, "ret i1 %eq");
-    sa(body, "}");
+    sa(body, "}}");
     sa(body, "");
     // __yorum_contract_fail
-    sa(body, "define void @__yorum_contract_fail(ptr %msg) {");
+    sa(body, "define void @__yorum_contract_fail(ptr %msg) {{");
     sa(body, "entry:");
     si(body, "call i32 (ptr, ...) @printf(ptr @.fmt.contract, ptr %msg)");
     si(body, "call void @abort()");
     si(body, "unreachable");
-    sa(body, "}");
+    sa(body, "}}");
     sa(body, "");
     // print_char
-    sa(body, "define void @print_char(i8 %c) {");
+    sa(body, "define void @print_char(i8 %c) {{");
     sa(body, "entry:");
     si(body, "%ext = zext i8 %c to i32");
     si(body, "call i32 @putchar(i32 %ext)");
     si(body, "ret void");
-    sa(body, "}");
+    sa(body, "}}");
     sa(body, "");
     // char_to_int
-    sa(body, "define i64 @char_to_int(i8 %c) {");
+    sa(body, "define i64 @char_to_int(i8 %c) {{");
     sa(body, "entry:");
     si(body, "%ext = zext i8 %c to i64");
     si(body, "ret i64 %ext");
-    sa(body, "}");
+    sa(body, "}}");
     sa(body, "");
     // int_to_char
-    sa(body, "define i8 @int_to_char(i64 %n) {");
+    sa(body, "define i8 @int_to_char(i64 %n) {{");
     sa(body, "entry:");
     si(body, "%trunc = trunc i64 %n to i8");
     si(body, "ret i8 %trunc");
-    sa(body, "}");
+    sa(body, "}}");
     sa(body, "");
     // int_to_float
-    sa(body, "define double @int_to_float(i64 %n) {");
+    sa(body, "define double @int_to_float(i64 %n) {{");
     sa(body, "entry:");
     si(body, "%f = sitofp i64 %n to double");
     si(body, "ret double %f");
-    sa(body, "}");
+    sa(body, "}}");
     sa(body, "");
     // float_to_int
-    sa(body, "define i64 @float_to_int(double %f) {");
+    sa(body, "define i64 @float_to_int(double %f) {{");
     sa(body, "entry:");
     si(body, "%n = fptosi double %f to i64");
     si(body, "ret i64 %n");
-    sa(body, "}");
+    sa(body, "}}");
     sa(body, "");
     // int_to_str
-    sa(body, "define ptr @int_to_str(i64 %n) {");
+    sa(body, "define ptr @int_to_str(i64 %n) {{");
     sa(body, "entry:");
     si(body, "%buf = call ptr @malloc(i64 24)");
     si(body, "call i32 (ptr, i64, ptr, ...) @snprintf(ptr %buf, i64 24, ptr @.fmt.lld, i64 %n)");
     si(body, "ret ptr %buf");
-    sa(body, "}");
+    sa(body, "}}");
     sa(body, "");
     // str_to_int
-    sa(body, "define i64 @str_to_int(ptr %s) {");
+    sa(body, "define i64 @str_to_int(ptr %s) {{");
     sa(body, "entry:");
     si(body, "%n = call i64 @atol(ptr %s)");
     si(body, "ret i64 %n");
-    sa(body, "}");
+    sa(body, "}}");
     sa(body, "");
     // str_charAt
-    sa(body, "define i8 @str_charAt(ptr %s, i64 %i) {");
+    sa(body, "define i8 @str_charAt(ptr %s, i64 %i) {{");
     sa(body, "entry:");
     si(body, "%len = call i64 @strlen(ptr %s)");
     si(body, "call void @__yorum_bounds_check(i64 %i, i64 %len)");
     si(body, "%ptr = getelementptr i8, ptr %s, i64 %i");
     si(body, "%c = load i8, ptr %ptr");
     si(body, "ret i8 %c");
-    sa(body, "}");
+    sa(body, "}}");
     sa(body, "");
     // str_sub
-    sa(body, "define ptr @str_sub(ptr %s, i64 %start, i64 %len) {");
+    sa(body, "define ptr @str_sub(ptr %s, i64 %start, i64 %len) {{");
     sa(body, "entry:");
     si(body, "%total = add i64 %len, 1");
     si(body, "%buf = call ptr @malloc(i64 %total)");
@@ -4565,20 +4577,20 @@ fn cg_builtins(body: [string]) -> int {
     si(body, "%end = getelementptr i8, ptr %buf, i64 %len");
     si(body, "store i8 0, ptr %end");
     si(body, "ret ptr %buf");
-    sa(body, "}");
+    sa(body, "}}");
     sa(body, "");
     // str_from_char
-    sa(body, "define ptr @str_from_char(i8 %c) {");
+    sa(body, "define ptr @str_from_char(i8 %c) {{");
     sa(body, "entry:");
     si(body, "%buf = call ptr @malloc(i64 2)");
     si(body, "store i8 %c, ptr %buf");
     si(body, "%end = getelementptr i8, ptr %buf, i64 1");
     si(body, "store i8 0, ptr %end");
     si(body, "ret ptr %buf");
-    sa(body, "}");
+    sa(body, "}}");
     sa(body, "");
     // char_is_alpha
-    sa(body, "define i1 @char_is_alpha(i8 %c) {");
+    sa(body, "define i1 @char_is_alpha(i8 %c) {{");
     sa(body, "entry:");
     si(body, "%ge_a = icmp sge i8 %c, 97");
     si(body, "%le_z = icmp sle i8 %c, 122");
@@ -4588,19 +4600,19 @@ fn cg_builtins(body: [string]) -> int {
     si(body, "%upper = and i1 %ge_A, %le_Z");
     si(body, "%result = or i1 %lower, %upper");
     si(body, "ret i1 %result");
-    sa(body, "}");
+    sa(body, "}}");
     sa(body, "");
     // char_is_digit
-    sa(body, "define i1 @char_is_digit(i8 %c) {");
+    sa(body, "define i1 @char_is_digit(i8 %c) {{");
     sa(body, "entry:");
     si(body, "%ge_0 = icmp sge i8 %c, 48");
     si(body, "%le_9 = icmp sle i8 %c, 57");
     si(body, "%result = and i1 %ge_0, %le_9");
     si(body, "ret i1 %result");
-    sa(body, "}");
+    sa(body, "}}");
     sa(body, "");
     // char_is_whitespace
-    sa(body, "define i1 @char_is_whitespace(i8 %c) {");
+    sa(body, "define i1 @char_is_whitespace(i8 %c) {{");
     sa(body, "entry:");
     si(body, "%is_space = icmp eq i8 %c, 32");
     si(body, "%is_tab = icmp eq i8 %c, 9");
@@ -4610,10 +4622,10 @@ fn cg_builtins(body: [string]) -> int {
     si(body, "%or2 = or i1 %or1, %is_nl");
     si(body, "%result = or i1 %or2, %is_cr");
     si(body, "ret i1 %result");
-    sa(body, "}");
+    sa(body, "}}");
     sa(body, "");
     // file_read
-    sa(body, "define ptr @file_read(ptr %path) {");
+    sa(body, "define ptr @file_read(ptr %path) {{");
     sa(body, "entry:");
     si(body, "%f = call ptr @fopen(ptr %path, ptr @.str.r)");
     si(body, "%is_null = icmp eq ptr %f, null");
@@ -4633,10 +4645,10 @@ fn cg_builtins(body: [string]) -> int {
     si(body, "store i8 0, ptr %end");
     si(body, "call i32 @fclose(ptr %f)");
     si(body, "ret ptr %buf");
-    sa(body, "}");
+    sa(body, "}}");
     sa(body, "");
     // file_write
-    sa(body, "define i1 @file_write(ptr %path, ptr %content) {");
+    sa(body, "define i1 @file_write(ptr %path, ptr %content) {{");
     sa(body, "entry:");
     si(body, "%f = call ptr @fopen(ptr %path, ptr @.str.w)");
     si(body, "%is_null = icmp eq ptr %f, null");
@@ -4649,19 +4661,19 @@ fn cg_builtins(body: [string]) -> int {
     si(body, "call i32 @fclose(ptr %f)");
     si(body, "%ok = icmp eq i64 %written, %len");
     si(body, "ret i1 %ok");
-    sa(body, "}");
+    sa(body, "}}");
     sa(body, "");
     // print_err
-    sa(body, "define void @print_err(ptr %s) {");
+    sa(body, "define void @print_err(ptr %s) {{");
     sa(body, "entry:");
     si(body, "%len = call i64 @strlen(ptr %s)");
     si(body, "call i64 @write(i32 2, ptr %s, i64 %len)");
     si(body, "call i64 @write(i32 2, ptr @.str.newline, i64 1)");
     si(body, "ret void");
-    sa(body, "}");
+    sa(body, "}}");
     sa(body, "");
     // __yorum_hash_string (FNV-1a)
-    sa(body, "define i64 @__yorum_hash_string(ptr %s) {");
+    sa(body, "define i64 @__yorum_hash_string(ptr %s) {{");
     sa(body, "entry:");
     si(body, "br label %loop");
     sa(body, "loop:");
@@ -4679,10 +4691,10 @@ fn cg_builtins(body: [string]) -> int {
     si(body, "br label %loop");
     sa(body, "end:");
     si(body, "ret i64 %h");
-    sa(body, "}");
+    sa(body, "}}");
     sa(body, "");
     // __yorum_map_find_slot
-    sa(body, "define i64 @__yorum_map_find_slot(ptr %map, ptr %key, i64 %cap) {");
+    sa(body, "define i64 @__yorum_map_find_slot(ptr %map, ptr %key, i64 %cap) {{");
     sa(body, "entry:");
     si(body, "%hash = call i64 @__yorum_hash_string(ptr %key)");
     si(body, "%mask = sub i64 %cap, 1");
@@ -4709,10 +4721,10 @@ fn cg_builtins(body: [string]) -> int {
     si(body, "br label %probe");
     sa(body, "done:");
     si(body, "ret i64 %idx");
-    sa(body, "}");
+    sa(body, "}}");
     sa(body, "");
     // __yorum_map_grow
-    sa(body, "define void @__yorum_map_grow(ptr %map) {");
+    sa(body, "define void @__yorum_map_grow(ptr %map) {{");
     sa(body, "entry:");
     si(body, "%cap_p = getelementptr i8, ptr %map, i64 24");
     si(body, "%old_cap = load i64, ptr %cap_p");
@@ -4763,10 +4775,10 @@ fn cg_builtins(body: [string]) -> int {
     si(body, "call void @free(ptr %old_vals)");
     si(body, "call void @free(ptr %old_flags)");
     si(body, "ret void");
-    sa(body, "}");
+    sa(body, "}}");
     sa(body, "");
     // map_new
-    sa(body, "define ptr @map_new() {");
+    sa(body, "define ptr @map_new() {{");
     sa(body, "entry:");
     si(body, "%map = call ptr @malloc(i64 40)");
     si(body, "%keys = call ptr @malloc(i64 128)");
@@ -4783,10 +4795,10 @@ fn cg_builtins(body: [string]) -> int {
     si(body, "%sp = getelementptr i8, ptr %map, i64 32");
     si(body, "store i64 0, ptr %sp");
     si(body, "ret ptr %map");
-    sa(body, "}");
+    sa(body, "}}");
     sa(body, "");
     // map_set
-    sa(body, "define void @map_set(ptr %map, ptr %key, i64 %val) {");
+    sa(body, "define void @map_set(ptr %map, ptr %key, i64 %val) {{");
     sa(body, "entry:");
     si(body, "%sp = getelementptr i8, ptr %map, i64 32");
     si(body, "%size = load i64, ptr %sp");
@@ -4828,10 +4840,10 @@ fn cg_builtins(body: [string]) -> int {
     si(body, "%vslot = getelementptr i64, ptr %vals_p, i64 %slot");
     si(body, "store i64 %val, ptr %vslot");
     si(body, "ret void");
-    sa(body, "}");
+    sa(body, "}}");
     sa(body, "");
     // map_get
-    sa(body, "define i64 @map_get(ptr %map, ptr %key) {");
+    sa(body, "define i64 @map_get(ptr %map, ptr %key) {{");
     sa(body, "entry:");
     si(body, "%cap_p = getelementptr i8, ptr %map, i64 24");
     si(body, "%cap = load i64, ptr %cap_p");
@@ -4852,10 +4864,10 @@ fn cg_builtins(body: [string]) -> int {
     si(body, "%vp = getelementptr i64, ptr %vals_p, i64 %slot");
     si(body, "%v = load i64, ptr %vp");
     si(body, "ret i64 %v");
-    sa(body, "}");
+    sa(body, "}}");
     sa(body, "");
     // map_has
-    sa(body, "define i1 @map_has(ptr %map, ptr %key) {");
+    sa(body, "define i1 @map_has(ptr %map, ptr %key) {{");
     sa(body, "entry:");
     si(body, "%cap_p = getelementptr i8, ptr %map, i64 24");
     si(body, "%cap = load i64, ptr %cap_p");
@@ -4866,7 +4878,7 @@ fn cg_builtins(body: [string]) -> int {
     si(body, "%flag = load i8, ptr %fp");
     si(body, "%found = icmp eq i8 %flag, 1");
     si(body, "ret i1 %found");
-    sa(body, "}");
+    sa(body, "}}");
     sa(body, "");
     return 0;
 }
@@ -4901,7 +4913,7 @@ fn cg_fn(fi: int, fn_decls: [FnDecl], par: [Param], blocks: [Block], stmts: [Stm
     }
     // Function header
     sa(body, str_concat("define ", str_concat(fn_ret, str_concat(" @", str_concat(fd.name,
-        str_concat("(", str_concat(param_str, ") {")))))));
+        str_concat("(", str_concat(param_str, ") {{")))))));
     sa(body, "entry:");
     // Store argc/argv for main
     if str_eq(fd.name, "main") {
@@ -4933,7 +4945,7 @@ fn cg_fn(fi: int, fn_decls: [FnDecl], par: [Param], blocks: [Block], stmts: [Stm
         if fptid2 >= 1000 {
             // Array param: use directly as fat pointer
             cg_def_var(fn_scopes, fn_vptrs, fn_vtys, fn_vtids,
-                fp2.name, str_concat("%", fp2.name), "{ ptr, i64, i64 }", fptid2);
+                fp2.name, str_concat("%", fp2.name), "{{ ptr, i64, i64 }}", fptid2);
             let fn_elem_tid: int = fptid2 - 1000;
             let fn_elem_ty: string = cg_type(fn_elem_tid, nt);
             map_set(fn_arr_m, fp2.name, len(fn_arr_et));
@@ -4964,7 +4976,7 @@ fn cg_fn(fi: int, fn_decls: [FnDecl], par: [Param], blocks: [Block], stmts: [Stm
             si(body, str_concat("ret ", str_concat(fn_ret, " 0")));
         }
     }
-    sa(body, "}");
+    sa(body, "}}");
     sa(body, "");
     return 0;
 }
@@ -5033,7 +5045,7 @@ fn codegen(fn_decls: [FnDecl], par: [Param], blocks: [Block], stmts: [Stmt],
             td_fi = td_fi + 1;
         }
         type_defs = str_concat(type_defs, str_concat("%", str_concat(td_sd.name,
-            str_concat(" = type { ", str_concat(ftypes, " }\n")))));
+            str_concat(" = type {{ ", str_concat(ftypes, " }}\n")))));
         td_si = td_si + 1;
     }
     let mut td_ei: int = 0;
@@ -5061,11 +5073,11 @@ fn codegen(fn_decls: [FnDecl], par: [Param], blocks: [Block], stmts: [Stmt],
         if td_has_data {
             if td_max_payload == 0 { td_max_payload = 8; }
             type_defs = str_concat(type_defs, str_concat("%", str_concat(td_ed.name,
-                str_concat(" = type { i32, [", str_concat(int_to_str(td_max_payload),
-                " x i8] }\n")))));
+                str_concat(" = type {{ i32, [", str_concat(int_to_str(td_max_payload),
+                " x i8] }}\n")))));
         } else {
             type_defs = str_concat(type_defs, str_concat("%", str_concat(td_ed.name,
-                " = type { i32 }\n")));
+                " = type {{ i32 }}\n")));
         }
         td_ei = td_ei + 1;
     }

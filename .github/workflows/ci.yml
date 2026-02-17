@@ -42,3 +42,29 @@ jobs:
         with:
           components: rustfmt
       - run: cargo fmt --check
+
+  bootstrap:
+    name: Bootstrap
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build self-hosting compiler with Rust compiler
+        run: cargo run -- build -o yorumc.ll
+        working-directory: yorum-in-yorum
+      - name: Link to native binary
+        run: clang -x ir yorumc.ll -o yorumc -Wno-override-module
+        working-directory: yorum-in-yorum
+      - name: Self-hosted compiler compiles itself (gen1)
+        run: ./yorumc src/main.yrm -o gen1.ll
+        working-directory: yorum-in-yorum
+      - name: Link gen1 to native binary
+        run: clang -x ir gen1.ll -o yorumc_gen1 -Wno-override-module
+        working-directory: yorum-in-yorum
+      - name: Gen1 compiles itself (gen2)
+        run: ./yorumc_gen1 src/main.yrm -o gen2.ll
+        working-directory: yorum-in-yorum
+      - name: Verify bootstrap fixed-point (gen1 == gen2)
+        run: diff gen1.ll gen2.ll
+        working-directory: yorum-in-yorum

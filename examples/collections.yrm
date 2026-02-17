@@ -1,0 +1,57 @@
+// collections.yrm — Collection operations.
+//
+// Demonstrates: slice, concat_arrays, reverse, contains_int,
+// contains_str, sort_int, sort_str.
+
+fn print_int_array(arr: [int]) -> unit {
+    for x in arr {
+        print_int(x);
+    }
+}
+
+fn print_str_array(arr: [string]) -> unit {
+    for s in arr {
+        print_str(s);
+    }
+}
+
+fn main() -> int {
+    // Slice
+    print_str("=== slice ===");
+    let nums: [int] = [10, 20, 30, 40, 50];
+    let sub: [int] = slice(nums, 1, 4);
+    print_int_array(sub);   // 20 30 40
+
+    // Concat arrays
+    print_str("=== concat ===");
+    let a: [int] = [1, 2, 3];
+    let b: [int] = [4, 5, 6];
+    let joined: [int] = concat_arrays(a, b);
+    print_int_array(joined);   // 1 2 3 4 5 6
+
+    // Reverse
+    print_str("=== reverse ===");
+    let rev: [int] = reverse(a);
+    print_int_array(rev);   // 3 2 1
+
+    // Contains
+    print_str("=== contains ===");
+    print_bool(contains_int(nums, 30));   // true
+    print_bool(contains_int(nums, 99));   // false
+
+    let words: [string] = ["hello", "world", "yorum"];
+    print_bool(contains_str(words, "yorum"));   // true
+    print_bool(contains_str(words, "other"));   // false
+
+    // Sort
+    print_str("=== sort ===");
+    let unsorted: [int] = [5, 2, 8, 1, 9, 3];
+    let sorted: [int] = sort_int(unsorted);
+    print_int_array(sorted);   // 1 2 3 5 8 9
+
+    let names: [string] = ["charlie", "alice", "bob"];
+    let sorted_names: [string] = sort_str(names);
+    print_str_array(sorted_names);   // alice bob charlie
+
+    return 0;
+}

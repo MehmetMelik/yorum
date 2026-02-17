@@ -775,6 +775,7 @@ cargo test test_fibonacci     # single test by name
 | **v1.2.1** | Bug fixes: `to_str` codegen, tuple let from functions, tuple type naming, generic arg checks, interp parser | Done |
 | **v1.3** | Generic `Map<K,V>`/`Set<T>`, match exhaustiveness checking, `?` operator for Option/Result | Done |
 | **v1.3.1** | Codegen bug fixes: duplicate match labels/allocas. New examples: maps, sets, try operator | Done |
+| **v1.3.2** | Codegen fixes: math intrinsic naming, spawn return/join, channel sync, for-loop/tuple alloca duplicates, Option/Result method types. 10 new examples | Done |
 
 ## License
 

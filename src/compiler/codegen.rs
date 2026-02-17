@@ -123,6 +123,17 @@ pub struct Codegen {
 
     // Track which map/set helper suffixes have been emitted
     emitted_map_helpers: HashSet<String>,
+
+    // Spawn context: (env_type_name, result_field_idx) — when set, `return`
+    // statements store the value in the env result slot and emit `ret ptr null`
+    spawn_return_ctx: Option<(String, usize)>,
+
+    // Tracks task variable → (env_type_name, result_field_idx) so .join()
+    // can load the result from the correct env struct field
+    task_env_info: HashMap<String, (String, usize)>,
+
+    // Set by emit_spawn, consumed by emit_let to populate task_env_info
+    last_spawn_env_info: Option<(String, usize)>,
 }
 
 impl Default for Codegen {
@@ -161,6 +172,9 @@ impl Codegen {
             loop_labels: Vec::new(),
             current_expected_enum: None,
             emitted_map_helpers: HashSet::new(),
+            spawn_return_ctx: None,
+            task_env_info: HashMap::new(),
+            last_spawn_env_info: None,
         }
     }
 
@@ -703,15 +717,26 @@ impl Codegen {
              \x20 ret ptr %ch\n\
              }\n\n",
         );
-        // __yorum_chan_send — stores value and signals
+        // __yorum_chan_send — waits until slot is empty, stores value, and signals
         self.body.push_str(
             "define void @__yorum_chan_send(ptr %ch, i64 %val) {\n\
              entry:\n\
              \x20 call i32 @pthread_mutex_lock(ptr %ch)\n\
+             \x20 br label %send_wait\n\
+             send_wait:\n\
+             \x20 %ready = getelementptr i8, ptr %ch, i64 136\n\
+             \x20 %r = load i32, ptr %ready\n\
+             \x20 %is_full = icmp eq i32 %r, 1\n\
+             \x20 br i1 %is_full, label %send_do_wait, label %send_ready\n\
+             send_do_wait:\n\
+             \x20 %cond0 = getelementptr i8, ptr %ch, i64 64\n\
+             \x20 call i32 @pthread_cond_wait(ptr %cond0, ptr %ch)\n\
+             \x20 br label %send_wait\n\
+             send_ready:\n\
              \x20 %slot = getelementptr i8, ptr %ch, i64 128\n\
              \x20 store i64 %val, ptr %slot\n\
-             \x20 %ready = getelementptr i8, ptr %ch, i64 136\n\
-             \x20 store i32 1, ptr %ready\n\
+             \x20 %ready2 = getelementptr i8, ptr %ch, i64 136\n\
+             \x20 store i32 1, ptr %ready2\n\
              \x20 %cond = getelementptr i8, ptr %ch, i64 64\n\
              \x20 call i32 @pthread_cond_signal(ptr %cond)\n\
              \x20 call i32 @pthread_mutex_unlock(ptr %ch)\n\
@@ -737,6 +762,8 @@ impl Codegen {
              \x20 %slot = getelementptr i8, ptr %ch, i64 128\n\
              \x20 %val = load i64, ptr %slot\n\
              \x20 store i32 0, ptr %ready\n\
+             \x20 %cond2 = getelementptr i8, ptr %ch, i64 64\n\
+             \x20 call i32 @pthread_cond_signal(ptr %cond2)\n\
              \x20 call i32 @pthread_mutex_unlock(ptr %ch)\n\
              \x20 ret i64 %val\n\
              }\n\n",
@@ -1258,50 +1285,15 @@ impl Codegen {
              \x20 ret double %result\n\
              }\n\n",
         );
-        // sqrt
-        self.body.push_str(
-            "define double @sqrt(double %x) {\n\
-             entry:\n\
-             \x20 %result = call double @llvm.sqrt.f64(double %x)\n\
-             \x20 ret double %result\n\
-             }\n\n",
-        );
-        // pow
-        self.body.push_str(
-            "define double @pow(double %base, double %exp) {\n\
-             entry:\n\
-             \x20 %result = call double @llvm.pow.f64(double %base, double %exp)\n\
-             \x20 ret double %result\n\
-             }\n\n",
-        );
+        // sqrt, pow, floor, ceil, round — these use LLVM intrinsics and are
+        // inlined at call sites (see emit_expr Call handler) to avoid defining
+        // wrapper functions whose names clash with C library symbols (e.g.,
+        // @pow wrapping @llvm.pow.f64 which LLVM lowers to C's pow → infinite
+        // recursion). No wrapper functions emitted here.
+
         // sin, cos, tan, log, log10, exp — these are just external libm
         // declarations (already in emit_builtin_decls), called directly by the
         // standard call dispatch path. No wrapper functions needed.
-
-        // floor — wraps LLVM intrinsic
-        self.body.push_str(
-            "define double @floor(double %x) {\n\
-             entry:\n\
-             \x20 %result = call double @llvm.floor.f64(double %x)\n\
-             \x20 ret double %result\n\
-             }\n\n",
-        );
-        // ceil — wraps LLVM intrinsic
-        self.body.push_str(
-            "define double @ceil(double %x) {\n\
-             entry:\n\
-             \x20 %result = call double @llvm.ceil.f64(double %x)\n\
-             \x20 ret double %result\n\
-             }\n\n",
-        );
-        // round — wraps LLVM intrinsic
-        self.body.push_str(
-            "define double @round(double %x) {\n\
-             entry:\n\
-             \x20 %result = call double @llvm.round.f64(double %x)\n\
-             \x20 ret double %result\n\
-             }\n\n",
-        );
 
         // ── String utility builtins ──
 
@@ -4040,7 +4032,9 @@ impl Codegen {
             let val_ptr = if returns_ptr {
                 val
             } else {
-                let ptr = format!("%{}.tuple.addr", s.name);
+                // Use fresh_temp() to avoid duplicate names when multiple
+                // tuple let bindings or destructures exist in one function.
+                let ptr = self.fresh_temp();
                 self.emit_line(&format!("{} = alloca {}", ptr, ty));
                 self.emit_line(&format!("store {} {}, ptr {}", ty, val, ptr));
                 ptr
@@ -4105,6 +4099,12 @@ impl Codegen {
         let val = self.emit_expr(&s.value)?;
         self.emit_line(&format!("store {} {}, ptr {}", ty, val, ptr));
         self.define_var(&s.name, &ptr, &ty);
+
+        // If the RHS was a spawn, record the env info for .join() to use
+        if let Some(env_info) = self.last_spawn_env_info.take() {
+            self.task_env_info.insert(s.name.clone(), env_info);
+        }
+
         Ok(())
     }
 
@@ -4197,6 +4197,22 @@ impl Codegen {
     }
 
     fn emit_return(&mut self, s: &ReturnStmt) -> Result<(), CodegenError> {
+        // In spawn context, the user's `return X` stores the result into the
+        // env struct's result slot and emits `ret ptr null` for the pthread
+        // wrapper ABI. The actual result is read by .join() from the env.
+        if let Some((ref env_type, result_idx)) = self.spawn_return_ctx.clone() {
+            let val = self.emit_expr(&s.value)?;
+            let result_gep = self.fresh_temp();
+            self.emit_line(&format!(
+                "{} = getelementptr %{}, ptr %env, i32 0, i32 {}",
+                result_gep, env_type, result_idx
+            ));
+            self.emit_line(&format!("store i64 {}, ptr {}", val, result_gep));
+            self.emit_line("ret ptr null");
+            self.block_terminated = true;
+            return Ok(());
+        }
+
         let ret_ty = self.current_fn_ret_ty.clone().unwrap_or("void".to_string());
         if ret_ty == "void" {
             self.emit_line("ret void");
@@ -4371,8 +4387,9 @@ impl Codegen {
         self.emit_line(&format!("{} = alloca i64", idx_ptr));
         self.emit_line(&format!("store i64 0, ptr {}", idx_ptr));
 
-        // Alloca for loop variable
-        let var_ptr = format!("%{}.addr", s.var_name);
+        // Alloca for loop variable — use fresh_temp() to avoid duplicate
+        // names when the same variable name is used in multiple for loops.
+        let var_ptr = self.fresh_temp();
         self.emit_line(&format!("{} = alloca {}", var_ptr, elem_ty));
 
         let cond_label = self.fresh_label("for.cond");
@@ -4454,7 +4471,9 @@ impl Codegen {
         let end_val = self.emit_expr(end_expr)?;
 
         // Alloca for the loop counter (also the loop variable)
-        let var_ptr = format!("%{}.addr", var_name);
+        // Use fresh_temp() to avoid duplicate names when the same variable
+        // name is used in multiple for-range loops in one function.
+        let var_ptr = self.fresh_temp();
         self.emit_line(&format!("{} = alloca i64", var_ptr));
         self.emit_line(&format!("store i64 {}, ptr {}", start_val, var_ptr));
 
@@ -5444,6 +5463,60 @@ impl Codegen {
                     // Built-in to_str() — polymorphic string conversion
                     if name == "to_str" && args.len() == 1 {
                         return self.emit_to_str(&args[0]);
+                    }
+
+                    // Math builtins using LLVM intrinsics — called inline to
+                    // avoid wrapper functions that clash with C library names
+                    // (e.g., @pow wrapper calling @llvm.pow.f64 which LLVM
+                    // lowers back to C's pow → infinite recursion).
+                    match name.as_str() {
+                        "sqrt" if args.len() == 1 => {
+                            let val = self.emit_expr(&args[0])?;
+                            let tmp = self.fresh_temp();
+                            self.emit_line(&format!(
+                                "{} = call double @llvm.sqrt.f64(double {})",
+                                tmp, val
+                            ));
+                            return Ok(tmp);
+                        }
+                        "pow" if args.len() == 2 => {
+                            let base = self.emit_expr(&args[0])?;
+                            let exp = self.emit_expr(&args[1])?;
+                            let tmp = self.fresh_temp();
+                            self.emit_line(&format!(
+                                "{} = call double @llvm.pow.f64(double {}, double {})",
+                                tmp, base, exp
+                            ));
+                            return Ok(tmp);
+                        }
+                        "floor" if args.len() == 1 => {
+                            let val = self.emit_expr(&args[0])?;
+                            let tmp = self.fresh_temp();
+                            self.emit_line(&format!(
+                                "{} = call double @llvm.floor.f64(double {})",
+                                tmp, val
+                            ));
+                            return Ok(tmp);
+                        }
+                        "ceil" if args.len() == 1 => {
+                            let val = self.emit_expr(&args[0])?;
+                            let tmp = self.fresh_temp();
+                            self.emit_line(&format!(
+                                "{} = call double @llvm.ceil.f64(double {})",
+                                tmp, val
+                            ));
+                            return Ok(tmp);
+                        }
+                        "round" if args.len() == 1 => {
+                            let val = self.emit_expr(&args[0])?;
+                            let tmp = self.fresh_temp();
+                            self.emit_line(&format!(
+                                "{} = call double @llvm.round.f64(double {})",
+                                tmp, val
+                            ));
+                            return Ok(tmp);
+                        }
+                        _ => {}
                     }
 
                     // Check if this is an enum variant constructor
@@ -6542,6 +6615,9 @@ impl Codegen {
         ));
         self.emit_line(&format!("store ptr {}, ptr {}", env_ptr, env_field_gep));
 
+        // Record env info so .join() can load the result from the correct field
+        self.last_spawn_env_info = Some((env_type_name, result_field_idx));
+
         Ok(tcb)
     }
 
@@ -6592,9 +6668,10 @@ impl Codegen {
             self.define_var(cap_name, &ptr, &cap_slot.llvm_ty);
         }
 
-        // Override emit_return behavior: instead of ret, store into result slot
-        // We emit the block normally, but intercept returns to store in result slot
+        // Set spawn context so emit_return stores into result slot and returns null
+        self.spawn_return_ctx = Some((env_type_name.to_string(), result_field_idx));
         self.emit_block(block)?;
+        self.spawn_return_ctx = None;
 
         if !self.block_terminated {
             // Store default result 0 and return
@@ -6653,69 +6730,23 @@ impl Codegen {
         let env_ptr = self.fresh_temp();
         self.emit_line(&format!("{} = load ptr, ptr {}", env_ptr, env_gep));
 
-        // The result is in the last field of the env struct
-        // We need to figure out which field index. For simplicity, we look
-        // at what spawn_counter was used. But we don't have that info here.
-        // Instead, the result is always stored just before the return in the
-        // spawn wrapper. We use a fixed pattern: scan backwards through the
-        // env struct. For now, we know the result is at the address:
-        // env_ptr + all_captures_size. Since we don't know the layout here,
-        // we use the approach of storing result at a known offset.
-        // Actually, the simplest approach: the spawn wrapper stores the
-        // return value at env + result_field_idx. But we encoded the
-        // result slot as the last i64 in the env. Since we don't track which
-        // spawn produced this task, let's load from the last i64 field.
-        // We'll compute the offset by just loading from the first address
-        // that the return was stored at. In our spawn wrapper, if the block
-        // has returns they use the standard emit_return which does `ret i64 val`.
-        // Actually, our spawn function uses emit_block which calls emit_return.
-        // emit_return does `ret i64 val`. But the spawn wrapper function returns
-        // ptr, not i64. This is a problem.
-        //
-        // Simpler approach: have the spawn wrapper store the return value into
-        // the env's result slot. The block's returns write into the wrapper's
-        // return via `ret`, but we actually need them to store to the result slot.
-        //
-        // For the MVP, let's keep it simple: the spawn block's last expression
-        // value is stored at a fixed offset in the env. We intercept via
-        // the fact that emit_block + emit_return will emit `ret i64 <val>`.
-        // But the wrapper function is `define ptr`, so there's a type mismatch.
-        //
-        // Let me simplify: In the spawn wrapper, we emit the block but the
-        // current_fn_ret_ty is i64. The block's returns will emit `ret i64 val`.
-        // But the wrapper is declared as returning ptr. This won't work.
-        //
-        // Better approach: Don't use ret for the value. Instead, before each
-        // ret in the spawn wrapper, we need to store to the result slot.
-        // But we can't easily intercept ret emission.
-        //
-        // Simplest approach: Don't rely on block returns. Instead, since the
-        // spawn wrapper currently emits `ret ptr null`, and the block may
-        // contain `ret i64 X` (which would cause a type mismatch), we need
-        // to not emit the block's returns as real LLVM rets.
-        //
-        // Actually, looking at emit_return, it reads self.current_fn_ret_ty.
-        // In the spawn wrapper, we set current_fn_ret_ty = Some("i64").
-        // So emit_return will emit `ret i64 <val>`. But the function
-        // is declared as `define ptr @__spawn_N(ptr %env)`. This is a type error.
-        //
-        // Fix: Have the spawn wrapper declared as returning void, and store
-        // the return value in the env struct before ret. But we can't easily
-        // intercept ret. Let me use a different approach:
-        // The simplest correct approach is to NOT have the block use `return`
-        // for the spawn. Instead, the value from the last return statement
-        // gets stored directly. But that requires changes to how we emit blocks.
-        //
-        // PRAGMATIC SOLUTION: Don't use actual returns from the block.
-        // The task system will work for simple spawn blocks that have a single
-        // return at the end. We'll handle this by checking if block_terminated
-        // after emitting the block, meaning a ret was emitted. We'll fix up
-        // after the fact.
-        //
-        // Actually the simplest correct approach: The result is 0 for now.
-        // The join returns 0. This is the MVP. Full result passing can
-        // be added later but requires more infrastructure.
-        // For tests: we just verify IR structure, not runtime values.
+        // Load the result from the env struct's result slot.
+        // The receiver variable name maps to (env_type_name, result_field_idx)
+        // recorded when the task was created via emit_spawn.
+        if let ExprKind::Ident(ref task_name) = receiver.kind {
+            if let Some((ref env_type, result_idx)) = self.task_env_info.get(task_name).cloned() {
+                let result_gep = self.fresh_temp();
+                self.emit_line(&format!(
+                    "{} = getelementptr %{}, ptr {}, i32 0, i32 {}",
+                    result_gep, env_type, env_ptr, result_idx
+                ));
+                let result = self.fresh_temp();
+                self.emit_line(&format!("{} = load i64, ptr {}", result, result_gep));
+                return Ok(result);
+            }
+        }
+
+        // Fallback: no env info available (shouldn't happen in well-typed code)
         let result = self.fresh_temp();
         self.emit_line(&format!("{} = add i64 0, 0", result));
 
@@ -7349,6 +7380,12 @@ impl Codegen {
                 "i64".to_string()
             }
             ExprKind::MethodCall(receiver, method_name, _) => {
+                // Option/Result boolean methods are special-cased in emit_expr
+                // and return i1 (icmp result), not registered in fn_ret_types
+                match method_name.as_str() {
+                    "is_some" | "is_none" | "is_ok" | "is_err" => return "i1".to_string(),
+                    _ => {}
+                }
                 if let Ok(sname) = self.expr_struct_name(receiver) {
                     let mangled = format!("{}_{}", sname, method_name);
                     if let Some(ret_ty) = self.fn_ret_types.get(&mangled) {

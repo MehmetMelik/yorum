@@ -1,0 +1,74 @@
+// loop_control.yrm — Break, continue, and range expressions.
+//
+// Demonstrates: break in while, continue in for, range 0..n,
+// nested loop control.
+
+fn find_first_negative(arr: [int]) -> int {
+    let mut result: int = -1;
+    let mut i: int = 0;
+    while i < len(arr) {
+        if arr[i] < 0 {
+            result = i;
+            break;
+        }
+        i += 1;
+    }
+    return result;
+}
+
+fn sum_skip_multiples_of_3(n: int) -> int {
+    let mut total: int = 0;
+    for k in 0..n {
+        if k % 3 == 0 {
+            continue;
+        }
+        total += k;
+    }
+    return total;
+}
+
+fn main() -> int {
+    // Range-based for loop
+    print_str("=== range 0..5 ===");
+    for i in 0..5 {
+        print_int(i);
+    }
+
+    // Break: find first negative
+    print_str("=== break ===");
+    let arr: [int] = [3, 7, 2, -1, 5, -3];
+    let idx: int = find_first_negative(arr);
+    print_int(idx);   // 3
+
+    // Continue: skip multiples of 3
+    print_str("=== continue ===");
+    let total: int = sum_skip_multiples_of_3(10);
+    print_int(total);   // 1+2+4+5+7+8 = 27
+
+    // Nested loops with break
+    print_str("=== nested break ===");
+    let mut found_i: int = -1;
+    let mut found_j: int = -1;
+    let mut i: int = 0;
+    while i < 5 {
+        let mut j: int = 0;
+        let mut done: bool = false;
+        while j < 5 {
+            if i * 5 + j == 13 {
+                found_i = i;
+                found_j = j;
+                done = true;
+                break;
+            }
+            j += 1;
+        }
+        if done {
+            break;
+        }
+        i += 1;
+    }
+    print_int(found_i);   // 2
+    print_int(found_j);   // 3
+
+    return 0;
+}

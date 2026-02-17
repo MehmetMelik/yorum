@@ -1,0 +1,46 @@
+// operators.yrm — Compound assignment and bitwise operators.
+//
+// Demonstrates: +=, -=, *=, /=, %=, bitwise &, |, ^, <<, >>.
+
+fn main() -> int {
+    // Compound assignment operators
+    let mut x: int = 10;
+    x += 5;
+    print_int(x);   // 15
+    x -= 3;
+    print_int(x);   // 12
+    x *= 2;
+    print_int(x);   // 24
+    x /= 4;
+    print_int(x);   // 6
+    x %= 4;
+    print_int(x);   // 2
+
+    // Compound assignment with array index
+    let mut arr: [int] = [10, 20, 30];
+    arr[1] += 5;
+    print_int(arr[1]);   // 25
+
+    // Bitwise AND, OR, XOR
+    let a: int = 12;      // 0b1100
+    let b: int = 10;      // 0b1010
+    print_int(a & b);     // 8   (0b1000)
+    print_int(a | b);     // 14  (0b1110)
+    print_int(a ^ b);     // 6   (0b0110)
+
+    // Bit shifts
+    let v: int = 1;
+    print_int(v << 4);    // 16
+    print_int(16 >> 2);   // 4
+
+    // Practical: check if bit is set
+    let flags: int = 5;       // 0b101
+    let bit0: int = flags & 1;
+    let bit1: int = (flags >> 1) & 1;
+    let bit2: int = (flags >> 2) & 1;
+    print_int(bit0);   // 1
+    print_int(bit1);   // 0
+    print_int(bit2);   // 1
+
+    return 0;
+}

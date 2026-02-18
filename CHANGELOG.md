@@ -2,6 +2,36 @@
 
 All notable changes to the Yorum programming language compiler.
 
+## [1.6.0] - 2026-02-18
+
+**Auto-Formatter** — `yorum fmt` for consistent code style.
+
+### Added
+
+- **`yorum fmt`** — auto-format Yorum source files. Reads source, lexes with comment collection, parses to AST, then walks the AST to produce consistently formatted output. Preserves comments (line and block), string interpolation, compound assignments (`+=`, `-=`, etc.), and blank lines between logical sections
+- **`--check` flag** — exits with code 1 if any file would change (for CI integration)
+- **Comment collection in lexer** — `Lexer::new_with_comments()` and `tokenize_with_comments()` capture comments as a side-channel without affecting the normal lexing path
+- **`format_source()` public API** — format Yorum source code without type-checking or codegen
+- 20 new integration tests
+
+### Formatting rules
+
+- 4-space indentation, no tabs
+- K&R brace style: `{` on same line, `}` on own line
+- Exception: when function has contract clauses (`requires`/`ensures`/`effects`), `{` goes on its own line below the clauses
+- One blank line between top-level declarations
+- Spaces around binary operators: `a + b`
+- No space between function name and `(`: `print_int(x)`
+- Match arms: `pattern => { body },` with trailing comma
+- Compound assignments round-trip: `x += 1` not `x = x + 1`
+- String interpolation preserved from source: `"hello {name}"`
+- `{{` and `}}` brace escaping preserved in plain strings
+- Single trailing newline at end of file
+
+**Stats:** 7 files changed, ~1,100 lines added | Tests: 498 (50 unit + 448 integration)
+
+---
+
 ## [1.5.0] - 2026-02-18
 
 **Tooling & Developer Experience** — 5 new features for a complete developer workflow.
@@ -429,6 +459,8 @@ The compiler written in Yorum itself (5,226 lines), achieving bootstrap fixed-po
 
 ---
 
+[1.6.0]: https://github.com/MehmetMelik/yorum/compare/v1.5.0...v1.6.0
+[1.5.0]: https://github.com/MehmetMelik/yorum/compare/v1.4.1...v1.5.0
 [1.4.1]: https://github.com/MehmetMelik/yorum/compare/v1.4.0...v1.4.1
 [1.4.0]: https://github.com/MehmetMelik/yorum/compare/v1.3.2...v1.4.0
 [1.3.2]: https://github.com/MehmetMelik/yorum/compare/v1.3.1...v1.3.2

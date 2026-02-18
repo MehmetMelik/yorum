@@ -6252,3 +6252,202 @@ fn test_compile_to_ir_with_options_basic() {
     let ir = yorum::compile_to_ir_with_options(source, "basic.yrm", false).unwrap();
     assert!(ir.contains("define i64 @main"));
 }
+
+// ═══════════════════════════════════════════════════════════════
+//  Formatter tests
+// ═══════════════════════════════════════════════════════════════
+
+fn format(source: &str) -> String {
+    yorum::format_source(source).expect("format failed")
+}
+
+#[test]
+fn test_fmt_basic_fn() {
+    let input = "fn main()->int{return 0;}";
+    let output = format(input);
+    assert!(output.contains("fn main() -> int {"));
+    assert!(output.contains("    return 0;"));
+    assert!(output.contains("}"));
+}
+
+#[test]
+fn test_fmt_contracts_brace_on_own_line() {
+    let input = "pure fn fib(n: int) -> int requires n >= 0 ensures result >= 0 { return n; }\n";
+    let output = format(input);
+    // Contracts should be indented, brace on its own line
+    assert!(output.contains("    requires n >= 0"));
+    assert!(output.contains("    ensures result >= 0"));
+    // The { should be on its own line (not on same line as ensures)
+    let lines: Vec<&str> = output.lines().collect();
+    let brace_line = lines.iter().find(|l| l.trim() == "{");
+    assert!(
+        brace_line.is_some(),
+        "expected '{{' on its own line after contracts"
+    );
+}
+
+#[test]
+fn test_fmt_compound_assign() {
+    let input = "fn main() -> int { let mut x: int = 0; x += 1; x -= 2; x *= 3; x /= 4; x %= 5; return x; }\n";
+    let output = format(input);
+    assert!(output.contains("x += 1;"));
+    assert!(output.contains("x -= 2;"));
+    assert!(output.contains("x *= 3;"));
+    assert!(output.contains("x /= 4;"));
+    assert!(output.contains("x %= 5;"));
+}
+
+#[test]
+fn test_fmt_interp_string() {
+    let input = "fn main() -> int { let name: string = \"Alice\"; print_str(\"hello {name}\"); return 0; }\n";
+    let output = format(input);
+    assert!(
+        output.contains("\"hello {name}\""),
+        "interpolation should be preserved, got: {}",
+        output
+    );
+}
+
+#[test]
+fn test_fmt_comment_preserved() {
+    let input = "// greeting\nfn main() -> int { return 0; }\n";
+    let output = format(input);
+    assert!(output.contains("// greeting"));
+}
+
+#[test]
+fn test_fmt_block_comment_preserved() {
+    let input = "/* block comment */\nfn main() -> int { return 0; }\n";
+    let output = format(input);
+    assert!(output.contains("/* block comment */"));
+}
+
+#[test]
+fn test_fmt_already_formatted() {
+    let input = "fn main() -> int {\n    return 0;\n}\n";
+    let output = format(input);
+    assert_eq!(output, input);
+}
+
+#[test]
+fn test_fmt_enum() {
+    let input = "enum Dir { North, South, East, West }\nfn main() -> int { return 0; }\n";
+    let output = format(input);
+    assert!(output.contains("    North,"));
+    assert!(output.contains("    South,"));
+    assert!(output.contains("    East,"));
+    // Last variant has no trailing comma
+    assert!(output.contains("    West\n"));
+}
+
+#[test]
+fn test_fmt_match() {
+    let input = "fn main() -> int { match 1 { 1 => { return 1; }, _ => { return 0; }, } }\n";
+    let output = format(input);
+    assert!(output.contains("1 => {"));
+    assert!(output.contains("_ => {"));
+}
+
+#[test]
+fn test_fmt_blank_lines_between_decls() {
+    let input = "fn foo() -> int { return 1; }\nfn bar() -> int { return 2; }\n";
+    let output = format(input);
+    // Should have exactly one blank line between declarations
+    assert!(output.contains("}\n\nfn bar"));
+}
+
+#[test]
+fn test_fmt_effects() {
+    let input = "fn display(x: int) -> unit effects io { print_int(x); }\n";
+    let output = format(input);
+    assert!(output.contains("    effects io"));
+    // Brace on own line after effects
+    let lines: Vec<&str> = output.lines().collect();
+    let brace_line = lines.iter().find(|l| l.trim() == "{");
+    assert!(brace_line.is_some());
+}
+
+#[test]
+fn test_fmt_idempotent() {
+    // Various inputs: format twice should give same result
+    let inputs = vec![
+        "fn main() -> int { let x: int = 1 + 2 * 3; return x; }\n",
+        "// comment\nfn main() -> int { return 0; }\n",
+        "struct Point { x: int, y: int }\nfn main() -> int { return 0; }\n",
+        "enum Color { Red, Green, Blue }\nfn main() -> int { return 0; }\n",
+        "fn main() -> int { let mut x: int = 0; x += 1; return x; }\n",
+        "fn foo(n: int) -> int requires n > 0 { return n; }\nfn main() -> int { return 0; }\n",
+    ];
+    for input in inputs {
+        let first = format(input);
+        let second = format(&first);
+        assert_eq!(first, second, "not idempotent for input:\n{}", input);
+    }
+}
+
+#[test]
+fn test_fmt_struct() {
+    let input = "struct Point{x:int,y:int}\nfn main() -> int { return 0; }\n";
+    let output = format(input);
+    assert!(output.contains("struct Point { x: int, y: int }"));
+}
+
+#[test]
+fn test_fmt_if_else() {
+    let input = "fn main() -> int { if true { return 1; } else { return 0; } }\n";
+    let output = format(input);
+    // K&R style: } else {
+    assert!(output.contains("} else {"));
+}
+
+#[test]
+fn test_fmt_for_loop() {
+    let input = "fn main() -> int { for i in 0..10 { print_int(i); } return 0; }\n";
+    let output = format(input);
+    assert!(output.contains("for i in 0..10 {"));
+}
+
+#[test]
+fn test_fmt_compile_after_format() {
+    // Format then compile — formatted output should compile
+    let input = "fn main() -> int { let x: int = 42; print_int(x); return 0; }\n";
+    let formatted = format(input);
+    yorum::compile_to_ir(&formatted).expect("formatted code should compile");
+}
+
+#[test]
+fn test_fmt_closure() {
+    let input = "fn main() -> int { let f: fn(int) -> int = |x: int| -> int { return x * 2; }; return f(21); }\n";
+    let output = format(input);
+    assert!(output.contains("|x: int| -> int {"));
+}
+
+#[test]
+fn test_fmt_trait() {
+    let input = "trait Foo { fn bar(self: &Self) -> int; }\nfn main() -> int { return 0; }\n";
+    let output = format(input);
+    assert!(output.contains("trait Foo {"));
+    assert!(output.contains("    fn bar(self: &Self) -> int;"));
+}
+
+#[test]
+fn test_fmt_impl() {
+    let input = "struct S { x: int }\nimpl S { fn get(self: &S) -> int { return self.x; } }\nfn main() -> int { return 0; }\n";
+    let output = format(input);
+    assert!(output.contains("impl S {"));
+    assert!(output.contains("    fn get(self: &S) -> int {"));
+}
+
+#[test]
+fn test_fmt_escaped_braces_in_string() {
+    // String with literal { and } should round-trip correctly
+    let input = "fn main() -> int { print_str(\"Use {{expr}} for interpolation\"); return 0; }\n";
+    let output = format(input);
+    assert!(
+        output.contains("\"Use {{expr}} for interpolation\""),
+        "escaped braces should be preserved, got: {}",
+        output
+    );
+    // Formatted code should compile
+    yorum::compile_to_ir(&output).expect("formatted code with escaped braces should compile");
+}

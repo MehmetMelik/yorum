@@ -41,6 +41,45 @@ impl PackageCache {
         self.cache_dir.join(format!("{}-{}", name, &hex[..8]))
     }
 
+    /// Check out a specific commit in a cached repo without fetching from the remote.
+    /// Returns Ok if the cache exists and the SHA matches; Err otherwise (caller should
+    /// fall back to a full resolve).
+    pub fn checkout_locked(
+        &self,
+        name: &str,
+        url: &str,
+        locked_sha: &str,
+    ) -> Result<PathBuf, String> {
+        let repo_dir = self.cache_dir_for(name, url);
+        if !repo_dir.exists() {
+            return Err(format!(
+                "dependency '{}': cache miss for locked SHA {}",
+                name, locked_sha
+            ));
+        }
+
+        // Check if HEAD already matches the locked SHA (no checkout needed)
+        let current_sha = PackageCache::get_git_sha(&repo_dir)?;
+        if current_sha == locked_sha {
+            return Ok(repo_dir);
+        }
+
+        // Try to checkout the locked SHA without fetching
+        let output = Command::new("git")
+            .args(["checkout", locked_sha])
+            .current_dir(&repo_dir)
+            .output()
+            .map_err(|e| format!("failed to run git: {}", e))?;
+        if !output.status.success() {
+            return Err(format!(
+                "dependency '{}': locked SHA {} not available in cache",
+                name, locked_sha
+            ));
+        }
+
+        Ok(repo_dir)
+    }
+
     pub fn fetch_git(
         &self,
         name: &str,
@@ -225,6 +264,74 @@ pub fn read_dep_manifest(dep_dir: &Path) -> Result<YorumManifest, String> {
     let content = std::fs::read_to_string(&manifest_path)
         .map_err(|e| format!("cannot read '{}': {}", manifest_path.display(), e))?;
     content.parse()
+}
+
+/// Resolve a dependency using a locked SHA (for reproducible builds).
+/// For git deps, checks out the exact locked SHA without fetching.
+/// For path deps, behaves identically to `resolve_dep`.
+pub fn resolve_dep_locked(
+    name: &str,
+    spec: &DependencySpec,
+    project_root: &Path,
+    cache: &PackageCache,
+    locked_sha: Option<&str>,
+) -> Result<ResolvedDep, String> {
+    spec.validate(name)?;
+
+    let (dep_dir, git_commit) = if let Some(ref path) = spec.path {
+        let dir = resolve_path_dep(name, path, project_root)?;
+        (dir, None)
+    } else if let Some(ref url) = spec.git {
+        if let Some(sha) = locked_sha {
+            match cache.checkout_locked(name, url, sha) {
+                Ok(dir) => (dir, Some(sha.to_string())),
+                Err(_) => {
+                    // Cache miss or SHA not available — fall back to full fetch,
+                    // then verify we got the expected SHA
+                    let dir = cache.fetch_git(
+                        name,
+                        url,
+                        spec.tag.as_deref(),
+                        spec.branch.as_deref(),
+                        Some(sha),
+                    )?;
+                    (dir, Some(sha.to_string()))
+                }
+            }
+        } else {
+            return resolve_dep(name, spec, project_root, cache);
+        }
+    } else {
+        return Err(format!(
+            "dependency '{}': must specify either 'git' or 'path'",
+            name
+        ));
+    };
+
+    let dep_manifest = read_dep_manifest(&dep_dir)?;
+
+    if dep_manifest.package.name != name {
+        return Err(format!(
+            "dependency '{}': package name in yorum.toml is '{}', expected '{}'",
+            name, dep_manifest.package.name, name
+        ));
+    }
+
+    let src_dir = dep_dir.join(&dep_manifest.package.src_dir);
+    if !src_dir.exists() {
+        return Err(format!(
+            "dependency '{}': source directory '{}' does not exist",
+            name,
+            src_dir.display()
+        ));
+    }
+
+    Ok(ResolvedDep {
+        name: name.to_string(),
+        version: dep_manifest.package.version,
+        src_dir,
+        git_commit,
+    })
 }
 
 pub fn resolve_dep(

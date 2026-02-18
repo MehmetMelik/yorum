@@ -2,6 +2,27 @@
 
 All notable changes to the Yorum programming language compiler.
 
+## [1.6.1] - 2026-02-18
+
+**Formatter Bug Fix** — trailing comments now stay on the same line.
+
+### Fixed
+
+- **Trailing comments displaced to next line:** `let x: int = 15; // note` was reformatted with `// note` on its own line before the next statement. Root cause: `emit_leading_comments` consumed all comments with `span.end <= node_start`, including same-line trailing comments. Fix: after each construct is emitted, `emit_trailing_comment_for()` checks if the next unconsumed comment is on the same source line and inlines it with two-space separation
+- **Block comments mis-tagged in lexer:** `/* ... */` comments had `is_block: false`, which prevented the multi-line block comment exclusion from working. Fix: `is_block: true` for block comments
+- **Compact construct comment mis-association:** Comments after closing delimiters (`fn a() -> int { return 1; } // note`) could be pulled into the inner node (`return 1;`). Fix: `is_trailing_gap()` requires only whitespace and punctuation (`,`, `;`) between construct end and comment start — closing delimiters (`}`, `)`, `]`) break the trailing association
+
+### Added
+
+- `is_same_line()`, `is_trailing_gap()`, `emit_trailing_comment_for()`, `decl_span_end()` in formatter
+- Trailing comment attachment at 6 call sites: statements, top-level declarations, impl methods, trait methods, struct fields, enum variants
+- 10 new integration tests for trailing comments
+- All 23 example programs reformatted with corrected formatter
+
+**Stats:** 26 files changed | Tests: 513 (50 unit + 463 integration)
+
+---
+
 ## [1.6.0] - 2026-02-18
 
 **Auto-Formatter** — `yorum fmt` for consistent code style.
@@ -459,6 +480,7 @@ The compiler written in Yorum itself (5,226 lines), achieving bootstrap fixed-po
 
 ---
 
+[1.6.1]: https://github.com/MehmetMelik/yorum/compare/v1.6.0...v1.6.1
 [1.6.0]: https://github.com/MehmetMelik/yorum/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/MehmetMelik/yorum/compare/v1.4.1...v1.5.0
 [1.4.1]: https://github.com/MehmetMelik/yorum/compare/v1.4.0...v1.4.1

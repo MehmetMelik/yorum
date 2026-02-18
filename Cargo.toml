@@ -1,6 +1,6 @@
 [package]
 name = "yorum"
-version = "1.6.0"
+version = "1.6.1"
 edition = "2021"
 description = "The Yorum programming language — LLM-first, deterministic, LLVM-compiled"
 license = "MIT"

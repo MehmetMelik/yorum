@@ -421,6 +421,7 @@ impl Formatter {
             if i > 0 {
                 self.blank_line();
             }
+            self.emit_leading_comments(method.span.start);
             self.emit_fn_decl(method);
         }
         self.indent_down();
@@ -451,10 +452,9 @@ impl Formatter {
                 self.write(&format_type(&param.ty));
             }
             self.write(")");
-            if method.return_type != Type::Unit {
-                self.write(" -> ");
-                self.write(&format_type(&method.return_type));
-            }
+            // Return type (always required in Yorum)
+            self.write(" -> ");
+            self.write(&format_type(&method.return_type));
             if let Some(ref body) = method.default_body {
                 self.write(" ");
                 self.emit_block_inline(body);
@@ -498,6 +498,8 @@ impl Formatter {
             prev_end = Some(self.stmt_span_end(stmt));
             self.emit_stmt(stmt);
         }
+        // Flush any comments between the last statement and the closing brace
+        self.emit_leading_comments(block.span.end);
     }
 
     // ── Statements ─────────────────────────────────────────────
@@ -809,6 +811,10 @@ impl Formatter {
                     }
                     self.emit_expr(elem);
                 }
+                // Trailing comma required for 1-element tuples to distinguish from grouping
+                if elems.len() == 1 {
+                    self.write(",");
+                }
                 self.write(")");
             }
             ExprKind::Spawn(block) => {
@@ -936,6 +942,12 @@ impl Formatter {
 // ═══════════════════════════════════════════════════════════════
 
 fn format_type(ty: &Type) -> String {
+    // Handle singleton tuples specially — Display renders (T) but Yorum requires (T,)
+    if let Type::Tuple(types) = ty {
+        if types.len() == 1 {
+            return format!("({},)", format_type(&types[0]));
+        }
+    }
     format!("{}", ty)
 }
 

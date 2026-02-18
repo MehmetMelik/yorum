@@ -6451,3 +6451,89 @@ fn test_fmt_escaped_braces_in_string() {
     // Formatted code should compile
     yorum::compile_to_ir(&output).expect("formatted code with escaped braces should compile");
 }
+
+#[test]
+fn test_fmt_trait_method_unit_return() {
+    // Trait methods returning unit must keep `-> unit`
+    let input = "trait Logger { fn log(self: &Self) -> unit; }\nfn main() -> int { return 0; }\n";
+    let output = format(input);
+    assert!(
+        output.contains("-> unit;"),
+        "trait method should preserve -> unit, got: {}",
+        output
+    );
+    // Formatted output must reparse
+    let reparsed = format(&output);
+    assert_eq!(output, reparsed, "trait method unit return not idempotent");
+}
+
+#[test]
+fn test_fmt_singleton_tuple_literal() {
+    // (x,) must keep trailing comma so it doesn't become a grouped expression
+    let input = "fn main() -> int { let t: (int,) = (42,); return t.0; }\n";
+    let output = format(input);
+    assert!(
+        output.contains("(42,)"),
+        "singleton tuple literal should have trailing comma, got: {}",
+        output
+    );
+    yorum::compile_to_ir(&output).expect("formatted singleton tuple should compile");
+}
+
+#[test]
+fn test_fmt_singleton_tuple_type() {
+    // (int,) must keep trailing comma in type position
+    let input = "fn main() -> int { let t: (int,) = (42,); return t.0; }\n";
+    let output = format(input);
+    assert!(
+        output.contains(": (int,)"),
+        "singleton tuple type should have trailing comma, got: {}",
+        output
+    );
+}
+
+#[test]
+fn test_fmt_impl_method_comments() {
+    // Comments above methods in impl blocks should stay attached
+    let input = "\
+struct S { x: int }
+
+impl S {
+    // returns x
+    fn get(self: &S) -> int {
+        return self.x;
+    }
+}
+
+fn main() -> int { return 0; }
+";
+    let output = format(input);
+    // Comment must appear inside the impl, before the method
+    let impl_start = output.find("impl S {").unwrap();
+    let comment_pos = output.find("// returns x").unwrap();
+    let method_pos = output.find("fn get(self: &S)").unwrap();
+    assert!(
+        comment_pos > impl_start && comment_pos < method_pos,
+        "comment should be inside impl and before method, got:\n{}",
+        output
+    );
+}
+
+#[test]
+fn test_fmt_block_end_comment() {
+    // Comments before closing brace should stay inside the block
+    let input = "\
+fn main() -> int {
+    let x: int = 42;
+    // end of function
+}
+";
+    let output = format(input);
+    let brace_pos = output.rfind('}').unwrap();
+    let comment_pos = output.find("// end of function").unwrap();
+    assert!(
+        comment_pos < brace_pos,
+        "block-end comment should stay inside the function, got:\n{}",
+        output
+    );
+}

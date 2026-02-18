@@ -28,7 +28,7 @@ All notable changes to the Yorum programming language compiler.
 - `{{` and `}}` brace escaping preserved in plain strings
 - Single trailing newline at end of file
 
-**Stats:** 7 files changed, ~1,100 lines added | Tests: 498 (50 unit + 448 integration)
+**Stats:** 7 files changed, ~1,100 lines added | Tests: 503 (50 unit + 453 integration)
 
 ---
 

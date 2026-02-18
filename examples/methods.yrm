@@ -1,16 +1,30 @@
+// methods.yrm — Struct methods via impl blocks.
+//
+// Demonstrates: impl blocks, self parameter, method calls,
+// comments above methods, unit-returning methods.
+
 struct Point { x: int, y: int }
 
 impl Point {
+    // Get the x coordinate
     fn get_x(self: &Point) -> int {
         return self.x;
     }
 
+    // Get the y coordinate
     fn get_y(self: &Point) -> int {
         return self.y;
     }
 
+    // Sum both coordinates
     fn sum(self: &Point) -> int {
         return self.x + self.y;
+    }
+
+    // Print the point's coordinates
+    fn display(self: &Point) -> unit {
+        print_int(self.x);
+        print_int(self.y);
     }
 }
 
@@ -19,5 +33,6 @@ fn main() -> int {
     print_int(p.get_x());
     print_int(p.get_y());
     print_int(p.sum());
+    p.display();
     return 0;
 }

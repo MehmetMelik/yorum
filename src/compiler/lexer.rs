@@ -334,7 +334,7 @@ impl Lexer {
                     self.comments.push(Comment {
                         text,
                         span: Span::new(start, self.pos, start_line, start_col),
-                        is_block: false,
+                        is_block: true,
                     });
                 }
                 continue;

@@ -8,24 +8,16 @@ fn main() -> int {
     let ip: string = dns_resolve("example.com");
     print_str("Resolved IP:");
     print_str(ip);
-
     // HTTP GET request
     let body: string = http_get("http://example.com");
     print_str("GET response length:");
     print_int(str_len(body));
-
     // HTTP POST request
     let resp: string = http_post("http://httpbin.org/post", "hello=world");
     print_str("POST response length:");
     print_int(str_len(resp));
-
     // Custom HTTP request with headers
-    let custom: string = http_request(
-        "GET",
-        "http://example.com",
-        "Accept: text/html",
-        ""
-    );
+    let custom: string = http_request("GET", "http://example.com", "Accept: text/html", "");
     print_str("Custom request response length:");
     print_int(str_len(custom));
 

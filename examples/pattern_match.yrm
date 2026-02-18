@@ -45,16 +45,15 @@ fn main() -> int {
     // North = 0, South = 1, East = 2, West = 3
     let mut x: int = 0;
     let mut y: int = 0;
-
     // Walk: North, East, East, South
-    x = x + direction_dx(0);
-    y = y + direction_dy(0);
-    x = x + direction_dx(2);
-    y = y + direction_dy(2);
-    x = x + direction_dx(2);
-    y = y + direction_dy(2);
-    x = x + direction_dx(1);
-    y = y + direction_dy(1);
+    x += direction_dx(0);
+    y += direction_dy(0);
+    x += direction_dx(2);
+    y += direction_dy(2);
+    x += direction_dx(2);
+    y += direction_dy(2);
+    x += direction_dx(1);
+    y += direction_dy(1);
 
     print_int(x);
     print_int(y);

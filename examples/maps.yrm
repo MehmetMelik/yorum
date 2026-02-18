@@ -6,7 +6,7 @@
 
 fn main() -> int {
     // Bare Map (backward compat: Map = Map<string, int>)
-    let m: Map = map_new();
+    let m: Map<string, int> = map_new();
     map_set(m, "alice", 10);
     map_set(m, "bob", 20);
     map_set(m, "carol", 30);
@@ -14,7 +14,6 @@ fn main() -> int {
     print_int(map_get(m, "alice"));
     print_int(map_get(m, "bob"));
     print_int(map_size(m));
-
     // Map<int, string> — int keys
     let ages: Map<int, string> = map_new();
     map_set(ages, 25, "young");
@@ -23,7 +22,6 @@ fn main() -> int {
     print_str("=== Map<int, string> ===");
     print_str(map_get(ages, 25));
     print_str(map_get(ages, 80));
-
     // Map<char, bool> — char keys
     let vowels: Map<char, bool> = map_new();
     map_set(vowels, 'a', true);
@@ -32,7 +30,6 @@ fn main() -> int {
     print_str("=== Map<char, bool> ===");
     print_bool(map_get(vowels, 'a'));
     print_bool(map_get(vowels, 'x'));
-
     // Map<bool, int> — bool keys
     let flags: Map<bool, int> = map_new();
     map_set(flags, true, 1);
@@ -40,7 +37,6 @@ fn main() -> int {
     print_str("=== Map<bool, int> ===");
     print_int(map_get(flags, true));
     print_int(map_get(flags, false));
-
     // map_has, map_remove, map_keys, map_values
     print_str("=== has/remove/keys/values ===");
     if map_has(m, "alice") {

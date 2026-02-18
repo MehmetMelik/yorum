@@ -26,8 +26,8 @@ pure fn sum_of_squares(n: int) -> int
     let mut total: int = 0;
     let mut i: int = 1;
     while i <= n {
-        total = total + square(i);
-        i = i + 1;
+        total += square(i);
+        i += 1;
     }
     return total;
 }
@@ -96,13 +96,10 @@ fn main() -> int {
     let result: int = sum_of_squares(10);
     display("sum of squares(10) = ", result);
     print_int(safe_div(100, 7));
-
     // Effect-checked calls
     log_and_save("logging\n", "/tmp/yorum_effects_test.txt");
-
     // Unchecked call (backward compat)
     unchecked_printer("unchecked works too");
-
     // Memory-only computation
     let n: int = compute();
     print_int(n);

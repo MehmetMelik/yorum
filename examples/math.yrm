@@ -8,31 +8,26 @@ fn main() -> int {
     print_str("=== abs ===");
     print_int(abs_int(-42));
     print_float(abs_float(-3.14));
-
     // Min / Max
     print_str("=== min/max ===");
     print_int(min_int(5, 3));
     print_int(max_int(5, 3));
     print_float(min_float(2.5, 1.7));
     print_float(max_float(2.5, 1.7));
-
     // Square root and power
     print_str("=== sqrt/pow ===");
     print_float(sqrt(16.0));
     print_float(pow(2.0, 10.0));
-
     // Trigonometric functions
     print_str("=== trig ===");
     print_float(sin(0.0));
     print_float(cos(0.0));
     print_float(tan(0.0));
-
     // Rounding
     print_str("=== rounding ===");
     print_float(floor(3.7));
     print_float(ceil(3.2));
     print_float(round(3.5));
-
     // Logarithms and exponential
     print_str("=== log/exp ===");
     print_float(log(1.0));

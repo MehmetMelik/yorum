@@ -6537,3 +6537,199 @@ fn main() -> int {
         output
     );
 }
+
+#[test]
+fn test_fmt_trailing_line_comment() {
+    let input = "\
+fn main() -> int {
+    let x: int = 15;   // fifteen
+    return x;
+}
+";
+    let output = format(input);
+    assert!(
+        output.contains("let x: int = 15;  // fifteen"),
+        "trailing line comment should stay on same line, got:\n{}",
+        output
+    );
+}
+
+#[test]
+fn test_fmt_trailing_block_comment() {
+    let input = "\
+fn main() -> int {
+    let x: int = 15;   /* fifteen */
+    return x;
+}
+";
+    let output = format(input);
+    assert!(
+        output.contains("let x: int = 15;  /* fifteen */"),
+        "trailing block comment should stay on same line, got:\n{}",
+        output
+    );
+}
+
+#[test]
+fn test_fmt_trailing_then_leading_comment() {
+    let input = "\
+fn main() -> int {
+    let x: int = 15;   // fifteen
+    // next stmt
+    return x;
+}
+";
+    let output = format(input);
+    assert!(
+        output.contains("let x: int = 15;  // fifteen"),
+        "trailing comment should stay inline, got:\n{}",
+        output
+    );
+    assert!(
+        output.contains("    // next stmt\n    return x;"),
+        "leading comment should stay on its own line, got:\n{}",
+        output
+    );
+}
+
+#[test]
+fn test_fmt_trailing_comment_idempotent() {
+    let input = "\
+fn main() -> int {
+    let x: int = 15;  // fifteen
+    return x;
+}
+";
+    let first = format(input);
+    let second = format(&first);
+    assert_eq!(
+        first, second,
+        "trailing comment format should be idempotent"
+    );
+}
+
+#[test]
+fn test_fmt_trailing_comment_blank_line() {
+    let input = "\
+fn main() -> int {
+    let x: int = 15;   // fifteen
+
+    return x;
+}
+";
+    let output = format(input);
+    assert!(
+        output.contains("let x: int = 15;  // fifteen"),
+        "trailing comment should stay inline, got:\n{}",
+        output
+    );
+    assert!(
+        output.contains("// fifteen\n\n    return"),
+        "blank line after stmt with trailing comment should be preserved, got:\n{}",
+        output
+    );
+}
+
+#[test]
+fn test_fmt_multiline_block_not_trailing() {
+    let input = "\
+fn main() -> int {
+    let x: int = 15; /* multi
+line */
+    return x;
+}
+";
+    let output = format(input);
+    // Multi-line block comment should NOT be inlined as trailing
+    assert!(
+        !output.contains("let x: int = 15;  /* multi"),
+        "multi-line block comment should not be trailing, got:\n{}",
+        output
+    );
+}
+
+#[test]
+fn test_fmt_trailing_comment_struct_field() {
+    let input = "\
+struct Config {
+    width: int,  // pixels
+    height: int,  // pixels
+    name: string,
+    debug: bool
+}
+
+fn main() -> unit {}
+";
+    let output = format(input);
+    assert!(
+        output.contains("width: int,  // pixels"),
+        "struct field trailing comment should be preserved, got:\n{}",
+        output
+    );
+    assert!(
+        output.contains("height: int,  // pixels"),
+        "struct field trailing comment should be preserved, got:\n{}",
+        output
+    );
+}
+
+#[test]
+fn test_fmt_trailing_comment_enum_variant() {
+    let input = "\
+enum Color {
+    Red,   // primary
+    Green,   // primary
+    Blue
+}
+
+fn main() -> unit {}
+";
+    let output = format(input);
+    assert!(
+        output.contains("Red,  // primary"),
+        "enum variant trailing comment should be preserved, got:\n{}",
+        output
+    );
+    assert!(
+        output.contains("Green,  // primary"),
+        "enum variant trailing comment should be preserved, got:\n{}",
+        output
+    );
+}
+
+#[test]
+fn test_fmt_trailing_comment_not_pulled_into_compact_fn() {
+    // Comment after `}` must attach to the function, not the inner `return 1;`
+    let input = "\
+fn a() -> int { return 1; } // note
+
+fn main() -> int { return 0; }
+";
+    let output = format(input);
+    assert!(
+        !output.contains("return 1;  // note"),
+        "comment after }} must not attach to inner statement, got:\n{}",
+        output
+    );
+    assert!(
+        output.contains("}  // note"),
+        "comment should attach to the closing brace line, got:\n{}",
+        output
+    );
+}
+
+#[test]
+fn test_fmt_trailing_comment_not_pulled_into_compact_enum() {
+    // Comment after `}` must attach to the enum, not variant A
+    let input = "\
+enum E { A, B } // note
+
+fn main() -> unit {}
+";
+    let output = format(input);
+    assert!(
+        !output.contains("A,  // note") && !output.contains("B  // note"),
+        "comment after }} must not attach to inner variant, got:\n{}",
+        output
+    );
+}

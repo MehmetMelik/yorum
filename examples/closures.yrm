@@ -9,24 +9,26 @@ fn apply(f: fn(int) -> int, x: int) -> int {
 
 fn main() -> int {
     // Closure with no captures
-    let double: fn(int) -> int = |x: int| -> int { return x * 2; };
+    let double: fn(int) -> int = |x: int| -> int {
+        return x * 2;
+    };
     print_int(double(21));
-
     // Closure with environment capture
     let offset: int = 10;
-    let add_offset: fn(int) -> int = |x: int| -> int { return x + offset; };
+    let add_offset: fn(int) -> int = |x: int| -> int {
+        return x + offset;
+    };
     print_int(add_offset(32));
-
     // Passing closure to higher-order function
     let result: int = apply(add_offset, 32);
     print_int(result);
-
     // Multiple captures
     let a: int = 100;
     let b: int = 200;
-    let sum_all: fn(int) -> int = |x: int| -> int { return x + a + b; };
+    let sum_all: fn(int) -> int = |x: int| -> int {
+        return x + a + b;
+    };
     print_int(sum_all(3));
-
     // end of main
     return result;
 }

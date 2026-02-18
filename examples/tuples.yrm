@@ -26,22 +26,18 @@ fn main() -> int {
     let pair: (int, string) = (42, "hello");
     print_int(pair.0);
     print_str(pair.1);
-
     // Tuple destructuring
     let (a, b): (int, int) = swap(1, 2);
     print_int(a);
     print_int(b);
-
     // Tuple from function — destructuring
     let nums: [int] = [5, 2, 8, 1, 9, 3];
     let (lo, hi): (int, int) = min_max(nums);
     print_int(lo);
     print_int(hi);
-
     // Nested tuple access
     let triple: (int, int, int) = (10, 20, 30);
     print_int(triple.0 + triple.1 + triple.2);
-
     // Singleton tuple — trailing comma is required
     let single: (int,) = (99,);
     print_int(single.0);

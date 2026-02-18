@@ -4,14 +4,18 @@ pure fn fib(n: int) -> int
     requires n >= 0
     ensures result >= 0
 {
-    if n <= 1 { return n; }
+    if n <= 1 {
+        return n;
+    }
     return fib(n - 1) + fib(n - 2);
 }
 
 fn abs(x: int) -> int
     ensures result >= 0
 {
-    if x < 0 { return 0 - x; }
+    if x < 0 {
+        return 0 - x;
+    }
     return x;
 }
 
@@ -19,8 +23,12 @@ fn clamp(x: int, lo: int, hi: int) -> int
     requires lo <= hi
     ensures result >= lo
 {
-    if x < lo { return lo; }
-    if x > hi { return hi; }
+    if x < lo {
+        return lo;
+    }
+    if x > hi {
+        return hi;
+    }
     return x;
 }
 

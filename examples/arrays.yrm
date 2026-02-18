@@ -7,7 +7,7 @@ module arrays;
 fn sum_array(nums: [int]) -> int {
     let mut total: int = 0;
     for x in nums {
-        total = total + x;
+        total += x;
     }
     return total;
 }

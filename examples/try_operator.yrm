@@ -33,30 +33,43 @@ fn main() -> int {
     print_str("=== Option ? ===");
     let opt1: Option<int> = double_find(5);
     match opt1 {
-        Some(v) => { print_int(v); },
-        None => { print_str("none"); },
+        Some(v) => {
+            print_int(v);
+        },
+        None => {
+            print_str("none");
+        },
     }
-
     // Option ? — None propagation
     let opt2: Option<int> = double_find(0);
     match opt2 {
-        Some(v) => { print_int(v); },
-        None => { print_str("got none"); },
+        Some(v) => {
+            print_int(v);
+        },
+        None => {
+            print_str("got none");
+        },
     }
-
     // Result ? — success path
     print_str("=== Result ? ===");
     let res1: Result<int, string> = chain_divide(100, 5, 2);
     match res1 {
-        Ok(v) => { print_int(v); },
-        Err(e) => { print_str(e); },
+        Ok(v) => {
+            print_int(v);
+        },
+        Err(e) => {
+            print_str(e);
+        },
     }
-
     // Result ? — Err propagation
     let res2: Result<int, string> = chain_divide(100, 0, 2);
     match res2 {
-        Ok(v) => { print_int(v); },
-        Err(e) => { print_str(e); },
+        Ok(v) => {
+            print_int(v);
+        },
+        Err(e) => {
+            print_str(e);
+        },
     }
 
     return 0;

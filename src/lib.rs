@@ -4,6 +4,7 @@ pub mod manifest;
 pub mod repl;
 
 use compiler::codegen::Codegen;
+use compiler::dce::eliminate_dead_code;
 use compiler::lexer::Lexer;
 use compiler::monomorphize::monomorphize;
 use compiler::ownership::OwnershipChecker;
@@ -142,7 +143,10 @@ pub fn compile_to_ir(source: &str) -> Result<String, String> {
     // Phase 5: Monomorphize generics
     let program = monomorphize(program);
 
-    // Phase 6: Code generation
+    // Phase 6: Dead code elimination
+    let program = eliminate_dead_code(program);
+
+    // Phase 7: Code generation
     let mut codegen = Codegen::new();
     let ir = codegen.generate(&program).map_err(|e| format!("{}", e))?;
 
@@ -213,6 +217,7 @@ pub fn compile_to_ir_with_options(
     })?;
 
     let program = monomorphize(program);
+    let program = eliminate_dead_code(program);
 
     let mut codegen = Codegen::new();
     if debug {

@@ -701,6 +701,9 @@ source.yrm
   Monomorphizer ──── concrete AST (no generics)
     |
     v
+  DCE ──────────────  pruned AST (no dead code)
+    |
+    v
   Codegen ────────── LLVM IR (text)
     |
     v
@@ -714,11 +717,12 @@ source.yrm
 | Type Checker | `src/compiler/typechecker.rs` | Three-pass: register declarations, infer effects, check bodies |
 | Ownership | `src/compiler/ownership.rs` | Move tracking, use-after-move prevention, must-join enforcement for tasks |
 | Monomorphizer | `src/compiler/monomorphize.rs` | Eliminates generics by cloning concrete instantiations |
+| DCE | `src/compiler/dce.rs` | Dead code elimination via BFS reachability from `main` |
 | Codegen | `src/compiler/codegen.rs` | Textual LLVM IR, alloca/load/store pattern, contract checks, pthread spawn/join |
 | Module Resolver | `src/compiler/module_resolver.rs` | Discovers `.yrm` files, maps filesystem paths to module names |
 | Project Builder | `src/compiler/project.rs` | Reads `yorum.toml`, merges modules, runs compilation pipeline |
 
-The Rust compiler is ~9,600 lines of Rust with `serde`, `serde_json`, and `toml`
+The Rust compiler is ~10,000 lines of Rust with `serde`, `serde_json`, and `toml`
 as dependencies.
 
 ## Self-Hosting
@@ -748,7 +752,7 @@ diff gen1.ll gen2.ll    # identical — fixed-point achieved
 ## Testing
 
 ```bash
-cargo test                    # 462 tests (46 unit + 416 integration)
+cargo test                    # 536 tests (50 unit + 486 integration)
 cargo test compiler::lexer    # tests in one module
 cargo test test_fibonacci     # single test by name
 ```
@@ -784,7 +788,7 @@ cargo test test_fibonacci     # single test by name
 | **v1.4.1** | Restore self-hosting bootstrap, fix 4 compiler bugs (ownership, codegen, typechecker) | Done |
 | **v1.5.0** | Tooling & DX: `yorum run`, `yorum repl`, LSP completions/code actions, DWARF debug info (`-g`) | Done |
 | **v1.6.0** | Auto-formatter: `yorum fmt` with comment preservation, `--check` for CI | Done |
-| **v1.7** | Performance & optimization: tail calls, constant folding, dead code elimination | Planned |
+| **v1.7** | Performance & optimization: inline hints, constant folding, tail calls, heap sort, dead code elimination | Done |
 
 ## License
 

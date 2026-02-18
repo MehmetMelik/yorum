@@ -1,5 +1,6 @@
 use crate::compiler::ast::*;
 use crate::compiler::codegen::Codegen;
+use crate::compiler::dce::eliminate_dead_code;
 use crate::compiler::module_resolver::ModuleResolver;
 use crate::compiler::monomorphize::monomorphize;
 use crate::compiler::ownership::OwnershipChecker;
@@ -48,6 +49,7 @@ pub fn compile_project(root_dir: &Path) -> Result<String, String> {
     })?;
 
     let merged = monomorphize(merged);
+    let merged = eliminate_dead_code(merged);
 
     let mut codegen = Codegen::new();
     let ir = codegen.generate(&merged).map_err(|e| format!("{}", e))?;

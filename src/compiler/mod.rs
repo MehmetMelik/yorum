@@ -1,5 +1,6 @@
 pub mod ast;
 pub mod codegen;
+pub mod dce;
 pub mod formatter;
 pub mod lexer;
 pub mod module_resolver;

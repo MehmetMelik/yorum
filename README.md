@@ -52,12 +52,14 @@ clang -x ir fib.ll -o fib -Wno-override-module
 ## CLI
 
 ```
-yorum compile <file.yrm> [-o output]   Compile to LLVM IR (stdout if no -o)
-yorum check   <file.yrm>               Type-check and ownership-check only
-yorum ast     <file.yrm>               Dump the full AST as JSON
-yorum build   [-o output]              Build multi-file project (requires yorum.toml)
-yorum init    [name]                   Scaffold a new project
-yorum lsp                              Start LSP server (stdin/stdout)
+yorum compile <file.yrm> [-o output] [-g]   Compile to LLVM IR (stdout if no -o)
+yorum check   <file.yrm>                    Type-check and ownership-check only
+yorum ast     <file.yrm>                    Dump the full AST as JSON
+yorum build   [-o output]                   Build multi-file project (requires yorum.toml)
+yorum init    [name]                        Scaffold a new project
+yorum run     <file.yrm> [-- args...]       Compile, link, and execute in one step
+yorum repl                                  Interactive expression evaluator
+yorum lsp                                   Start LSP server (stdin/stdout)
 ```
 
 ## Why Yorum
@@ -779,6 +781,7 @@ cargo test test_fibonacci     # single test by name
 | **v1.3.2** | Codegen fixes: math intrinsic naming, spawn return/join, channel sync, for-loop/tuple alloca duplicates, Option/Result method types. 10 new examples | Done |
 | **v1.4** | Effect system enforcement: 6 effect categories (io, fs, net, time, env, concurrency), compile-time checking, effect inference, backward compatibility | Done |
 | **v1.4.1** | Restore self-hosting bootstrap, fix 4 compiler bugs (ownership, codegen, typechecker) | Done |
+| **v1.5.0** | Tooling & DX: `yorum run`, `yorum repl`, LSP completions/code actions, DWARF debug info (`-g`) | Done |
 
 ## License
 

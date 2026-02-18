@@ -6102,3 +6102,153 @@ fn test_effects_main_unknown_effect_rejected() {
     let err = result.unwrap_err();
     assert!(err.contains("unknown effect 'madeup'"));
 }
+
+// ═══════════════════════════════════════════════════════════════
+//  v1.5 — Tooling & Developer Experience
+// ═══════════════════════════════════════════════════════════════
+
+// ── yorum run ────────────────────────────────────────────────
+
+#[test]
+fn test_yorum_run_hello() {
+    // Skip on Windows — the IR declares networking/pthread symbols that require
+    // platform-specific libraries (ws2_32, pthreads) not available in CI.
+    if cfg!(target_os = "windows") {
+        eprintln!("skipping yorum run test on Windows");
+        return;
+    }
+
+    let status = std::process::Command::new("cargo")
+        .args(["run", "--", "run", "examples/hello.yrm"])
+        .status();
+    match status {
+        Ok(s) => assert!(s.success(), "yorum run examples/hello.yrm failed"),
+        Err(e) => {
+            eprintln!("skipping yorum run test: {}", e);
+        }
+    }
+}
+
+// ── LSP completions helpers ──────────────────────────────────
+
+#[test]
+fn test_lsp_extract_prefix() {
+    use yorum::lsp::server::extract_prefix;
+    assert_eq!(extract_prefix("let x = pri"), "pri");
+    assert_eq!(extract_prefix("print_"), "print_");
+    assert_eq!(extract_prefix("  fn "), "");
+    assert_eq!(extract_prefix("hello"), "hello");
+}
+
+#[test]
+fn test_lsp_extract_last_ident() {
+    use yorum::lsp::server::extract_last_ident;
+    assert_eq!(extract_last_ident("point."), "point");
+    assert_eq!(extract_last_ident("self.x."), "x");
+}
+
+#[test]
+fn test_lsp_levenshtein() {
+    use yorum::lsp::server::levenshtein_distance;
+    assert_eq!(levenshtein_distance("print_int", "print_int"), 0);
+    assert_eq!(levenshtein_distance("prnt_int", "print_int"), 1);
+    assert_eq!(levenshtein_distance("kitten", "sitting"), 3);
+    assert_eq!(levenshtein_distance("", "abc"), 3);
+}
+
+#[test]
+fn test_lsp_extract_quoted_name() {
+    use yorum::lsp::server::extract_quoted_name;
+    assert_eq!(
+        extract_quoted_name("undefined variable 'foo'"),
+        Some("foo".to_string())
+    );
+    assert_eq!(
+        extract_quoted_name("undefined function 'bar'"),
+        Some("bar".to_string())
+    );
+    assert_eq!(extract_quoted_name("no quotes here"), None);
+}
+
+#[test]
+fn test_lsp_find_closest_name() {
+    use yorum::lsp::server::find_closest_name;
+    let candidates: Vec<String> = vec!["print_int", "print_str", "read_line"]
+        .into_iter()
+        .map(String::from)
+        .collect();
+    assert_eq!(
+        find_closest_name("prnt_int", &candidates),
+        Some("print_int".to_string())
+    );
+    assert_eq!(find_closest_name("xyz_abc", &candidates), None);
+}
+
+// ── LSP completions ─────────────────────────────────────────
+
+#[test]
+fn test_lsp_builtin_function_list() {
+    let builtins = yorum::builtin_function_list();
+    assert!(!builtins.is_empty());
+    let names: Vec<&str> = builtins.iter().map(|(n, _)| n.as_str()).collect();
+    assert!(names.contains(&"print_int"));
+    assert!(names.contains(&"str_len"));
+}
+
+// ── Debug info ──────────────────────────────────────────────
+
+#[test]
+fn test_debug_info_present() {
+    let source = "fn main() -> int {\n  print_int(42);\n  return 0;\n}\n";
+    let ir = yorum::compile_to_ir_with_options(source, "test.yrm", true).unwrap();
+    assert!(ir.contains("!llvm.dbg.cu"), "missing !llvm.dbg.cu");
+    assert!(ir.contains("!DICompileUnit"), "missing !DICompileUnit");
+    assert!(ir.contains("!DISubprogram"), "missing !DISubprogram");
+    assert!(ir.contains("!DIFile"), "missing !DIFile");
+    assert!(
+        ir.contains("test.yrm"),
+        "filename not found in debug metadata"
+    );
+}
+
+#[test]
+fn test_debug_info_absent() {
+    let ir = compile("fn main() -> int { return 0; }\n");
+    assert!(
+        !ir.contains("!DICompileUnit"),
+        "debug info present when not requested"
+    );
+}
+
+#[test]
+fn test_debug_info_with_options_false() {
+    let source = "fn main() -> int { return 0; }\n";
+    let ir = yorum::compile_to_ir_with_options(source, "test.yrm", false).unwrap();
+    assert!(
+        !ir.contains("!DICompileUnit"),
+        "debug info present when debug=false"
+    );
+}
+
+#[test]
+fn test_debug_info_multiple_functions() {
+    let source = "fn helper(x: int) -> int { return x + 1; }\n\
+                  fn main() -> int { print_int(helper(41)); return 0; }\n";
+    let ir = yorum::compile_to_ir_with_options(source, "multi.yrm", true).unwrap();
+    // Should have two DISubprogram entries (helper + main)
+    let sp_count = ir.matches("!DISubprogram").count();
+    assert!(
+        sp_count >= 2,
+        "expected >= 2 DISubprogram entries, got {}",
+        sp_count
+    );
+}
+
+// ── REPL helpers ────────────────────────────────────────────
+
+#[test]
+fn test_compile_to_ir_with_options_basic() {
+    let source = "fn main() -> int { return 42; }\n";
+    let ir = yorum::compile_to_ir_with_options(source, "basic.yrm", false).unwrap();
+    assert!(ir.contains("define i64 @main"));
+}

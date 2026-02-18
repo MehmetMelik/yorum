@@ -134,6 +134,17 @@ pub struct Codegen {
 
     // Set by emit_spawn, consumed by emit_let to populate task_env_info
     last_spawn_env_info: Option<(String, usize)>,
+
+    // Debug info (DWARF)
+    debug_enabled: bool,
+    debug_filename: String,
+    debug_directory: String,
+    debug_metadata_counter: u32,
+    debug_metadata: Vec<String>,
+    debug_cu_id: u32,
+    debug_file_id: u32,
+    debug_current_subprogram: u32,
+    debug_basic_types: HashMap<String, u32>,
 }
 
 impl Default for Codegen {
@@ -175,12 +186,126 @@ impl Codegen {
             spawn_return_ctx: None,
             task_env_info: HashMap::new(),
             last_spawn_env_info: None,
+            debug_enabled: false,
+            debug_filename: String::new(),
+            debug_directory: String::new(),
+            debug_metadata_counter: 0,
+            debug_metadata: Vec::new(),
+            debug_cu_id: 0,
+            debug_file_id: 0,
+            debug_current_subprogram: 0,
+            debug_basic_types: HashMap::new(),
         }
+    }
+
+    /// Enable DWARF debug info emission.
+    pub fn enable_debug(&mut self, filename: &str) {
+        self.debug_enabled = true;
+        let path = std::path::Path::new(filename);
+        self.debug_filename = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| filename.to_string());
+        self.debug_directory = path
+            .parent()
+            .map(|p| {
+                if p.as_os_str().is_empty() {
+                    ".".to_string()
+                } else {
+                    p.to_string_lossy().to_string()
+                }
+            })
+            .unwrap_or_else(|| ".".to_string());
+    }
+
+    fn fresh_debug_id(&mut self) -> u32 {
+        let id = self.debug_metadata_counter;
+        self.debug_metadata_counter += 1;
+        id
+    }
+
+    fn emit_debug_preamble(&mut self) {
+        // !0 = DIFile
+        self.debug_file_id = self.fresh_debug_id();
+        self.debug_metadata.push(format!(
+            "!{} = !DIFile(filename: \"{}\", directory: \"{}\")",
+            self.debug_file_id, self.debug_filename, self.debug_directory
+        ));
+
+        // !1 = DICompileUnit
+        self.debug_cu_id = self.fresh_debug_id();
+        let version = env!("CARGO_PKG_VERSION");
+        self.debug_metadata.push(format!(
+            "!{} = distinct !DICompileUnit(language: DW_LANG_C, file: !{}, producer: \"yorum {}\", isOptimized: false, runtimeVersion: 0, emissionKind: FullDebug)",
+            self.debug_cu_id, self.debug_file_id, version
+        ));
+
+        // Basic types
+        let types = [
+            ("int", "i64", 64, 5),      // DW_ATE_signed
+            ("float", "double", 64, 4), // DW_ATE_float
+            ("bool", "i1", 8, 2),       // DW_ATE_boolean
+            ("char", "i8", 8, 6),       // DW_ATE_signed_char
+        ];
+        for (name, _llvm, size, encoding) in &types {
+            let id = self.fresh_debug_id();
+            self.debug_metadata.push(format!(
+                "!{} = !DIBasicType(name: \"{}\", size: {}, encoding: DW_ATE_{})",
+                id,
+                name,
+                size,
+                match *encoding {
+                    2 => "boolean",
+                    4 => "float",
+                    5 => "signed",
+                    6 => "signed_char",
+                    _ => "signed",
+                }
+            ));
+            self.debug_basic_types.insert(name.to_string(), id);
+        }
+    }
+
+    fn emit_debug_subprogram(&mut self, name: &str, line: u32) -> u32 {
+        // Subroutine type (void for simplicity)
+        let sr_type_id = self.fresh_debug_id();
+        self.debug_metadata
+            .push(format!("!{} = !DISubroutineType(types: !{{}})", sr_type_id));
+
+        let sp_id = self.fresh_debug_id();
+        self.debug_metadata.push(format!(
+            "!{} = distinct !DISubprogram(name: \"{}\", scope: !{}, file: !{}, line: {}, type: !{}, scopeLine: {}, unit: !{}, spFlags: DISPFlagDefinition)",
+            sp_id, name, self.debug_file_id, self.debug_file_id, line, sr_type_id, line, self.debug_cu_id
+        ));
+        self.debug_current_subprogram = sp_id;
+        sp_id
+    }
+
+    #[allow(dead_code)]
+    fn emit_debug_location(&mut self, line: u32, col: u32) -> u32 {
+        let id = self.fresh_debug_id();
+        self.debug_metadata.push(format!(
+            "!{} = !DILocation(line: {}, column: {}, scope: !{})",
+            id, line, col, self.debug_current_subprogram
+        ));
+        id
+    }
+
+    #[allow(dead_code)]
+    fn debug_suffix_for_line(&mut self, line: u32, col: u32) -> String {
+        if !self.debug_enabled || line == 0 {
+            return String::new();
+        }
+        let id = self.emit_debug_location(line, col);
+        format!(", !dbg !{}", id)
     }
 
     /// Generate LLVM IR for the entire program. Returns the IR as a string.
     pub fn generate(&mut self, program: &Program) -> Result<String, CodegenError> {
         self.emit_preamble(program);
+        if self.debug_enabled {
+            self.emit_debug_preamble();
+        }
         self.register_types(program);
         self.emit_type_defs();
         self.emit_builtin_decls();
@@ -405,6 +530,32 @@ impl Codegen {
         output.push_str(&self.globals);
         output.push('\n');
         output.push_str(&self.body);
+
+        // Append debug metadata
+        if self.debug_enabled {
+            output.push('\n');
+            // Module flags for DWARF
+            let dwarf_ver_id = self.fresh_debug_id();
+            let debug_info_ver_id = self.fresh_debug_id();
+            output.push_str(&format!("!llvm.dbg.cu = !{{!{}}}\n", self.debug_cu_id));
+            output.push_str(&format!(
+                "!llvm.module.flags = !{{!{}, !{}}}\n",
+                dwarf_ver_id, debug_info_ver_id
+            ));
+            output.push_str(&format!(
+                "!{} = !{{i32 7, !\"Dwarf Version\", i32 5}}\n",
+                dwarf_ver_id
+            ));
+            output.push_str(&format!(
+                "!{} = !{{i32 2, !\"Debug Info Version\", i32 3}}\n",
+                debug_info_ver_id
+            ));
+            for md in &self.debug_metadata {
+                output.push_str(md);
+                output.push('\n');
+            }
+        }
+
         Ok(output)
     }
 
@@ -3766,11 +3917,20 @@ impl Codegen {
             params.push("ptr %__argv".to_string());
         }
 
+        let dbg_suffix = if self.debug_enabled {
+            let line = if f.span.line > 0 { f.span.line } else { 1 };
+            let sp_id = self.emit_debug_subprogram(&f.name, line);
+            format!(" !dbg !{}", sp_id)
+        } else {
+            String::new()
+        };
+
         self.body.push_str(&format!(
-            "define {} @{}({}) {{\n",
+            "define {} @{}({}){} {{\n",
             ret_ty,
             f.name,
-            params.join(", ")
+            params.join(", "),
+            dbg_suffix
         ));
         self.body.push_str("entry:\n");
 
@@ -3882,11 +4042,20 @@ impl Codegen {
             })
             .collect();
 
+        let dbg_suffix = if self.debug_enabled {
+            let line = if f.span.line > 0 { f.span.line } else { 1 };
+            let sp_id = self.emit_debug_subprogram(&mangled_name, line);
+            format!(" !dbg !{}", sp_id)
+        } else {
+            String::new()
+        };
+
         self.body.push_str(&format!(
-            "define {} @{}({}) {{\n",
+            "define {} @{}({}){} {{\n",
             ret_ty,
             mangled_name,
-            params.join(", ")
+            params.join(", "),
+            dbg_suffix
         ));
         self.body.push_str("entry:\n");
 

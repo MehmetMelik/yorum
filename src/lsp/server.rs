@@ -83,6 +83,12 @@ impl LspServer {
                 "textDocument/definition" => {
                     self.handle_definition(&mut writer, &parsed)?;
                 }
+                "textDocument/completion" => {
+                    self.handle_completion(&mut writer, &parsed)?;
+                }
+                "textDocument/codeAction" => {
+                    self.handle_code_action(&mut writer, &parsed)?;
+                }
                 _ => {
                     // Unknown request → MethodNotFound (only for requests, not notifications)
                     if let Some(id) = parsed.id {
@@ -112,6 +118,10 @@ impl LspServer {
                 hover_provider: Some(true),
                 definition_provider: Some(true),
                 position_encoding: Some("utf-32".to_string()),
+                completion_provider: Some(CompletionOptions {
+                    trigger_characters: vec![".".to_string()],
+                }),
+                code_action_provider: Some(true),
             },
             server_info: ServerInfo {
                 name: "yorum-lsp".to_string(),
@@ -294,6 +304,306 @@ impl LspServer {
         self.send_response(writer, id, result)
     }
 
+    fn handle_completion(
+        &mut self,
+        writer: &mut impl Write,
+        msg: &JsonRpcMessage,
+    ) -> io::Result<()> {
+        let id = match &msg.id {
+            Some(id) => id.clone(),
+            None => return Ok(()),
+        };
+
+        let params = match &msg.params {
+            Some(p) => p,
+            None => {
+                self.send_response(writer, id, serde_json::Value::Null)?;
+                return Ok(());
+            }
+        };
+
+        let p: CompletionParams = match serde_json::from_value(params.clone()) {
+            Ok(p) => p,
+            Err(_) => {
+                self.send_response(writer, id, serde_json::Value::Null)?;
+                return Ok(());
+            }
+        };
+
+        let source = match self.documents.get(&p.text_document.uri) {
+            Some(s) => s.clone(),
+            None => {
+                self.send_response(writer, id, serde_json::Value::Null)?;
+                return Ok(());
+            }
+        };
+
+        let line_text = get_line_text(&source, p.position.line, p.position.character);
+        let items = if line_text.ends_with('.') {
+            self.dot_completions(&source, &line_text)
+        } else {
+            let prefix = extract_prefix(&line_text);
+            self.prefix_completions(&source, &prefix)
+        };
+
+        let list = CompletionList {
+            is_incomplete: false,
+            items,
+        };
+        let result = serde_json::to_value(list).unwrap_or(serde_json::Value::Null);
+        self.send_response(writer, id, result)
+    }
+
+    fn dot_completions(&self, source: &str, line_text: &str) -> Vec<CompletionItem> {
+        let mut items = Vec::new();
+        let ident = extract_last_ident(line_text);
+        if ident.is_empty() {
+            return items;
+        }
+
+        let (_, symbols) = crate::check_with_symbols(source);
+        if let Some(sym) = symbols {
+            // Find the type of the identifier
+            for d in &sym.definitions {
+                if d.name == ident {
+                    // If it looks like a struct type, offer fields
+                    let type_desc = &d.type_desc;
+                    // Try to extract struct fields from the type info
+                    if let Some(struct_name) = extract_struct_name(type_desc) {
+                        // Find struct definition in symbol table
+                        for sd in &sym.definitions {
+                            if sd.name == struct_name
+                                && matches!(
+                                    sd.kind,
+                                    crate::compiler::typechecker::SymbolKind::Struct
+                                )
+                            {
+                                // Parse fields from struct type_desc
+                                for field in extract_fields_from_struct_desc(&sd.type_desc) {
+                                    items.push(CompletionItem {
+                                        label: field.0.clone(),
+                                        kind: COMPLETION_KIND_FIELD,
+                                        detail: Some(field.1.clone()),
+                                        insert_text: None,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    break;
+                }
+            }
+            // Also check references for type info
+            for r in &sym.references {
+                if r.def_name == ident {
+                    if let Some(struct_name) = extract_struct_name(&r.resolved_type) {
+                        for sd in &sym.definitions {
+                            if sd.name == struct_name
+                                && matches!(
+                                    sd.kind,
+                                    crate::compiler::typechecker::SymbolKind::Struct
+                                )
+                            {
+                                for field in extract_fields_from_struct_desc(&sd.type_desc) {
+                                    items.push(CompletionItem {
+                                        label: field.0.clone(),
+                                        kind: COMPLETION_KIND_FIELD,
+                                        detail: Some(field.1.clone()),
+                                        insert_text: None,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+
+        // Always offer common methods
+        items.push(CompletionItem {
+            label: "join".to_string(),
+            kind: COMPLETION_KIND_FUNCTION,
+            detail: Some("method".to_string()),
+            insert_text: Some("join()".to_string()),
+        });
+
+        items
+    }
+
+    fn prefix_completions(&self, source: &str, prefix: &str) -> Vec<CompletionItem> {
+        let mut items = Vec::new();
+        if prefix.is_empty() {
+            return items;
+        }
+
+        let mut seen = std::collections::HashSet::new();
+
+        // Symbols from source
+        let (_, symbols) = crate::check_with_symbols(source);
+        if let Some(sym) = symbols {
+            for d in &sym.definitions {
+                if d.name.starts_with(prefix) && seen.insert(d.name.clone()) {
+                    let kind = match d.kind {
+                        crate::compiler::typechecker::SymbolKind::Function => {
+                            COMPLETION_KIND_FUNCTION
+                        }
+                        crate::compiler::typechecker::SymbolKind::Struct => COMPLETION_KIND_STRUCT,
+                        crate::compiler::typechecker::SymbolKind::Enum => {
+                            COMPLETION_KIND_ENUM_MEMBER
+                        }
+                        _ => COMPLETION_KIND_VARIABLE,
+                    };
+                    items.push(CompletionItem {
+                        label: d.name.clone(),
+                        kind,
+                        detail: Some(d.type_desc.clone()),
+                        insert_text: None,
+                    });
+                }
+            }
+        }
+
+        // Builtins
+        for (name, sig) in crate::builtin_function_list() {
+            if name.starts_with(prefix) && seen.insert(name.clone()) {
+                items.push(CompletionItem {
+                    label: name,
+                    kind: COMPLETION_KIND_FUNCTION,
+                    detail: Some(sig),
+                    insert_text: None,
+                });
+            }
+        }
+
+        // Keywords
+        let keywords = [
+            "fn", "let", "mut", "if", "else", "while", "for", "in", "return", "struct", "enum",
+            "match", "true", "false", "and", "or", "not", "pure", "pub", "module", "import",
+            "spawn", "break", "continue", "impl", "trait", "effects", "requires", "ensures",
+        ];
+        for kw in &keywords {
+            if kw.starts_with(prefix) && seen.insert(kw.to_string()) {
+                items.push(CompletionItem {
+                    label: kw.to_string(),
+                    kind: COMPLETION_KIND_KEYWORD,
+                    detail: Some("keyword".to_string()),
+                    insert_text: None,
+                });
+            }
+        }
+
+        items
+    }
+
+    fn handle_code_action(
+        &mut self,
+        writer: &mut impl Write,
+        msg: &JsonRpcMessage,
+    ) -> io::Result<()> {
+        let id = match &msg.id {
+            Some(id) => id.clone(),
+            None => return Ok(()),
+        };
+
+        let params = match &msg.params {
+            Some(p) => p,
+            None => {
+                self.send_response(writer, id, serde_json::json!([]))?;
+                return Ok(());
+            }
+        };
+
+        let p: CodeActionParams = match serde_json::from_value(params.clone()) {
+            Ok(p) => p,
+            Err(_) => {
+                self.send_response(writer, id, serde_json::json!([]))?;
+                return Ok(());
+            }
+        };
+
+        let source = match self.documents.get(&p.text_document.uri) {
+            Some(s) => s.clone(),
+            None => {
+                self.send_response(writer, id, serde_json::json!([]))?;
+                return Ok(());
+            }
+        };
+
+        let mut actions: Vec<CodeAction> = Vec::new();
+
+        for diag in &p.context.diagnostics {
+            let msg_text = &diag.message;
+
+            // "Did you mean X?" for undefined variable/function
+            if msg_text.contains("undefined variable")
+                || msg_text.contains("undefined function")
+                || msg_text.contains("unknown function")
+            {
+                if let Some(unknown_name) = extract_quoted_name(msg_text) {
+                    // Collect all known names
+                    let mut candidates: Vec<String> = Vec::new();
+                    let (_, symbols) = crate::check_with_symbols(&source);
+                    if let Some(sym) = symbols {
+                        for d in &sym.definitions {
+                            candidates.push(d.name.clone());
+                        }
+                    }
+                    for (name, _) in crate::builtin_function_list() {
+                        candidates.push(name);
+                    }
+
+                    if let Some(closest) = find_closest_name(&unknown_name, &candidates) {
+                        let mut changes = HashMap::new();
+                        changes.insert(
+                            p.text_document.uri.clone(),
+                            vec![TextEdit {
+                                range: Range {
+                                    start: diag.range.start.clone(),
+                                    end: diag.range.end.clone(),
+                                },
+                                new_text: closest.clone(),
+                            }],
+                        );
+                        actions.push(CodeAction {
+                            title: format!("Did you mean '{}'?", closest),
+                            kind: "quickfix".to_string(),
+                            edit: Some(WorkspaceEdit { changes }),
+                            is_preferred: Some(true),
+                        });
+                    }
+                }
+            }
+
+            // Effect violation hint
+            if msg_text.contains("effect") && msg_text.contains("not allowed") {
+                if let Some(effect) = extract_effect_from_message(msg_text) {
+                    actions.push(CodeAction {
+                        title: format!("Add 'effects {}' clause to function", effect),
+                        kind: "quickfix".to_string(),
+                        edit: None,
+                        is_preferred: None,
+                    });
+                }
+            }
+
+            // Non-exhaustive match hint
+            if (msg_text.contains("non-exhaustive") || msg_text.contains("missing"))
+                && (msg_text.contains("match") || msg_text.contains("variant"))
+            {
+                actions.push(CodeAction {
+                    title: "Add missing match arms".to_string(),
+                    kind: "quickfix".to_string(),
+                    edit: None,
+                    is_preferred: None,
+                });
+            }
+        }
+
+        let result = serde_json::to_value(&actions).unwrap_or(serde_json::json!([]));
+        self.send_response(writer, id, result)
+    }
+
     fn publish_diagnostics(&self, writer: &mut impl Write, uri: &str) -> io::Result<()> {
         let source = match self.documents.get(uri) {
             Some(s) => s,
@@ -395,6 +705,149 @@ impl LspServer {
         };
         transport::write_message(writer, &body)
     }
+}
+
+/// Get the text of a specific line up to the cursor position.
+fn get_line_text(source: &str, line: u32, character: u32) -> String {
+    let lines: Vec<&str> = source.lines().collect();
+    if (line as usize) < lines.len() {
+        let l = lines[line as usize];
+        let end = (character as usize).min(l.len());
+        l[..end].to_string()
+    } else {
+        String::new()
+    }
+}
+
+/// Extract the word prefix at the end of a line for completion.
+pub fn extract_prefix(line: &str) -> String {
+    // If line ends with a non-identifier char, there's no prefix
+    if line
+        .chars()
+        .last()
+        .map(|c| !c.is_alphanumeric() && c != '_')
+        .unwrap_or(true)
+    {
+        return String::new();
+    }
+    if let Some(pos) = line.rfind(|c: char| !c.is_alphanumeric() && c != '_') {
+        line[pos + 1..].to_string()
+    } else {
+        line.to_string()
+    }
+}
+
+/// Extract the last identifier before a dot.
+pub fn extract_last_ident(line: &str) -> String {
+    let trimmed = line.trim_end_matches('.');
+    if let Some(pos) = trimmed.rfind(|c: char| !c.is_alphanumeric() && c != '_') {
+        trimmed[pos + 1..].to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+/// Extract a struct name from a type description like "Point" or "let x: Point".
+fn extract_struct_name(type_desc: &str) -> Option<String> {
+    let name = type_desc.trim();
+    // Skip basic types
+    if matches!(
+        name,
+        "int" | "float" | "bool" | "char" | "string" | "unit" | ""
+    ) {
+        return None;
+    }
+    // If it starts with uppercase, likely a struct/enum name
+    if name
+        .chars()
+        .next()
+        .map(|c| c.is_uppercase())
+        .unwrap_or(false)
+    {
+        Some(name.split('<').next().unwrap_or(name).to_string())
+    } else {
+        None
+    }
+}
+
+/// Parse struct fields from a type_desc like "struct Point { x: int, y: int }".
+fn extract_fields_from_struct_desc(type_desc: &str) -> Vec<(String, String)> {
+    let mut fields = Vec::new();
+    if let Some(start) = type_desc.find('{') {
+        if let Some(end) = type_desc.rfind('}') {
+            let body = &type_desc[start + 1..end];
+            for field in body.split(',') {
+                let field = field.trim();
+                if let Some(colon) = field.find(':') {
+                    let name = field[..colon].trim().to_string();
+                    let ty = field[colon + 1..].trim().to_string();
+                    if !name.is_empty() {
+                        fields.push((name, ty));
+                    }
+                }
+            }
+        }
+    }
+    fields
+}
+
+/// Extract a quoted name from an error message like "undefined variable 'foo'".
+pub fn extract_quoted_name(msg: &str) -> Option<String> {
+    // Try single quotes first
+    if let Some(start) = msg.find('\'') {
+        if let Some(end) = msg[start + 1..].find('\'') {
+            return Some(msg[start + 1..start + 1 + end].to_string());
+        }
+    }
+    // Try backticks
+    if let Some(start) = msg.find('`') {
+        if let Some(end) = msg[start + 1..].find('`') {
+            return Some(msg[start + 1..start + 1 + end].to_string());
+        }
+    }
+    None
+}
+
+/// Compute Levenshtein distance between two strings.
+pub fn levenshtein_distance(a: &str, b: &str) -> usize {
+    let a_bytes = a.as_bytes();
+    let b_bytes = b.as_bytes();
+    let b_len = b_bytes.len();
+    let mut prev: Vec<usize> = (0..=b_len).collect();
+    let mut curr = vec![0; b_len + 1];
+    for (i, &a_ch) in a_bytes.iter().enumerate() {
+        curr[0] = i + 1;
+        for (j, &b_ch) in b_bytes.iter().enumerate() {
+            let cost = if a_ch == b_ch { 0 } else { 1 };
+            curr[j + 1] = (prev[j + 1] + 1).min(curr[j] + 1).min(prev[j] + cost);
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+    prev[b_len]
+}
+
+/// Find the closest name from candidates using Levenshtein distance.
+pub fn find_closest_name(target: &str, candidates: &[String]) -> Option<String> {
+    let mut best: Option<(String, usize)> = None;
+    for c in candidates {
+        let dist = levenshtein_distance(target, c);
+        if dist <= 2 && best.as_ref().map(|(_, d)| dist < *d).unwrap_or(true) {
+            best = Some((c.clone(), dist));
+        }
+    }
+    best.map(|(name, _)| name)
+}
+
+/// Extract effect name from an error message like "effect 'io' not allowed".
+fn extract_effect_from_message(msg: &str) -> Option<String> {
+    // Try to find quoted effect name
+    if let Some(name) = extract_quoted_name(msg) {
+        let valid = ["io", "fs", "net", "time", "env", "concurrency"];
+        if valid.contains(&name.as_str()) {
+            return Some(name);
+        }
+    }
+    None
 }
 
 /// Convert an LSP Position (0-based line/character) to a byte offset in the source.

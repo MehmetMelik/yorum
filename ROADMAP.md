@@ -41,16 +41,16 @@ The language is functionally complete but has daily-use paper cuts.
 
 ---
 
-## v1.5 — Tooling & Developer Experience
+## v1.5 — Tooling & Developer Experience (Done)
 
-- **`yorum fmt`** — auto-formatter (the AST already has spans, so reconstruction is feasible)
-- **LSP completions** — autocomplete for identifiers, struct fields, methods, builtins
-- **LSP code actions** — quick fixes for common errors (missing import, wrong type, unused variable)
-- **REPL** (`yorum repl`) — JIT-compile expressions via a small wrapper
-- **`yorum run`** — compile + link + execute in one command (pipes through clang automatically)
-- **Debug info** — emit DWARF metadata in LLVM IR so `lldb`/`gdb` work with source-level stepping
+- ~~**`yorum run`** — compile + link + execute in one command (auto-detects clang, auto-links pthread)~~
+- ~~**LSP completions** — autocomplete for identifiers, struct fields, methods, builtins, keywords~~
+- ~~**LSP code actions** — quick fixes: "Did you mean X?" (Levenshtein), effect clause hints, missing match arms~~
+- ~~**REPL** (`yorum repl`) — interactive expression evaluation via compile-link-execute loop, definition accumulation, `:type` command~~
+- ~~**Debug info** — DWARF metadata in LLVM IR (`-g` flag) so `lldb`/`gdb` support source-level stepping~~
+- **`yorum fmt`** — deferred (requires lexer to preserve comments/whitespace, major architectural refactoring)
 
-Rationale: The gap between "language features" and "usable language" is mostly tooling. `yorum fmt` alone would double productivity.
+Rationale: The gap between "language features" and "usable language" is mostly tooling.
 
 ---
 
@@ -114,4 +114,5 @@ The top 3 highest-impact releases:
 2. ~~**v1.2 (String Interpolation, Tuples, Option/Result)** — unblocks real-world programs~~ **Done**
 3. ~~**v1.3 (Generic Collections & Error Sugar)** — `Map<K,V>`, `Set<T>`, `?` operator~~ **Done**
 4. ~~**v1.4 (Effect System)** — the unique differentiator that no other language has done well~~ **Done**
-5. **v1.5 (Tooling)** — `yorum fmt`, LSP completions, REPL, `yorum run`
+5. ~~**v1.5 (Tooling)** — `yorum run`, `yorum repl`, LSP completions/code actions, debug info~~ **Done**
+6. **v1.6 (Performance)** — tail call optimization, constant folding, dead code elimination

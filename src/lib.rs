@@ -1,6 +1,7 @@
 pub mod compiler;
 pub mod lsp;
 pub mod manifest;
+pub mod repl;
 
 use compiler::codegen::Codegen;
 use compiler::lexer::Lexer;
@@ -181,6 +182,50 @@ pub fn typecheck(source: &str) -> Result<(), String> {
     })?;
 
     Ok(())
+}
+
+/// Compile Yorum source code to LLVM IR with optional debug info.
+pub fn compile_to_ir_with_options(
+    source: &str,
+    filename: &str,
+    debug: bool,
+) -> Result<String, String> {
+    let mut lexer = Lexer::new(source);
+    let tokens = lexer.tokenize().map_err(|e| format!("{}", e))?;
+
+    let mut parser = Parser::new(tokens);
+    let program = parser.parse_program().map_err(|e| format!("{}", e))?;
+
+    let mut typechecker = TypeChecker::new();
+    typechecker.check_program(&program).map_err(|errs| {
+        errs.iter()
+            .map(|e| format!("{}", e))
+            .collect::<Vec<_>>()
+            .join("\n")
+    })?;
+
+    let mut ownership = OwnershipChecker::new();
+    ownership.check_program(&program).map_err(|errs| {
+        errs.iter()
+            .map(|e| format!("{}", e))
+            .collect::<Vec<_>>()
+            .join("\n")
+    })?;
+
+    let program = monomorphize(program);
+
+    let mut codegen = Codegen::new();
+    if debug {
+        codegen.enable_debug(filename);
+    }
+    let ir = codegen.generate(&program).map_err(|e| format!("{}", e))?;
+
+    Ok(ir)
+}
+
+/// Return the list of builtin function names and their signatures.
+pub fn builtin_function_list() -> Vec<(String, String)> {
+    compiler::typechecker::TypeChecker::builtin_names()
 }
 
 /// Compile a multi-file Yorum project from a root directory containing yorum.toml.

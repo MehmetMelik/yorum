@@ -18,6 +18,8 @@ fn main() {
         "init" => cmd_init(&args[2..]),
         "run" => cmd_run(&args[2..]),
         "fmt" => cmd_fmt(&args[2..]),
+        "install" => cmd_install(),
+        "update" => cmd_update(&args[2..]),
         "repl" => cmd_repl(),
         "lsp" => cmd_lsp(),
         "help" | "--help" | "-h" => print_usage(),
@@ -49,6 +51,8 @@ fn print_usage() {
          \x20 yorum init    [name]                          Initialize a new project\n\
          \x20 yorum run     <file.yrm> [-- args...]         Compile, link, and execute\n\
          \x20 yorum fmt     [--check] <file.yrm>...        Auto-format source files\n\
+         \x20 yorum install                                 Fetch and cache dependencies\n\
+         \x20 yorum update  [name]                          Update dependencies\n\
          \x20 yorum repl                                    Interactive REPL\n\
          \x20 yorum lsp                                     Start LSP server (stdin/stdout)\n\
          \x20 yorum help                                    Show this message\n\
@@ -494,6 +498,58 @@ fn cmd_fmt(args: &[String]) {
 
     if check_only && any_changed {
         process::exit(1);
+    }
+}
+
+fn cmd_install() {
+    let root_dir = find_project_root().unwrap_or_else(|| {
+        eprintln!("error: no yorum.toml found in current or parent directories");
+        eprintln!("hint: run 'yorum init' to create a new project");
+        process::exit(1);
+    });
+
+    match yorum::install_dependencies(&root_dir) {
+        Ok(0) => {
+            eprintln!("no dependencies to install");
+        }
+        Ok(n) => {
+            eprintln!(
+                "installed {} dependenc{}",
+                n,
+                if n == 1 { "y" } else { "ies" }
+            );
+        }
+        Err(e) => {
+            eprintln!("error: {}", e);
+            process::exit(1);
+        }
+    }
+}
+
+fn cmd_update(args: &[String]) {
+    let root_dir = find_project_root().unwrap_or_else(|| {
+        eprintln!("error: no yorum.toml found in current or parent directories");
+        eprintln!("hint: run 'yorum init' to create a new project");
+        process::exit(1);
+    });
+
+    let dep_name = args.first().map(|s| s.as_str());
+
+    match yorum::update_dependencies(&root_dir, dep_name) {
+        Ok(0) => {
+            eprintln!("no dependencies to update");
+        }
+        Ok(n) => {
+            eprintln!(
+                "updated {} dependenc{}",
+                n,
+                if n == 1 { "y" } else { "ies" }
+            );
+        }
+        Err(e) => {
+            eprintln!("error: {}", e);
+            process::exit(1);
+        }
     }
 }
 

@@ -2,6 +2,37 @@
 
 All notable changes to the Yorum programming language compiler.
 
+## [1.8.0] - 2026-02-18
+
+**Package Manager** — external dependencies via git URLs or local filesystem paths.
+
+### Added
+
+- **`yorum install`** — fetch and cache all dependencies declared in `yorum.toml`, write `yorum.lock`
+- **`yorum update [name]`** — fetch latest versions for all (or named) dependencies, regenerate lock file
+- **Dependency declaration** — `[dependencies]` section in `yorum.toml` supports `{ git = "...", tag/branch/rev = "..." }` and `{ path = "..." }` specs
+- **Lock file** — `yorum.lock` records exact git SHAs and path sources for reproducible builds (TOML format)
+- **Package cache** — git dependencies cached in `~/.yorum/cache/` with content-addressed directory names
+- **Namespace isolation** — dependency symbols prefixed with `<dep_name>__` (e.g., `math_utils__add`) to prevent collisions with local modules
+- **Semver parsing** — `Version` struct for package metadata validation (`MAJOR.MINOR.PATCH` with optional `v` prefix)
+- **Dependency validation** — clear error messages for missing paths, missing `yorum.toml`, package name mismatches, and invalid dependency specs
+- **`use` resolution for deps** — `use dep_name;` imports all pub symbols from a declared dependency, with automatic name rewriting
+- **Type rewriting for imported declarations** — function signatures, struct fields, and bodies in imported modules have their type references properly prefixed
+- `examples/dependencies/` — example project demonstrating path dependencies between packages
+- `install_dependencies()` and `update_dependencies()` public API functions
+- 13 new integration tests for package manager features
+
+### Changed
+
+- `yorum.toml` `dependencies` field changed from `HashMap<String, String>` to `HashMap<String, DependencySpec>` (structured git/path specs)
+- `compile_project()` now resolves dependencies before module discovery, automatically generating `yorum.lock` on first build
+- Module merging extended to handle dependency modules alongside local modules
+- Imported declarations (from both local modules and deps) now have their internal type references rewritten to use prefixed names
+
+**Stats:** 13 files changed | Tests: 499 (68 unit + 431 integration)
+
+---
+
 ## [1.7.0] - 2026-02-18
 
 **Performance & Optimization** — inline hints, constant folding, tail call optimization, heap sort, dead code elimination.

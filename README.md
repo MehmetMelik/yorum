@@ -59,6 +59,8 @@ yorum build   [-o output]                   Build multi-file project (requires y
 yorum init    [name]                        Scaffold a new project
 yorum run     <file.yrm> [-- args...]       Compile, link, and execute in one step
 yorum fmt     [--check] <file.yrm>...       Auto-format source files
+yorum install                               Fetch and cache dependencies
+yorum update  [name]                        Update dependencies
 yorum repl                                  Interactive expression evaluator
 yorum lsp                                   Start LSP server (stdin/stdout)
 ```
@@ -565,6 +567,44 @@ fn divide(a: int, b: int) -> Result {
 | 11 | `*` `/` `%` | left |
 | 12 | `-` (unary), `not` | prefix |
 | 13 | `()` `.field` `.method()` `[i]` | postfix |
+
+## Dependencies
+
+Yorum projects can depend on external packages via git URLs or local paths.
+
+**`yorum.toml`:**
+```toml
+[package]
+name = "my_app"
+version = "0.1.0"
+
+[dependencies]
+math_utils = { git = "https://github.com/user/math_utils.git", tag = "v1.0.0" }
+local_lib = { path = "../my_lib" }
+```
+
+**Using a dependency:**
+```
+module main;
+use math_utils;
+
+fn main() -> int {
+    let result: int = add(1, 2);
+    return result;
+}
+```
+
+**Commands:**
+```bash
+yorum install              # Fetch all dependencies, write yorum.lock
+yorum update               # Fetch latest versions, regenerate lock file
+yorum update math_utils    # Update a single dependency
+yorum build                # Build project (auto-installs deps if no lock file)
+```
+
+Git dependencies support `tag`, `branch`, or `rev` specifiers (default: `branch = "main"`).
+Dependencies are cached in `~/.yorum/cache/`. A `yorum.lock` file records exact
+git SHAs for reproducible builds.
 
 ## LLVM IR Output
 

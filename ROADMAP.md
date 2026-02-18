@@ -77,13 +77,14 @@ Rationale: Performance doesn't matter until people write real programs, but thes
 
 ---
 
-## v1.8 — Package Manager
+## v1.8 — Package Manager (Done)
 
-- **`yorum.toml` dependencies section** — declare deps with git URLs or a registry
-- **`yorum install`** — fetch and cache dependencies
-- **`yorum publish`** — publish to a package registry
-- **Namespace isolation** — prevent name collisions between packages
-- **Semver resolution** — basic version constraint solving
+- ~~**`yorum.toml` dependencies section** — declare deps with git URLs or local filesystem paths~~
+- ~~**`yorum install`** — fetch and cache dependencies, write `yorum.lock`~~
+- ~~**`yorum update [name]`** — fetch latest, regenerate lock file~~
+- ~~**Namespace isolation** — dep symbols prefixed with `<dep_name>__` to prevent collisions~~
+- ~~**Lock file** — `yorum.lock` records exact git SHAs for reproducible builds~~
+- ~~**Package cache** — git deps cached in `~/.yorum/cache/`~~
 
 Rationale: No language ecosystem grows without a package manager. Prerequisite for community adoption.
 
@@ -126,3 +127,4 @@ The top 3 highest-impact releases:
 5. ~~**v1.5 (Tooling)** — `yorum run`, `yorum repl`, LSP completions/code actions, debug info~~ **Done**
 6. ~~**v1.6 (Formatter)** — `yorum fmt` auto-formatter with comment preservation~~ **Done**
 7. ~~**v1.7 (Performance)** — tail call optimization, constant folding, dead code elimination, inline hints, heap sort~~ **Done**
+8. ~~**v1.8 (Package Manager)** — `yorum install`, `yorum update`, git + path dependencies, lock file, namespace isolation~~ **Done**

@@ -259,3 +259,16 @@ pub fn builtin_function_list() -> Vec<(String, String)> {
 pub fn compile_project(root_dir: &std::path::Path) -> Result<String, String> {
     compiler::project::compile_project(root_dir)
 }
+
+/// Install all dependencies declared in yorum.toml, writing yorum.lock.
+pub fn install_dependencies(root_dir: &std::path::Path) -> Result<usize, String> {
+    compiler::project::install_dependencies(root_dir)
+}
+
+/// Update dependencies (fetch latest), regenerating yorum.lock.
+pub fn update_dependencies(
+    root_dir: &std::path::Path,
+    dep_name: Option<&str>,
+) -> Result<usize, String> {
+    compiler::project::update_dependencies(root_dir, dep_name)
+}

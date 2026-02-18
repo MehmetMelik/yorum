@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 // ═══════════════════════════════════════════════════════════════
 //  JSON-RPC 2.0
@@ -70,6 +71,10 @@ pub struct ServerCapabilities {
     pub definition_provider: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub position_encoding: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completion_provider: Option<CompletionOptions>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code_action_provider: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -181,4 +186,110 @@ pub struct Hover {
 pub struct MarkupContent {
     pub kind: String,
     pub value: String,
+}
+
+// --- Completion ---
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompletionParams {
+    pub text_document: TextDocumentIdentifier,
+    pub position: Position,
+    #[serde(default)]
+    pub context: Option<CompletionContext>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompletionContext {
+    pub trigger_kind: Option<i32>,
+    pub trigger_character: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompletionList {
+    pub is_incomplete: bool,
+    pub items: Vec<CompletionItem>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompletionItem {
+    pub label: String,
+    pub kind: i32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub insert_text: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompletionOptions {
+    pub trigger_characters: Vec<String>,
+}
+
+// Completion item kinds
+pub const COMPLETION_KIND_FUNCTION: i32 = 3;
+pub const COMPLETION_KIND_FIELD: i32 = 5;
+pub const COMPLETION_KIND_VARIABLE: i32 = 6;
+pub const COMPLETION_KIND_ENUM_MEMBER: i32 = 13;
+pub const COMPLETION_KIND_KEYWORD: i32 = 14;
+pub const COMPLETION_KIND_STRUCT: i32 = 22;
+
+// --- Code Actions ---
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodeActionParams {
+    pub text_document: TextDocumentIdentifier,
+    pub range: CodeActionRange,
+    pub context: CodeActionContext,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CodeActionRange {
+    pub start: Position,
+    pub end: Position,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CodeActionDiagnostic {
+    pub range: CodeActionDiagRange,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CodeActionDiagRange {
+    pub start: Position,
+    pub end: Position,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CodeActionContext {
+    pub diagnostics: Vec<CodeActionDiagnostic>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodeAction {
+    pub title: String,
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub edit: Option<WorkspaceEdit>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_preferred: Option<bool>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct WorkspaceEdit {
+    pub changes: HashMap<String, Vec<TextEdit>>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TextEdit {
+    pub range: Range,
+    pub new_text: String,
 }

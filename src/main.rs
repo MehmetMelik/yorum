@@ -1,6 +1,6 @@
 use std::env;
 use std::fs;
-use std::process;
+use std::process::{self, Command};
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -16,6 +16,8 @@ fn main() {
         "ast" => cmd_ast(&args[2..]),
         "build" => cmd_build(&args[2..]),
         "init" => cmd_init(&args[2..]),
+        "run" => cmd_run(&args[2..]),
+        "repl" => cmd_repl(),
         "lsp" => cmd_lsp(),
         "help" | "--help" | "-h" => print_usage(),
         "version" | "--version" | "-v" => {
@@ -39,14 +41,16 @@ fn print_usage() {
         "Yorum — LLM-first, deterministic, LLVM-compiled language\n\
          \n\
          Usage:\n\
-         \x20 yorum compile <file.yrm> [-o output]   Compile to LLVM IR\n\
-         \x20 yorum check   <file.yrm>                Type-check only\n\
-         \x20 yorum ast     <file.yrm>                Print AST as JSON\n\
-         \x20 yorum build   [-o output]                Build project (requires yorum.toml)\n\
-         \x20 yorum init    [name]                     Initialize a new project\n\
-         \x20 yorum lsp                                Start LSP server (stdin/stdout)\n\
-         \x20 yorum help                               Show this message\n\
-         \x20 yorum version                            Show version\n\
+         \x20 yorum compile <file.yrm> [-o output] [-g]   Compile to LLVM IR\n\
+         \x20 yorum check   <file.yrm>                     Type-check only\n\
+         \x20 yorum ast     <file.yrm>                     Print AST as JSON\n\
+         \x20 yorum build   [-o output]                     Build project (requires yorum.toml)\n\
+         \x20 yorum init    [name]                          Initialize a new project\n\
+         \x20 yorum run     <file.yrm> [-- args...]         Compile, link, and execute\n\
+         \x20 yorum repl                                    Interactive REPL\n\
+         \x20 yorum lsp                                     Start LSP server (stdin/stdout)\n\
+         \x20 yorum help                                    Show this message\n\
+         \x20 yorum version                                 Show version\n\
          \n\
          To produce a native binary from LLVM IR:\n\
          \x20 yorum compile program.yrm -o program.ll\n\
@@ -67,10 +71,15 @@ fn cmd_lsp() {
 }
 
 fn cmd_compile(args: &[String]) {
-    let (file, output) = parse_file_and_output(args);
+    let (file, output, debug) = parse_file_output_and_debug(args);
 
     let source = read_source(&file);
-    match yorum::compile_to_ir(&source) {
+    let result = if debug {
+        yorum::compile_to_ir_with_options(&source, &file, true)
+    } else {
+        yorum::compile_to_ir(&source)
+    };
+    match result {
         Ok(ir) => {
             if let Some(out_path) = output {
                 fs::write(&out_path, &ir).unwrap_or_else(|e| {
@@ -253,6 +262,11 @@ fn find_project_root() -> Option<std::path::PathBuf> {
 }
 
 fn parse_file_and_output(args: &[String]) -> (String, Option<String>) {
+    let (file, output, _) = parse_file_output_and_debug(args);
+    (file, output)
+}
+
+fn parse_file_output_and_debug(args: &[String]) -> (String, Option<String>, bool) {
     if args.is_empty() {
         eprintln!("error: no input file specified");
         process::exit(1);
@@ -260,6 +274,7 @@ fn parse_file_and_output(args: &[String]) -> (String, Option<String>) {
 
     let file = args[0].clone();
     let mut output = None;
+    let mut debug = false;
 
     let mut i = 1;
     while i < args.len() {
@@ -272,6 +287,9 @@ fn parse_file_and_output(args: &[String]) -> (String, Option<String>) {
                 }
                 output = Some(args[i].clone());
             }
+            "-g" | "--debug" => {
+                debug = true;
+            }
             _ => {
                 eprintln!("warning: unknown option '{}'", args[i]);
             }
@@ -279,7 +297,7 @@ fn parse_file_and_output(args: &[String]) -> (String, Option<String>) {
         i += 1;
     }
 
-    (file, output)
+    (file, output, debug)
 }
 
 fn read_source(path: &str) -> String {
@@ -287,4 +305,146 @@ fn read_source(path: &str) -> String {
         eprintln!("error: cannot read '{}': {}", path, e);
         process::exit(1);
     })
+}
+
+fn detect_clang() -> String {
+    // Try system clang first
+    if Command::new("clang")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+    {
+        return "clang".to_string();
+    }
+    // Try Homebrew LLVM
+    let brew_clang = "/opt/homebrew/opt/llvm/bin/clang";
+    if Command::new(brew_clang)
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+    {
+        return brew_clang.to_string();
+    }
+    eprintln!("error: clang not found");
+    eprintln!("hint: install clang or run 'brew install llvm'");
+    process::exit(1);
+}
+
+fn cmd_run(args: &[String]) {
+    let mut file: Option<String> = None;
+    let mut user_args: Vec<String> = Vec::new();
+    let mut debug = false;
+    let mut found_separator = false;
+    let mut i = 0;
+
+    while i < args.len() {
+        if found_separator {
+            user_args.push(args[i].clone());
+        } else if args[i] == "--" {
+            found_separator = true;
+        } else if args[i] == "-g" || args[i] == "--debug" {
+            debug = true;
+        } else if file.is_none() {
+            file = Some(args[i].clone());
+        } else {
+            user_args.push(args[i].clone());
+        }
+        i += 1;
+    }
+
+    // Compile to IR
+    let ir = if let Some(ref path) = file {
+        let source = read_source(path);
+        let result = if debug {
+            yorum::compile_to_ir_with_options(&source, path, true)
+        } else {
+            yorum::compile_to_ir(&source)
+        };
+        match result {
+            Ok(ir) => ir,
+            Err(e) => {
+                eprintln!("{}", e);
+                process::exit(1);
+            }
+        }
+    } else {
+        // Try project mode
+        let root_dir = find_project_root().unwrap_or_else(|| {
+            eprintln!("error: no input file and no yorum.toml found");
+            eprintln!("usage: yorum run <file.yrm> [-- args...]");
+            process::exit(1);
+        });
+        match yorum::compile_project(&root_dir) {
+            Ok(ir) => ir,
+            Err(e) => {
+                eprintln!("{}", e);
+                process::exit(1);
+            }
+        }
+    };
+
+    let pid = process::id();
+    let tmp = env::temp_dir();
+    let ir_path = tmp.join(format!("yorum_run_{}.ll", pid));
+    let bin_path = tmp.join(format!("yorum_run_{}", pid));
+
+    fs::write(&ir_path, &ir).unwrap_or_else(|e| {
+        eprintln!("error: cannot write temp IR: {}", e);
+        process::exit(1);
+    });
+
+    let clang = detect_clang();
+    let mut clang_args = vec![
+        "-x",
+        "ir",
+        ir_path.to_str().unwrap(),
+        "-o",
+        bin_path.to_str().unwrap(),
+        "-Wno-override-module",
+    ];
+    if debug {
+        clang_args.push("-g");
+    }
+    let needs_pthread = ir.contains("call i32 @pthread_create");
+    if needs_pthread {
+        clang_args.push("-lpthread");
+    }
+
+    let status = Command::new(&clang)
+        .args(&clang_args)
+        .status()
+        .unwrap_or_else(|e| {
+            eprintln!("error: clang failed: {}", e);
+            let _ = fs::remove_file(&ir_path);
+            process::exit(1);
+        });
+
+    if !status.success() {
+        let _ = fs::remove_file(&ir_path);
+        process::exit(status.code().unwrap_or(1));
+    }
+
+    // Execute the binary
+    let status = Command::new(bin_path.to_str().unwrap())
+        .args(&user_args)
+        .status()
+        .unwrap_or_else(|e| {
+            eprintln!("error: execution failed: {}", e);
+            let _ = fs::remove_file(&ir_path);
+            let _ = fs::remove_file(&bin_path);
+            process::exit(1);
+        });
+
+    // Clean up
+    let _ = fs::remove_file(&ir_path);
+    let _ = fs::remove_file(&bin_path);
+
+    process::exit(status.code().unwrap_or(0));
+}
+
+fn cmd_repl() {
+    let mut repl = yorum::repl::Repl::new();
+    repl.run();
 }

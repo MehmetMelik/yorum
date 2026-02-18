@@ -2,6 +2,29 @@
 
 All notable changes to the Yorum programming language compiler.
 
+## [1.5.0] - 2026-02-18
+
+**Tooling & Developer Experience** — 5 new features for a complete developer workflow.
+
+### Added
+
+- **`yorum run`** — compile, link (via clang), and execute in one command. Auto-detects clang (system or Homebrew LLVM), auto-links `-lpthread` when needed, forwards `-- args` to the binary. Supports both single-file and project mode
+- **`yorum repl`** — interactive REPL for expression evaluation. Accumulates function/struct/enum definitions across lines. Special commands: `:type <expr>` (show type), `:clear` (reset definitions), `:help`, `:exit`. Multiline input with brace tracking
+- **LSP completions** — autocomplete triggered by typing or `.` (dot). Completes identifiers from source, 70+ builtin functions with signatures, language keywords, and struct fields via dot-completion
+- **LSP code actions** — quick fixes attached to diagnostics: "Did you mean X?" with Levenshtein distance matching (threshold <= 2) for undefined variables/functions, effect clause hints for effect violations, missing match arm hints for non-exhaustive patterns
+- **DWARF debug info** — `-g`/`--debug` flag on `compile` and `run` commands. Emits `!DICompileUnit`, `!DIFile`, `!DISubprogram`, `!DISubroutineType`, `!DIBasicType` metadata. Enables source-level stepping in `lldb`/`gdb`
+- `compile_to_ir_with_options(source, filename, debug)` public API
+- `builtin_function_list()` public API for tooling
+
+### Changed
+
+- `ServerCapabilities` now advertises `completionProvider` (with `.` trigger) and `codeActionProvider`
+- 12 new tests (478 total: 50 unit + 428 integration)
+
+**Stats:** 10 files changed, ~800 lines added | Formatter (`yorum fmt`) deferred — requires lexer to preserve comments
+
+---
+
 ## [1.4.1] - 2026-02-17
 
 **Restore Self-hosting Bootstrap & Bug Fixes** — [PR #19](https://github.com/MehmetMelik/yorum/pull/19)

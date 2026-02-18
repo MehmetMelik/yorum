@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 cargo build                          # dev build
 cargo build --release                # release build
-cargo test                           # all tests (462: 46 unit + 416 integration)
+cargo test                           # all tests (478: 50 unit + 428 integration)
 cargo test compiler::lexer           # tests in one module
 cargo test test_fibonacci_compiles   # single test by name
 cargo test -- --nocapture            # see stdout from tests
@@ -18,12 +18,16 @@ cargo test -- --nocapture            # see stdout from tests
 ```bash
 cargo run -- compile file.yrm              # emit LLVM IR to stdout
 cargo run -- compile file.yrm -o out.ll    # emit LLVM IR to file
+cargo run -- compile file.yrm -g -o out.ll # emit LLVM IR with DWARF debug info
 cargo run -- check file.yrm                # type-check only
 cargo run -- ast file.yrm                  # dump AST as JSON
 cargo run -- build                         # build multi-file project (needs yorum.toml)
 cargo run -- build -o out.ll               # build project to file
 cargo run -- init myproject                # scaffold new project
-cargo run -- lsp                          # start LSP server (stdin/stdout)
+cargo run -- run file.yrm                  # compile + link + execute (requires clang)
+cargo run -- run file.yrm -- arg1 arg2     # run with arguments
+cargo run -- repl                          # interactive REPL
+cargo run -- lsp                           # start LSP server (stdin/stdout)
 ```
 
 ### Producing native binaries (requires clang)
@@ -147,8 +151,9 @@ diff gen1.ll gen2.ll   # identical (fixed-point)
 Built-in LSP server (`yorum lsp`) implementing JSON-RPC 2.0 over stdin/stdout. No new dependencies.
 
 - **`src/lsp/transport.rs`** — JSON-RPC 2.0 read/write with `Content-Length` framing
-- **`src/lsp/types.rs`** — Minimal serde structs for LSP protocol
-- **`src/lsp/server.rs`** — Synchronous blocking server loop. Diagnostics, hover (type info), go-to-definition
+- **`src/lsp/types.rs`** — Serde structs for LSP protocol (diagnostics, completion, code actions)
+- **`src/lsp/server.rs`** — Synchronous blocking server loop. Diagnostics, hover (type info), go-to-definition, completions (prefix + dot), code actions (did-you-mean, effect hints, match arm hints)
+- **`src/repl.rs`** — Interactive REPL with compile-link-execute loop
 
 VS Code extension in `editors/vscode/` — TextMate grammar + language client launching `yorum lsp`.
 

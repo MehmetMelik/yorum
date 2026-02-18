@@ -219,6 +219,27 @@ impl TypeChecker {
         )
     }
 
+    /// Return a list of (name, signature_string) for all builtin functions.
+    pub fn builtin_names() -> Vec<(String, String)> {
+        let checker = TypeChecker::new();
+        checker
+            .functions
+            .iter()
+            .map(|(name, sig)| {
+                let params = sig
+                    .params
+                    .iter()
+                    .map(|t| format!("{}", t))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                (
+                    name.clone(),
+                    format!("fn {}({}) -> {}", name, params, sig.ret),
+                )
+            })
+            .collect()
+    }
+
     fn register_builtins(&mut self) {
         let builtin =
             |params: Vec<Type>, ret: Type, is_pure: bool, effects: Option<Vec<String>>| FnSig {

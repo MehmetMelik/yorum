@@ -67,7 +67,9 @@ pub fn compile_project(root_dir: &Path) -> Result<String, String> {
 }
 
 /// Resolve all dependencies declared in the manifest.
-/// Fetches/caches git deps, resolves path deps, writes lock file if needed.
+/// When a valid yorum.lock exists and matches the manifest, uses locked SHAs
+/// for git deps (no network access needed). Otherwise resolves fresh and
+/// regenerates the lock file.
 pub fn resolve_dependencies(
     root_dir: &Path,
     manifest: &YorumManifest,
@@ -86,15 +88,7 @@ pub fn resolve_dependencies(
         None
     };
 
-    // Check if lock file is stale (deps in manifest not in lock)
-    let lock_stale = if let Some(ref lock) = existing_lock {
-        manifest
-            .dependencies
-            .keys()
-            .any(|name| lock.find_package(name).is_none())
-    } else {
-        true
-    };
+    let lock_stale = is_lock_stale(existing_lock.as_ref(), manifest);
 
     if lock_stale && existing_lock.is_some() {
         eprintln!("warning: yorum.lock is out of date, resolving dependencies...");
@@ -102,18 +96,92 @@ pub fn resolve_dependencies(
 
     let mut resolved = Vec::new();
 
-    for (name, spec) in &manifest.dependencies {
-        let dep = package::resolve_dep(name, spec, root_dir, &cache)?;
-        resolved.push(dep);
-    }
-
-    // Write/update lock file if needed
-    if lock_stale || existing_lock.is_none() {
+    if lock_stale {
+        // Lock is missing or stale — resolve fresh from manifest
+        for (name, spec) in &manifest.dependencies {
+            let dep = package::resolve_dep(name, spec, root_dir, &cache)?;
+            resolved.push(dep);
+        }
+        // Regenerate lock file
         let lock = build_lock_file(&resolved, &manifest.dependencies)?;
         lock.write(&lock_path)?;
+    } else {
+        // Lock is fresh — use locked SHAs for git deps (no fetch needed)
+        let lock = existing_lock.as_ref().unwrap();
+        for (name, spec) in &manifest.dependencies {
+            let locked_sha = lock
+                .find_package(name)
+                .and_then(|p| p.parse_git_sha())
+                .map(|s| s.to_string());
+            let dep =
+                package::resolve_dep_locked(name, spec, root_dir, &cache, locked_sha.as_deref())?;
+            resolved.push(dep);
+        }
     }
 
     Ok(resolved)
+}
+
+/// Check whether the lock file is stale relative to the manifest.
+/// Stale means: no lock, dep added, dep removed, or dep spec changed (url, path, tag, branch, rev).
+fn is_lock_stale(lock: Option<&LockFile>, manifest: &YorumManifest) -> bool {
+    let lock = match lock {
+        Some(l) => l,
+        None => return true,
+    };
+
+    // Check for added deps (in manifest but not in lock)
+    for name in manifest.dependencies.keys() {
+        if lock.find_package(name).is_none() {
+            return true;
+        }
+    }
+
+    // Check for removed deps (in lock but not in manifest)
+    for pkg in &lock.packages {
+        if !manifest.dependencies.contains_key(&pkg.name) {
+            return true;
+        }
+    }
+
+    // Check for changed specs
+    for (name, spec) in &manifest.dependencies {
+        if let Some(locked) = lock.find_package(name) {
+            if let Some(ref url) = spec.git {
+                // Git dep: check that the locked source still points to the same URL
+                match locked.parse_git_url() {
+                    Some(locked_url) if locked_url == url.as_str() => {}
+                    _ => return true,
+                }
+                // If the spec now specifies a different tag/branch/rev than what
+                // produced the lock, we consider it stale. We can detect a tag or
+                // rev change (the lock source doesn't encode the ref, only the SHA)
+                // but a branch change is ambiguous. Conservative: if the user
+                // changed tag or rev, mark stale.
+                if spec.rev.is_some() {
+                    // User pinned an exact rev — if the locked SHA doesn't match, stale
+                    if let (Some(rev), Some(locked_sha)) =
+                        (spec.rev.as_deref(), locked.parse_git_sha())
+                    {
+                        if !locked_sha.starts_with(rev) && rev != locked_sha {
+                            return true;
+                        }
+                    }
+                }
+            } else if let Some(ref path) = spec.path {
+                // Path dep: check that the locked source matches
+                match locked.parse_path() {
+                    Some(locked_path) if locked_path == path.as_str() => {}
+                    _ => return true,
+                }
+            } else {
+                // Neither git nor path — spec is invalid, treat as stale
+                return true;
+            }
+        }
+    }
+
+    false
 }
 
 /// Install all dependencies (always regenerate lock file).
@@ -145,6 +213,8 @@ pub fn install_dependencies(root_dir: &Path) -> Result<usize, String> {
 }
 
 /// Update dependencies (fetch latest, regenerate lock file).
+/// When `dep_name` is Some, only that dependency is re-fetched; all others
+/// are kept at their locked versions.
 pub fn update_dependencies(root_dir: &Path, dep_name: Option<&str>) -> Result<usize, String> {
     let manifest_path = root_dir.join("yorum.toml");
     let manifest_content = std::fs::read_to_string(&manifest_path)
@@ -156,47 +226,61 @@ pub fn update_dependencies(root_dir: &Path, dep_name: Option<&str>) -> Result<us
     }
 
     let cache = PackageCache::new()?;
-    let mut resolved = Vec::new();
+    let lock_path = root_dir.join("yorum.lock");
 
-    let deps_to_update: Vec<(&String, &crate::manifest::DependencySpec)> =
-        if let Some(name) = dep_name {
-            let spec = manifest
-                .dependencies
-                .get(name)
-                .ok_or_else(|| format!("dependency '{}' not found in yorum.toml", name))?;
-            vec![(
-                manifest
-                    .dependencies
-                    .keys()
-                    .find(|k| k.as_str() == name)
-                    .unwrap(),
-                spec,
-            )]
-        } else {
-            manifest.dependencies.iter().collect()
-        };
+    // Read existing lock file (needed to preserve non-updated deps)
+    let existing_lock = if lock_path.exists() {
+        Some(LockFile::read(&lock_path)?)
+    } else {
+        None
+    };
 
-    // For update, we need to handle git deps specially — remove cached copy to force re-fetch
-    for (name, spec) in &deps_to_update {
-        if let Some(ref url) = spec.git {
-            let cached_dir = cache.cache_dir_for(name, url);
-            if cached_dir.exists() {
-                let _ = std::fs::remove_dir_all(&cached_dir);
+    // Determine which deps to update
+    let update_names: Vec<String> = if let Some(name) = dep_name {
+        if !manifest.dependencies.contains_key(name) {
+            return Err(format!("dependency '{}' not found in yorum.toml", name));
+        }
+        vec![name.to_string()]
+    } else {
+        manifest.dependencies.keys().cloned().collect()
+    };
+
+    // Remove cached git repos for deps being updated to force re-fetch
+    for name in &update_names {
+        if let Some(spec) = manifest.dependencies.get(name) {
+            if let Some(ref url) = spec.git {
+                let cached_dir = cache.cache_dir_for(name, url);
+                if cached_dir.exists() {
+                    let _ = std::fs::remove_dir_all(&cached_dir);
+                }
             }
         }
     }
 
-    // Now resolve all deps (updated ones will be re-fetched)
-    for (name, spec) in &manifest.dependencies {
-        let dep = package::resolve_dep(name, spec, root_dir, &cache)?;
-        resolved.push(dep);
-    }
+    let mut resolved = Vec::new();
+    let count = update_names.len();
 
-    let count = deps_to_update.len();
+    for (name, spec) in &manifest.dependencies {
+        if update_names.contains(name) {
+            // This dep is being updated — resolve fresh (no locked SHA)
+            let dep = package::resolve_dep(name, spec, root_dir, &cache)?;
+            resolved.push(dep);
+        } else {
+            // Not being updated — use locked SHA if available
+            let locked_sha = existing_lock
+                .as_ref()
+                .and_then(|l| l.find_package(name))
+                .and_then(|p| p.parse_git_sha())
+                .map(|s| s.to_string());
+            let dep =
+                package::resolve_dep_locked(name, spec, root_dir, &cache, locked_sha.as_deref())?;
+            resolved.push(dep);
+        }
+    }
 
     // Regenerate lock file
     let lock = build_lock_file(&resolved, &manifest.dependencies)?;
-    lock.write(&root_dir.join("yorum.lock"))?;
+    lock.write(&lock_path)?;
 
     Ok(count)
 }

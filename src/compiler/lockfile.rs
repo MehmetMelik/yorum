@@ -28,6 +28,16 @@ impl LockedPackage {
             .strip_prefix("git+")
             .and_then(|rest| rest.split('#').nth(1))
     }
+
+    pub fn parse_git_url(&self) -> Option<&str> {
+        self.source
+            .strip_prefix("git+")
+            .and_then(|rest| rest.split('#').next())
+    }
+
+    pub fn parse_path(&self) -> Option<&str> {
+        self.source.strip_prefix("path+")
+    }
 }
 
 impl LockFile {

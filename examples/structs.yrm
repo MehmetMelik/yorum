@@ -5,15 +5,9 @@
 
 module structs;
 
-struct Point {
-    x: int,
-    y: int
-}
+struct Point { x: int, y: int }
 
-struct Rect {
-    width: int,
-    height: int
-}
+struct Rect { width: int, height: int }
 
 // Compute the area of a rectangle.
 pure fn area(w: int, h: int) -> int {
@@ -52,7 +46,6 @@ fn main() -> int {
     print_int(p.y);
     print_int(area(r.width, r.height));
     print_int(manhattan(p.x, p.y));
-
     // if/else if/else chain
     print_int(classify(-5));
     print_int(classify(0));

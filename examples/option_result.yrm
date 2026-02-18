@@ -24,51 +24,58 @@ fn divide(a: int, b: int) -> Result<int, string> {
 
 fn main() -> int {
     let nums: [int] = [10, 20, 30, 40, 50];
-
     // Option — Some path via unwrap
     print_str("=== Option ===");
     let idx: Option<int> = find(nums, 30);
-    print_int(idx.unwrap());   // 2
-
+    print_int(idx.unwrap());  // 2
     // Option — boolean methods
     let found: Option<int> = find(nums, 20);
-    print_bool(found.is_some());   // true
-    print_bool(found.is_none());   // false
-
+    print_bool(found.is_some());  // true
+    print_bool(found.is_none());  // false
     // Option — pattern matching
     match found {
-        Some(i) => { print_str("found at:"); print_int(i); },
-        None => { print_str("not found"); },
+        Some(i) => {
+            print_str("found at:");
+            print_int(i);
+        },
+        None => {
+            print_str("not found");
+        },
     }
-
     // Option — None path
     let missing: Option<int> = find(nums, 99);
-    print_bool(missing.is_some());   // false
-    print_bool(missing.is_none());   // true
+    print_bool(missing.is_some());  // false
+    print_bool(missing.is_none());  // true
     match missing {
-        Some(i) => { print_int(i); },
-        None => { print_str("not found"); },
+        Some(i) => {
+            print_int(i);
+        },
+        None => {
+            print_str("not found");
+        },
     }
-
     // Result — Ok path
     print_str("=== Result ===");
     let res: Result<int, string> = divide(100, 5);
-    print_bool(res.is_ok());     // true
-    print_bool(res.is_err());    // false
-    print_int(res.unwrap());     // 20
-
+    print_bool(res.is_ok());  // true
+    print_bool(res.is_err());  // false
+    print_int(res.unwrap());  // 20
     // Result — Err path
     let err_res: Result<int, string> = divide(100, 0);
-    print_bool(err_res.is_ok());       // false
-    print_bool(err_res.is_err());      // true
+    print_bool(err_res.is_ok());  // false
+    print_bool(err_res.is_err());  // true
     let msg: string = err_res.unwrap_err();
-    print_str(msg);                    // division by zero
-
+    print_str(msg);  // division by zero
     // Result — pattern matching
     let div_res: Result<int, string> = divide(42, 7);
     match div_res {
-        Ok(v) => { print_str("result:"); print_int(v); },
-        Err(e) => { print_str(e); },
+        Ok(v) => {
+            print_str("result:");
+            print_int(v);
+        },
+        Err(e) => {
+            print_str(e);
+        },
     }
 
     return 0;

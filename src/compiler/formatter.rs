@@ -133,6 +133,24 @@ impl Formatter {
         false
     }
 
+    fn is_same_line(&self, a: usize, b: usize) -> bool {
+        let (lo, hi) = if a < b { (a, b) } else { (b, a) };
+        let hi = hi.min(self.source.len());
+        !self.source[lo..hi].contains(&'\n')
+    }
+
+    /// Returns true when the gap between `a` and `b` in the source is safe for
+    /// trailing-comment attachment. Allows whitespace and trailing punctuation
+    /// (`,`, `;`) but rejects closing delimiters (`}`, `)`, `]`) and newlines,
+    /// which indicate the comment belongs to a parent construct.
+    fn is_trailing_gap(&self, a: usize, b: usize) -> bool {
+        let (lo, hi) = if a < b { (a, b) } else { (b, a) };
+        let hi = hi.min(self.source.len());
+        self.source[lo..hi]
+            .iter()
+            .all(|c| matches!(c, ' ' | '\t' | ',' | ';'))
+    }
+
     fn emit_comment(&mut self, text: &str) {
         self.writeln(text);
     }
@@ -143,6 +161,42 @@ impl Formatter {
             self.emit_comment(&text);
             self.comment_cursor += 1;
         }
+    }
+
+    /// After a construct is emitted (ending with \n), check if next comment(s)
+    /// are on the same line in source. If so, rewind \n, append comment inline.
+    /// Returns span.end of the last trailing comment consumed (for prev_end tracking).
+    fn emit_trailing_comment_for(&mut self, construct_end: usize) -> Option<usize> {
+        if !self.out.ends_with('\n') {
+            return None;
+        }
+        let mut last_comment_end = None;
+        loop {
+            if self.comment_cursor >= self.comments.len() {
+                break;
+            }
+            let c_start = self.comments[self.comment_cursor].span.start;
+            let c_end = self.comments[self.comment_cursor].span.end;
+            let c_is_block = self.comments[self.comment_cursor].is_block;
+            if c_start < construct_end {
+                break;
+            }
+            if !self.is_trailing_gap(construct_end, c_start) {
+                break;
+            }
+            // Multi-line block comments should NOT be trailing
+            if c_is_block && !self.is_same_line(c_start, c_end) {
+                break;
+            }
+            let text = self.comments[self.comment_cursor].text.clone();
+            // Rewind trailing newline
+            self.trim_trailing_newline();
+            self.write("  ");
+            self.writeln(&text);
+            last_comment_end = Some(c_end);
+            self.comment_cursor += 1;
+        }
+        last_comment_end
     }
 
     // ── Top-level ──────────────────────────────────────────────
@@ -172,6 +226,7 @@ impl Formatter {
                 self.blank_line();
             }
             self.emit_declaration(decl);
+            self.emit_trailing_comment_for(decl_span_end(decl));
         }
 
         self.emit_trailing_comments();
@@ -340,6 +395,7 @@ impl Formatter {
                     self.write(",");
                 }
                 self.newline();
+                self.emit_trailing_comment_for(field.span.end);
             }
             self.indent_down();
             self.writeln("}");
@@ -380,6 +436,7 @@ impl Formatter {
                 self.write(",");
             }
             self.newline();
+            self.emit_trailing_comment_for(variant.span.end);
         }
         self.indent_down();
         self.writeln("}");
@@ -423,6 +480,7 @@ impl Formatter {
             }
             self.emit_leading_comments(method.span.start);
             self.emit_fn_decl(method);
+            self.emit_trailing_comment_for(method.span.end);
         }
         self.indent_down();
         self.writeln("}");
@@ -461,6 +519,7 @@ impl Formatter {
             } else {
                 self.writeln(";");
             }
+            self.emit_trailing_comment_for(method.span.end);
         }
         self.indent_down();
         self.writeln("}");
@@ -495,8 +554,10 @@ impl Formatter {
                     self.blank_line();
                 }
             }
-            prev_end = Some(self.stmt_span_end(stmt));
+            let stmt_end = self.stmt_span_end(stmt);
             self.emit_stmt(stmt);
+            let effective_end = self.emit_trailing_comment_for(stmt_end).unwrap_or(stmt_end);
+            prev_end = Some(effective_end);
         }
         // Flush any comments between the last statement and the closing brace
         self.emit_leading_comments(block.span.end);
@@ -940,6 +1001,17 @@ impl Formatter {
 // ═══════════════════════════════════════════════════════════════
 //  Free functions
 // ═══════════════════════════════════════════════════════════════
+
+fn decl_span_end(decl: &Declaration) -> usize {
+    match decl {
+        Declaration::Function(f) => f.span.end,
+        Declaration::Struct(s) => s.span.end,
+        Declaration::Enum(e) => e.span.end,
+        Declaration::Const(c) => c.span.end,
+        Declaration::Impl(im) => im.span.end,
+        Declaration::Trait(t) => t.span.end,
+    }
+}
 
 fn format_type(ty: &Type) -> String {
     // Handle singleton tuples specially — Display renders (T) but Yorum requires (T,)

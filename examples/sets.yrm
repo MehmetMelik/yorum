@@ -14,7 +14,6 @@ fn main() -> int {
     print_int(set_size(nums));
     print_bool(set_has(nums, 20));
     print_bool(set_has(nums, 99));
-
     // Set<string>
     let names: Set<string> = set_new();
     set_add(names, "alice");
@@ -23,7 +22,6 @@ fn main() -> int {
     print_str("=== Set<string> ===");
     print_int(set_size(names));
     print_bool(set_has(names, "alice"));
-
     // Set<char>
     let chars: Set<char> = set_new();
     set_add(chars, 'a');
@@ -32,7 +30,6 @@ fn main() -> int {
     print_str("=== Set<char> ===");
     print_int(set_size(chars));
     print_bool(set_has(chars, 'b'));
-
     // Set<bool>
     let bools: Set<bool> = set_new();
     set_add(bools, true);
@@ -40,7 +37,6 @@ fn main() -> int {
     set_add(bools, true);  // duplicate
     print_str("=== Set<bool> ===");
     print_int(set_size(bools));
-
     // set_remove, set_values
     print_str("=== remove/values ===");
     set_remove(nums, 20);

@@ -6,30 +6,25 @@
 
 fn main() -> int {
     let s: string = "Hello, World!";
-
     // Search operations
     print_str("=== search ===");
-    print_bool(str_contains(s, "World"));      // true
-    print_bool(str_contains(s, "xyz"));        // false
-    print_int(str_index_of(s, "World"));       // 7
-    print_int(str_index_of(s, "xyz"));         // -1
-    print_bool(str_starts_with(s, "Hello"));   // true
-    print_bool(str_ends_with(s, "!"));         // true
-
+    print_bool(str_contains(s, "World"));  // true
+    print_bool(str_contains(s, "xyz"));  // false
+    print_int(str_index_of(s, "World"));  // 7
+    print_int(str_index_of(s, "xyz"));  // -1
+    print_bool(str_starts_with(s, "Hello"));  // true
+    print_bool(str_ends_with(s, "!"));  // true
     // Case conversion
     print_str("=== case ===");
     print_str(str_to_upper(s));
     print_str(str_to_lower(s));
-
     // Trim whitespace
     print_str("=== trim ===");
     let padded: string = "  hello  ";
     print_str(str_trim(padded));
-
     // Replace
     print_str("=== replace ===");
     print_str(str_replace(s, "World", "Yorum"));
-
     // Split
     print_str("=== split ===");
     let csv: string = "one,two,three";
@@ -38,7 +33,6 @@ fn main() -> int {
     for p in parts {
         print_str(p);
     }
-
     // Repeat
     print_str("=== repeat ===");
     print_str(str_repeat("ab", 3));

@@ -32,7 +32,7 @@ pure fn fib_iterative(n: int) -> int
         let temp: int = b;
         b = a + b;
         a = temp;
-        i = i + 1;
+        i += 1;
     }
 
     return b;
@@ -43,7 +43,7 @@ fn main() -> int {
     let mut i: int = 0;
     while i <= 10 {
         print_int(fib_iterative(i));
-        i = i + 1;
+        i += 1;
     }
     return 0;
 }

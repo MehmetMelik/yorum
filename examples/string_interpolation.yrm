@@ -11,23 +11,18 @@ fn main() -> int {
     // Basic interpolation with variables
     let name: string = "Alice";
     print_str("Name: {name}");
-
     // Interpolation with expressions
     let x: int = 10;
     let y: int = 20;
     print_str("{x} + {y} = {x + y}");
-
     // Different types: int, float, bool
     let pi: float = 3.14;
     let ok: bool = true;
     print_str("pi = {pi}, ok = {ok}");
-
     // Function returning interpolated string
     print_str(greet("Bob", 30));
-
     // Escaped braces
     print_str("Use {{expr}} for interpolation");
-
     // Nested expressions
     let arr: [int] = [1, 2, 3];
     print_str("Array length: {len(arr)}");

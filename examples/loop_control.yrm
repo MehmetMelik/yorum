@@ -33,18 +33,15 @@ fn main() -> int {
     for i in 0..5 {
         print_int(i);
     }
-
     // Break: find first negative
     print_str("=== break ===");
     let arr: [int] = [3, 7, 2, -1, 5, -3];
     let idx: int = find_first_negative(arr);
-    print_int(idx);   // 3
-
+    print_int(idx);  // 3
     // Continue: skip multiples of 3
     print_str("=== continue ===");
     let total: int = sum_skip_multiples_of_3(10);
-    print_int(total);   // 1+2+4+5+7+8 = 27
-
+    print_int(total);  // 1+2+4+5+7+8 = 27
     // Nested loops with break
     print_str("=== nested break ===");
     let mut found_i: int = -1;
@@ -67,8 +64,8 @@ fn main() -> int {
         }
         i += 1;
     }
-    print_int(found_i);   // 2
-    print_int(found_j);   // 3
+    print_int(found_i);  // 2
+    print_int(found_j);  // 3
 
     return 0;
 }

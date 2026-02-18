@@ -4217,7 +4217,7 @@ impl Codegen {
                 continue;
             }
             let ty = self.llvm_type(&param.ty);
-            let ptr = format!("%{}.addr", param.name);
+            let ptr = self.fresh_temp();
             self.emit_line(&format!("{} = alloca {}", ptr, ty));
             self.emit_line(&format!("store {} %{}, ptr {}", ty, param.name, ptr));
             self.define_var(&param.name, &ptr, &ty);
@@ -4340,7 +4340,7 @@ impl Codegen {
                 }
             }
             let ty = self.llvm_type(&param.ty);
-            let ptr = format!("%{}.addr", param.name);
+            let ptr = self.fresh_temp();
             self.emit_line(&format!("{} = alloca {}", ptr, ty));
             self.emit_line(&format!("store {} %{}, ptr {}", ty, param.name, ptr));
             self.define_var(&param.name, &ptr, &ty);
@@ -4434,7 +4434,7 @@ impl Codegen {
                     self.define_var(&s.name, &val, &ty);
                 } else {
                     // Function call or variable: value returned, need alloca + store
-                    let ptr = format!("%{}.addr", s.name);
+                    let ptr = self.fresh_temp();
                     self.emit_line(&format!("{} = alloca {}", ptr, ty));
                     self.emit_line(&format!("store {} {}, ptr {}", ty, val, ptr));
                     self.define_var(&s.name, &ptr, &ty);
@@ -4452,7 +4452,7 @@ impl Codegen {
                     self.define_var(&s.name, &val, &ty);
                 } else {
                     // Function call or variable: value returned, need alloca + store
-                    let ptr = format!("%{}.addr", s.name);
+                    let ptr = self.fresh_temp();
                     self.emit_line(&format!("{} = alloca {}", ptr, ty));
                     self.emit_line(&format!("store {} {}, ptr {}", ty, val, ptr));
                     self.define_var(&s.name, &ptr, &ty);
@@ -4500,7 +4500,7 @@ impl Codegen {
                     ));
                     let loaded = self.fresh_temp();
                     self.emit_line(&format!("{} = load {}, ptr {}", loaded, elem_ty, gep));
-                    let ptr = format!("%{}.addr", name);
+                    let ptr = self.fresh_temp();
                     self.emit_line(&format!("{} = alloca {}", ptr, elem_ty));
                     self.emit_line(&format!("store {} {}, ptr {}", elem_ty, loaded, ptr));
                     self.define_var(name, &ptr, elem_ty);
@@ -4530,7 +4530,7 @@ impl Codegen {
             self.closure_var_types.insert(s.name.clone(), s.ty.clone());
         }
 
-        let ptr = format!("%{}.addr", s.name);
+        let ptr = self.fresh_temp();
         self.emit_line(&format!("{} = alloca {}", ptr, ty));
 
         let val = self.emit_expr(&s.value)?;
@@ -4725,7 +4725,9 @@ impl Codegen {
         // Then block
         self.emit_label(&then_label);
         self.block_terminated = false;
+        self.push_scope();
         self.emit_block(&s.then_block)?;
+        self.pop_scope();
         if !self.block_terminated {
             self.emit_line(&format!("br label %{}", merge_label));
         }
@@ -4735,6 +4737,7 @@ impl Codegen {
         if let Some(else_branch) = &s.else_branch {
             self.emit_label(&else_label);
             self.block_terminated = false;
+            self.push_scope();
             match else_branch.as_ref() {
                 ElseBranch::Else(block) => {
                     self.emit_block(block)?;
@@ -4743,6 +4746,7 @@ impl Codegen {
                     self.emit_if(elif)?;
                 }
             }
+            self.pop_scope();
             if !self.block_terminated {
                 self.emit_line(&format!("br label %{}", merge_label));
             }
@@ -4787,7 +4791,9 @@ impl Codegen {
         self.block_terminated = false;
         self.loop_labels
             .push((cond_label.clone(), end_label.clone()));
+        self.push_scope();
         self.emit_block(&s.body)?;
+        self.pop_scope();
         self.loop_labels.pop();
         if !self.block_terminated {
             self.emit_line(&format!("br label %{}", cond_label));
@@ -7058,7 +7064,7 @@ impl Codegen {
         // Alloca for explicit params
         for param in &closure.params {
             let ty = self.llvm_type(&param.ty);
-            let ptr = format!("%{}.addr", param.name);
+            let ptr = self.fresh_temp();
             self.emit_line(&format!("{} = alloca {}", ptr, ty));
             self.emit_line(&format!("store {} %{}, ptr {}", ty, param.name, ptr));
             self.define_var(&param.name, &ptr, &ty);

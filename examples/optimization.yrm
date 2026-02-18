@@ -1,0 +1,57 @@
+// optimization.yrm — exercises v1.7 optimization features
+//
+// - Inline hint: small pure functions get alwaysinline
+// - Constant folding: literal expressions evaluated at compile time
+// - Tail call optimization: return f(args) gets tail call hint
+// - Heap sort: sort_int/sort_str use O(n log n) heap sort
+// - Dead code elimination: unused functions removed from IR
+
+// Small pure function — gets alwaysinline attribute
+pure fn double(x: int) -> int {
+    return x * 2;
+}
+
+// Constant folding: 2 + 3 becomes 5 at compile time
+pure fn five() -> int {
+    return 2 + 3;
+}
+
+// Tail-recursive function — gets tail call hint
+fn factorial(n: int, acc: int) -> int {
+    if n < 2 {
+        return acc;
+    }
+    return factorial(n - 1, acc * n);
+}
+
+// This function is never called — DCE removes it from the IR
+fn unused_helper() -> int {
+    return 999;
+}
+
+fn main() -> int {
+    // Inline hint: double() is small and pure
+    let d: int = double(21);
+    print_str("double(21) = ");
+    print_int(d);
+
+    // Constant folding
+    let f: int = five();
+    print_str("five() = ");
+    print_int(f);
+
+    // Tail call optimization
+    let fact: int = factorial(10, 1);
+    print_str("10! = ");
+    print_int(fact);
+
+    // Heap sort: O(n log n) sort
+    let nums: [int] = [5, 3, 1, 4, 2];
+    let sorted: [int] = sort_int(nums);
+    print_str("sorted: ");
+    for i in 0..5 {
+        print_int(sorted[i]);
+    }
+
+    return 0;
+}

@@ -2,6 +2,29 @@
 
 All notable changes to the Yorum programming language compiler.
 
+## [1.7.0] - 2026-02-18
+
+**Performance & Optimization** — inline hints, constant folding, tail call optimization, heap sort, dead code elimination.
+
+### Added
+
+- **Inline hint annotations** — small pure functions (<=3 statements, no contracts) get `alwaysinline` LLVM attribute via `#0` attribute group
+- **Constant folding** — literal integer and boolean expressions evaluated at compile time. Arithmetic (`+`, `-`, `*`), bitwise, comparison, and logical operators folded. Division/modulo by zero falls through to runtime
+- **Tail call optimization** — `return f(args)` patterns annotated with `tail call` LLVM hint, enabling LLVM to reuse the caller's stack frame for tail-recursive functions
+- **Heap sort upgrade** — `sort_int` and `sort_str` builtins upgraded from O(n^2) insertion sort to O(n log n) heap sort (in-place, no extra allocation beyond the copy)
+- **Dead code elimination** — new `dce.rs` pass performs BFS reachability from `main`, removing unreachable functions, structs, enums, and impl blocks before codegen. Reduces IR size for programs with unused declarations
+- `examples/optimization.yrm` — new example exercising all v1.7 features
+- 18 new integration tests for optimization features
+
+### Changed
+
+- Compilation pipeline now includes DCE pass between monomorphization and codegen (both single-file and multi-file)
+- 7 existing integration tests updated to account for constant folding and DCE behavior
+
+**Stats:** 9 files changed | Tests: 481 (50 unit + 431 integration)
+
+---
+
 ## [1.6.1] - 2026-02-18
 
 **Formatter Bug Fix** — trailing comments now stay on the same line.

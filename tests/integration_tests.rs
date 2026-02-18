@@ -329,7 +329,10 @@ fn test_multiple_functions() {
 fn test_enum_declaration() {
     let ir = compile(
         "enum Color { Red, Green, Blue }\n\
-         fn main() -> int { return 0; }\n",
+         fn main() -> int {\n\
+         \x20   let c: Color = Red;\n\
+         \x20   return 0;\n\
+         }\n",
     );
     assert!(ir.contains("%Color = type"));
 }
@@ -3495,7 +3498,8 @@ fn test_module_pub_struct_accessible() {
         "module main;\n\
          use shapes;\n\
          fn main() -> int {\n\
-         \x20   let s: int = sum_xy(3, 4);\n\
+         \x20   let p: Point = Point { x: 1, y: 2 };\n\
+         \x20   let s: int = sum_xy(p.x, p.y);\n\
          \x20   print_int(s);\n\
          \x20   return 0;\n\
          }\n",
@@ -4398,8 +4402,12 @@ fn test_bitwise_and_or_xor() {
 fn test_bitwise_shift() {
     let ir = compile(
         "fn main() -> int {\n\
-         \x20   let a: int = 1 << 3;\n\
-         \x20   let b: int = 16 >> 2;\n\
+         \x20   let x: int = 1;\n\
+         \x20   let y: int = 3;\n\
+         \x20   let a: int = x << y;\n\
+         \x20   let z: int = 16;\n\
+         \x20   let w: int = 2;\n\
+         \x20   let b: int = z >> w;\n\
          \x20   return a;\n\
          }\n",
     );
@@ -5367,6 +5375,7 @@ fn test_try_operator_option_in_option_fn() {
            return Some(v + 1);\
          }\
          fn main() -> int {\
+           let r: Option<int> = try_it();\
            return 0;\
          }",
     );
@@ -5385,6 +5394,7 @@ fn test_try_operator_result_in_result_fn() {
            return Ok(n * 2);\
          }\
          fn main() -> int {\
+           let r: Result<int, string> = compute();\
            return 0;\
          }",
     );
@@ -5408,6 +5418,7 @@ fn test_try_operator_chaining() {
            return Some(x + y);\
          }\
          fn main() -> int {\
+           let r: Option<int> = chain();\
            return 0;\
          }",
     );
@@ -5492,6 +5503,7 @@ fn test_try_operator_none_propagation() {
            return Some(v);\
          }\
          fn main() -> int {\
+           let r: Option<int> = use_it();\
            return 0;\
          }",
     );
@@ -6731,5 +6743,369 @@ fn main() -> unit {}
         !output.contains("A,  // note") && !output.contains("B  // note"),
         "comment after }} must not attach to inner variant, got:\n{}",
         output
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  v1.7 — Performance & optimization tests
+// ═══════════════════════════════════════════════════════════════
+
+// ── Inline hint annotations ─────────────────────────────────
+
+#[test]
+fn test_inline_hint_pure_small_fn() {
+    let ir = compile(
+        "pure fn double(x: int) -> int { return x * 2; }\n\
+         fn main() -> int { return double(21); }\n",
+    );
+    assert!(
+        ir.contains("#0"),
+        "small pure fn should get #0 attribute, got:\n{}",
+        ir
+    );
+    assert!(
+        ir.contains("alwaysinline"),
+        "IR should contain alwaysinline attribute"
+    );
+}
+
+#[test]
+fn test_no_inline_impure_fn() {
+    let ir = compile(
+        "fn greet() -> unit { print_str(\"hello\"); }\n\
+         fn main() -> int { greet(); return 0; }\n",
+    );
+    assert!(
+        !ir.contains("define void @greet()") || !ir.contains("#0"),
+        "impure fn should not get #0 attribute"
+    );
+}
+
+#[test]
+fn test_no_inline_large_pure_fn() {
+    let ir = compile(
+        "pure fn big(a: int, b: int) -> int {\n\
+         \x20   let x: int = a + b;\n\
+         \x20   let y: int = x * 2;\n\
+         \x20   let z: int = y - a;\n\
+         \x20   let w: int = z + 1;\n\
+         \x20   return w;\n\
+         }\n\
+         fn main() -> int { return big(1, 2); }\n",
+    );
+    // big has 5 statements, should not get #0
+    assert!(
+        !ir.contains("define i64 @big(") || !ir.contains("@big(i64 %a, i64 %b) #0"),
+        "large pure fn (>3 stmts) should not get inline hint"
+    );
+}
+
+#[test]
+fn test_no_inline_fn_with_ensures() {
+    let ir = compile(
+        "pure fn safe_add(a: int, b: int) -> int\n\
+         \x20   ensures result > 0\n\
+         {\n\
+         \x20   return a + b;\n\
+         }\n\
+         fn main() -> int { return safe_add(1, 2); }\n",
+    );
+    assert!(
+        !ir.contains("@safe_add(i64 %a, i64 %b) #0"),
+        "fn with ensures should not get inline hint"
+    );
+}
+
+// ── Constant folding ────────────────────────────────────────
+
+#[test]
+fn test_const_fold_arithmetic() {
+    let ir = compile("fn main() -> int { return 2 + 3; }\n");
+    assert!(
+        ir.contains("ret i64 5"),
+        "2 + 3 should be folded to 5, got:\n{}",
+        ir
+    );
+}
+
+#[test]
+fn test_const_fold_nested() {
+    let ir = compile("fn main() -> int { return (10 - 3) * 2; }\n");
+    assert!(
+        ir.contains("ret i64 14"),
+        "(10 - 3) * 2 should fold to 14, got:\n{}",
+        ir
+    );
+}
+
+#[test]
+fn test_const_fold_comparison() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   if 3 > 2 { return 1; }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(
+        ir.contains("br i1 true"),
+        "3 > 2 should fold to true, got:\n{}",
+        ir
+    );
+}
+
+#[test]
+fn test_no_fold_division_by_zero() {
+    let ir = compile("fn main() -> int { return 10 / 0; }\n");
+    assert!(
+        ir.contains("sdiv i64"),
+        "10 / 0 should not be folded, got:\n{}",
+        ir
+    );
+}
+
+#[test]
+fn test_no_fold_variables() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let x: int = 5;\n\
+         \x20   return x + 3;\n\
+         }\n",
+    );
+    assert!(
+        ir.contains("add i64"),
+        "x + 3 should not be folded (x is a variable), got:\n{}",
+        ir
+    );
+}
+
+// ── Tail call optimization ──────────────────────────────────
+
+#[test]
+fn test_tail_call_recursive() {
+    let ir = compile(
+        "fn factorial(n: int, acc: int) -> int {\n\
+         \x20   if n < 2 { return acc; }\n\
+         \x20   return factorial(n - 1, acc * n);\n\
+         }\n\
+         fn main() -> int { return factorial(5, 1); }\n",
+    );
+    assert!(
+        ir.contains("tail call i64 @factorial"),
+        "tail-recursive call should get tail hint, got:\n{}",
+        ir
+    );
+}
+
+#[test]
+fn test_no_tail_call_with_ensures() {
+    let ir = compile(
+        "fn helper(n: int) -> int { return n + 1; }\n\
+         fn checked(n: int) -> int\n\
+         \x20   ensures result > 0\n\
+         {\n\
+         \x20   return helper(n);\n\
+         }\n\
+         fn main() -> int { return checked(5); }\n",
+    );
+    // With ensures, the return value goes through result.addr — no tail call
+    assert!(
+        !ir.contains("tail call i64 @helper"),
+        "fn with ensures should not get tail call, got:\n{}",
+        ir
+    );
+}
+
+#[test]
+fn test_no_tail_call_non_tail_position() {
+    let ir = compile(
+        "fn helper(n: int) -> int { return n + 1; }\n\
+         fn wrapper(n: int) -> int {\n\
+         \x20   let x: int = helper(n);\n\
+         \x20   return x;\n\
+         }\n\
+         fn main() -> int { return wrapper(5); }\n",
+    );
+    // `let x = helper(n)` is not in tail position — return x is just a load
+    assert!(
+        !ir.contains("tail call i64 @helper"),
+        "non-tail-position call should not get tail hint, got:\n{}",
+        ir
+    );
+}
+
+// ── Sort algorithm (heap sort) ──────────────────────────────
+
+#[test]
+fn test_sort_is_heapsort() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let a: [int] = [3, 1, 2];\n\
+         \x20   let b: [int] = sort_int(a);\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(
+        ir.contains("heap sort"),
+        "sort_int should use heap sort, got:\n{}",
+        ir
+    );
+    assert!(
+        !ir.contains("insertion sort"),
+        "sort_int should not use insertion sort"
+    );
+}
+
+// ── Dead code elimination ───────────────────────────────────
+
+#[test]
+fn test_dce_removes_unused_fn() {
+    let ir = compile(
+        "fn unused() -> int { return 42; }\n\
+         fn main() -> int { return 0; }\n",
+    );
+    assert!(
+        !ir.contains("@unused"),
+        "unused function should be removed by DCE, got:\n{}",
+        ir
+    );
+}
+
+#[test]
+fn test_dce_keeps_used_fn() {
+    let ir = compile(
+        "fn helper() -> int { return 42; }\n\
+         fn main() -> int { return helper(); }\n",
+    );
+    assert!(
+        ir.contains("define i64 @helper"),
+        "called function should be kept by DCE, got:\n{}",
+        ir
+    );
+}
+
+#[test]
+fn test_dce_transitive_reachability() {
+    let ir = compile(
+        "fn a() -> int { return b(); }\n\
+         fn b() -> int { return 42; }\n\
+         fn c() -> int { return 99; }\n\
+         fn main() -> int { return a(); }\n",
+    );
+    assert!(
+        ir.contains("define i64 @a"),
+        "a should be kept (called by main)"
+    );
+    assert!(
+        ir.contains("define i64 @b"),
+        "b should be kept (called by a)"
+    );
+    assert!(
+        !ir.contains("define i64 @c("),
+        "c should be removed (unreachable)"
+    );
+}
+
+#[test]
+fn test_dce_removes_unused_struct() {
+    let ir = compile(
+        "struct Dead { x: int }\n\
+         fn main() -> int { return 0; }\n",
+    );
+    assert!(
+        !ir.contains("%Dead"),
+        "unused struct should be removed by DCE, got:\n{}",
+        ir
+    );
+}
+
+#[test]
+fn test_dce_keeps_enum_used_by_variant() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let x: Option<int> = Some(42);\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(
+        ir.contains("Option__int"),
+        "Option enum used via Some(42) should be kept, got:\n{}",
+        ir
+    );
+}
+
+// ---- P1 fix: constant folding i64::MIN / -1 must not panic the compiler ----
+
+#[test]
+fn test_const_fold_no_panic_on_int_min_div() {
+    // i64::MIN / -1 overflows in two's complement — must not crash the compiler
+    let ir = compile("fn main() -> int { return (-9223372036854775807 - 1) / -1; }\n");
+    // Should produce IR (not panic). The division falls through to runtime.
+    assert!(
+        ir.contains("sdiv") || ir.contains("ret i64"),
+        "i64::MIN / -1 should compile without panic, got:\n{}",
+        ir
+    );
+}
+
+#[test]
+fn test_const_fold_no_panic_on_int_min_mod() {
+    // i64::MIN % -1 also overflows — must not crash
+    let ir = compile("fn main() -> int { return (-9223372036854775807 - 1) % -1; }\n");
+    assert!(
+        ir.contains("srem") || ir.contains("ret i64"),
+        "i64::MIN %% -1 should compile without panic, got:\n{}",
+        ir
+    );
+}
+
+// ---- P1 fix: DCE must include contract expressions in reachability ----
+
+#[test]
+fn test_dce_keeps_fn_used_in_ensures() {
+    let ir = compile(
+        "fn is_positive(x: int) -> bool { return x > 0; }\n\
+         fn compute() -> int ensures is_positive(result) { return 42; }\n\
+         fn main() -> int { return compute(); }\n",
+    );
+    assert!(
+        ir.contains("define i1 @is_positive("),
+        "is_positive used in ensures should be kept, got:\n{}",
+        ir
+    );
+}
+
+#[test]
+fn test_dce_keeps_fn_used_in_requires() {
+    let ir = compile(
+        "fn valid(x: int) -> bool { return x >= 0; }\n\
+         fn process(n: int) -> int requires valid(n) { return n + 1; }\n\
+         fn main() -> int { return process(5); }\n",
+    );
+    assert!(
+        ir.contains("define i1 @valid("),
+        "valid used in requires should be kept, got:\n{}",
+        ir
+    );
+}
+
+// ---- P1 fix: DCE must mark enum impl methods reachable ----
+
+#[test]
+fn test_dce_keeps_enum_impl_methods() {
+    let ir = compile(
+        "enum Color { Red, Green, Blue }\n\
+         impl Color {\n\
+         \x20   fn tag(self: &Color) -> int { return 1; }\n\
+         }\n\
+         fn main() -> int {\n\
+         \x20   let c: Color = Red;\n\
+         \x20   let t: int = c.tag();\n\
+         \x20   return t;\n\
+         }\n",
+    );
+    assert!(
+        ir.contains("@Color_tag"),
+        "Enum impl method Color.tag should be kept, got:\n{}",
+        ir
     );
 }

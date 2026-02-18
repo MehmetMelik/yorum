@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 cargo build                          # dev build
 cargo build --release                # release build
-cargo test                           # all tests (513: 50 unit + 463 integration)
+cargo test                           # all tests (536: 50 unit + 486 integration)
 cargo test compiler::lexer           # tests in one module
 cargo test test_fibonacci_compiles   # single test by name
 cargo test -- --nocapture            # see stdout from tests
@@ -58,7 +58,7 @@ This is a compiler for the Yorum language — an LLM-first, statically typed lan
 The pipeline is strictly sequential — each phase consumes the output of the previous one. Single-file compilation is orchestrated in `src/lib.rs`, multi-file in `src/compiler/project.rs`:
 
 ```
-Source → Lexer → Vec<Token> → Parser → AST (Program) → TypeChecker → OwnershipChecker → Monomorphizer → Codegen → LLVM IR string
+Source → Lexer → Vec<Token> → Parser → AST (Program) → TypeChecker → OwnershipChecker → Monomorphizer → DCE → Codegen → LLVM IR string
 ```
 
 Multi-file projects (`yorum build`) add a front-end step: `ModuleResolver` discovers all `.yrm` files, parses each, then `project.rs` merges them into a single `Program` (prefixing imported names) before the standard pipeline runs.
@@ -73,6 +73,7 @@ Multi-file projects (`yorum build`) add a front-end step: `ModuleResolver` disco
 - **`typechecker.rs`** — Three-pass: (1) registers all function signatures, struct layouts, and enum definitions; (1.5) infers effects for unannotated functions via fixed-point call graph iteration; (2) checks function bodies. Uses a scope stack (`Vec<HashMap<String, VarInfo>>`) for lexical scoping. ~70 built-in functions registered in `register_builtins()` with effect annotations. Special-cased builtins in Call handler: `len`, `push`, `pop`, `args`, `exit`, `chan`, `send`, `recv`, `slice`, `concat_arrays`, `reverse`, `str_split`, `to_str`, `map_*`, `set_*`. Prelude types `Option<T>` and `Result<T, E>` are registered as generic enums with methods. Purity enforcement: pure functions cannot call impure functions or use `spawn`. Effect enforcement: functions with `effects` clause can only call functions whose effects are a subset of the declared effects
 - **`ownership.rs`** — Type-aware move checker. Tracks `VarInfo { state, ty, def_span }` per variable with `is_copy_type()` distinguishing copy types (`int`, `float`, `bool`, `char`, `string`, `unit`) from move types (structs, enums, arrays, etc.). Branch merging for if/else and match ensures moves in any branch propagate conservatively. `loop_depth` tracking prevents moving outer-scope variables inside loops. Enforces must-join for `Task` variables
 - **`monomorphize.rs`** — Eliminates generics before codegen. Collects all concrete instantiations of generic functions/structs/enums, clones declarations with type variables substituted, and rewrites call sites to use mangled names (`identity__int`, `Pair__int__float`). Handles generic enum monomorphization for prelude types (`Option__int`, `Result__int__string`)
+- **`dce.rs`** — Dead code elimination. BFS reachability from `main` removes unreachable functions, structs, enums, and impl blocks. Skips programs without `main` (e.g., test-only compilations). Runs between monomorphization and codegen
 - **`codegen.rs`** — Emits textual LLVM IR. Uses alloca/load/store pattern (LLVM's mem2reg promotes to SSA). Each expression emitter returns the LLVM SSA value name (e.g., `%t3`). Closures compile to `{ ptr, ptr }` pairs (fn_ptr + env_ptr). Arrays are heap-allocated fat pointers `{ ptr, i64, i64 }` (data, length, capacity). Aggregate types (structs, enums) in arrays use `memcpy`. Generic `Map<K, V>` and `Set<T>` helpers are lazily emitted per monomorphized type pair. The `?` (try) operator compiles to tag check + branch with early `ret`
 - **`module_resolver.rs`** — Discovers `.yrm` files under `src/`, maps filesystem paths to module names, parses each file, validates `module` declarations match paths
 - **`project.rs`** — Orchestrates multi-file compilation: reads `yorum.toml` manifest, resolves modules, merges `pub` declarations with name prefixing (`math__add`), rewrites call sites, runs standard pipeline

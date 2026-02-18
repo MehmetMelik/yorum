@@ -63,15 +63,15 @@ Rationale: Deferred from v1.5 because the lexer discarded comments. Solved with 
 
 ---
 
-## v1.7 — Performance & Optimization
+## v1.7 — Performance & Optimization (Done)
 
 Currently the compiler emits unoptimized alloca/load/store IR and relies entirely on LLVM's mem2reg.
 
-- **Tail call optimization** — annotate tail calls with `musttail` in LLVM IR (critical for recursive Yorum code)
-- **Constant folding** — evaluate pure constant expressions at compile time
-- **Dead code elimination** — don't emit unused functions/structs
-- **Inline hint annotation** — small pure functions get `alwaysinline`
-- **Sort algorithm upgrade** — replace insertion sort (`sort_int`/`sort_str`) with O(n log n)
+- ~~**Tail call optimization** — annotate tail calls with `tail call` hint in LLVM IR for tail-recursive returns~~
+- ~~**Constant folding** — evaluate pure constant expressions (int/bool arithmetic, comparisons, logical ops) at compile time~~
+- ~~**Dead code elimination** — BFS reachability from `main`, removes unused functions/structs/enums before codegen~~
+- ~~**Inline hint annotation** — small pure functions (≤3 stmts, no contracts) get `alwaysinline` attribute~~
+- ~~**Sort algorithm upgrade** — replace O(n²) insertion sort with O(n log n) heap sort for `sort_int`/`sort_str`~~
 
 Rationale: Performance doesn't matter until people write real programs, but these are low-hanging fruit.
 
@@ -125,4 +125,4 @@ The top 3 highest-impact releases:
 4. ~~**v1.4 (Effect System)** — the unique differentiator that no other language has done well~~ **Done**
 5. ~~**v1.5 (Tooling)** — `yorum run`, `yorum repl`, LSP completions/code actions, debug info~~ **Done**
 6. ~~**v1.6 (Formatter)** — `yorum fmt` auto-formatter with comment preservation~~ **Done**
-7. **v1.7 (Performance)** — tail call optimization, constant folding, dead code elimination
+7. ~~**v1.7 (Performance)** — tail call optimization, constant folding, dead code elimination, inline hints, heap sort~~ **Done**

@@ -135,6 +135,12 @@ pub struct Codegen {
     // Set by emit_spawn, consumed by emit_let to populate task_env_info
     last_spawn_env_info: Option<(String, usize)>,
 
+    // Inline hint: at least one function was annotated with #0
+    has_inline_fns: bool,
+
+    // Tail call hint: set by emit_return when expression is a simple tail call
+    tail_call_hint: bool,
+
     // Debug info (DWARF)
     debug_enabled: bool,
     debug_filename: String,
@@ -186,6 +192,8 @@ impl Codegen {
             spawn_return_ctx: None,
             task_env_info: HashMap::new(),
             last_spawn_env_info: None,
+            has_inline_fns: false,
+            tail_call_hint: false,
             debug_enabled: false,
             debug_filename: String::new(),
             debug_directory: String::new(),
@@ -530,6 +538,11 @@ impl Codegen {
         output.push_str(&self.globals);
         output.push('\n');
         output.push_str(&self.body);
+
+        // Append inline hint attributes
+        if self.has_inline_fns {
+            output.push_str("attributes #0 = { alwaysinline }\n");
+        }
 
         // Append debug metadata
         if self.debug_enabled {
@@ -1837,8 +1850,8 @@ impl Codegen {
              \x20 ret i1 0\n\
              }\n\n",
         );
-        // sort_int — copy array and in-place quicksort
-        // Uses iterative quicksort with explicit stack to avoid deep recursion
+        // sort_int — copy array and in-place heap sort, O(n log n)
+        // Uses sift-down heapify with alloca-based loop variables
         self.body.push_str(
             "define ptr @sort_int(ptr %arr) {\n\
              entry:\n\
@@ -1850,42 +1863,156 @@ impl Codegen {
              \x20 %bytes = mul i64 %len, 8\n\
              \x20 %new_data = call ptr @malloc(i64 %bytes)\n\
              \x20 call ptr @memcpy(ptr %new_data, ptr %data, i64 %bytes)\n\
-             \x20 ; insertion sort (simple, O(n^2) but correct)\n\
-             \x20 br label %outer\n\
-             outer:\n\
-             \x20 %oi = phi i64 [ 1, %entry ], [ %oi_next, %outer_cont ]\n\
-             \x20 %o_done = icmp sge i64 %oi, %len\n\
-             \x20 br i1 %o_done, label %build, label %outer_body\n\
-             outer_body:\n\
-             \x20 %kp = getelementptr i64, ptr %new_data, i64 %oi\n\
-             \x20 %key = load i64, ptr %kp\n\
-             \x20 %ji = sub i64 %oi, 1\n\
-             \x20 br label %inner\n\
-             inner:\n\
-             \x20 %j = phi i64 [ %ji, %outer_body ], [ %j_prev, %shift ]\n\
-             \x20 %j_ge0 = icmp sge i64 %j, 0\n\
-             \x20 br i1 %j_ge0, label %inner_check, label %insert\n\
-             inner_check:\n\
-             \x20 %jp = getelementptr i64, ptr %new_data, i64 %j\n\
-             \x20 %jv = load i64, ptr %jp\n\
-             \x20 %gt = icmp sgt i64 %jv, %key\n\
-             \x20 br i1 %gt, label %shift, label %insert\n\
-             shift:\n\
-             \x20 %j1 = add i64 %j, 1\n\
-             \x20 %dp = getelementptr i64, ptr %new_data, i64 %j1\n\
-             \x20 store i64 %jv, ptr %dp\n\
-             \x20 %j_prev = sub i64 %j, 1\n\
-             \x20 br label %inner\n\
-             insert:\n\
-             \x20 %ins_j = phi i64 [ %j, %inner ], [ %j, %inner_check ]\n\
-             \x20 %ins_pos = add i64 %ins_j, 1\n\
-             \x20 %ins_p = getelementptr i64, ptr %new_data, i64 %ins_pos\n\
-             \x20 store i64 %key, ptr %ins_p\n\
-             \x20 br label %outer_cont\n\
-             outer_cont:\n\
-             \x20 %oi_next = add i64 %oi, 1\n\
-             \x20 br label %outer\n\
-             build:\n\
+             \x20 ; heap sort phase 1: build max-heap\n\
+             \x20 %bi_addr = alloca i64\n\
+             \x20 %half = sdiv i64 %len, 2\n\
+             \x20 %start = sub i64 %half, 1\n\
+             \x20 store i64 %start, ptr %bi_addr\n\
+             \x20 br label %build_loop\n\
+             build_loop:\n\
+             \x20 %bi = load i64, ptr %bi_addr\n\
+             \x20 %b_done = icmp slt i64 %bi, 0\n\
+             \x20 br i1 %b_done, label %extract_init, label %build_sift\n\
+             build_sift:\n\
+             \x20 %root_addr = alloca i64\n\
+             \x20 store i64 %bi, ptr %root_addr\n\
+             \x20 br label %sift_b\n\
+             sift_b:\n\
+             \x20 %sb_r = load i64, ptr %root_addr\n\
+             \x20 %sb_left1 = add i64 %sb_r, %sb_r\n\
+             \x20 %sb_left = add i64 %sb_left1, 1\n\
+             \x20 %sb_right = add i64 %sb_left, 1\n\
+             \x20 ; start with largest = root\n\
+             \x20 %lg_addr = alloca i64\n\
+             \x20 store i64 %sb_r, ptr %lg_addr\n\
+             \x20 ; check left child\n\
+             \x20 %sb_lvalid = icmp slt i64 %sb_left, %len\n\
+             \x20 br i1 %sb_lvalid, label %sift_b_lcmp, label %sift_b_rchk\n\
+             sift_b_lcmp:\n\
+             \x20 %sb_lg1 = load i64, ptr %lg_addr\n\
+             \x20 %sb_lp = getelementptr i64, ptr %new_data, i64 %sb_left\n\
+             \x20 %sb_lv = load i64, ptr %sb_lp\n\
+             \x20 %sb_bp = getelementptr i64, ptr %new_data, i64 %sb_lg1\n\
+             \x20 %sb_bv = load i64, ptr %sb_bp\n\
+             \x20 %sb_lgt = icmp sgt i64 %sb_lv, %sb_bv\n\
+             \x20 br i1 %sb_lgt, label %sift_b_lset, label %sift_b_rchk\n\
+             sift_b_lset:\n\
+             \x20 store i64 %sb_left, ptr %lg_addr\n\
+             \x20 br label %sift_b_rchk\n\
+             sift_b_rchk:\n\
+             \x20 %sb_rvalid = icmp slt i64 %sb_right, %len\n\
+             \x20 br i1 %sb_rvalid, label %sift_b_rcmp, label %sift_b_chk\n\
+             sift_b_rcmp:\n\
+             \x20 %sb_lg2 = load i64, ptr %lg_addr\n\
+             \x20 %sb_rp = getelementptr i64, ptr %new_data, i64 %sb_right\n\
+             \x20 %sb_rv = load i64, ptr %sb_rp\n\
+             \x20 %sb_b3p = getelementptr i64, ptr %new_data, i64 %sb_lg2\n\
+             \x20 %sb_b3v = load i64, ptr %sb_b3p\n\
+             \x20 %sb_rgt = icmp sgt i64 %sb_rv, %sb_b3v\n\
+             \x20 br i1 %sb_rgt, label %sift_b_rset, label %sift_b_chk\n\
+             sift_b_rset:\n\
+             \x20 store i64 %sb_right, ptr %lg_addr\n\
+             \x20 br label %sift_b_chk\n\
+             sift_b_chk:\n\
+             \x20 %sb_largest = load i64, ptr %lg_addr\n\
+             \x20 %sb_r2 = load i64, ptr %root_addr\n\
+             \x20 %sb_changed = icmp ne i64 %sb_largest, %sb_r2\n\
+             \x20 br i1 %sb_changed, label %sift_b_swap, label %build_cont\n\
+             sift_b_swap:\n\
+             \x20 %sb_r3 = load i64, ptr %root_addr\n\
+             \x20 %sb_rp2 = getelementptr i64, ptr %new_data, i64 %sb_r3\n\
+             \x20 %sb_rv2 = load i64, ptr %sb_rp2\n\
+             \x20 %sb_lg3 = load i64, ptr %lg_addr\n\
+             \x20 %sb_lp2 = getelementptr i64, ptr %new_data, i64 %sb_lg3\n\
+             \x20 %sb_lv2 = load i64, ptr %sb_lp2\n\
+             \x20 store i64 %sb_lv2, ptr %sb_rp2\n\
+             \x20 store i64 %sb_rv2, ptr %sb_lp2\n\
+             \x20 store i64 %sb_lg3, ptr %root_addr\n\
+             \x20 br label %sift_b\n\
+             build_cont:\n\
+             \x20 %bi2 = load i64, ptr %bi_addr\n\
+             \x20 %bi_next = sub i64 %bi2, 1\n\
+             \x20 store i64 %bi_next, ptr %bi_addr\n\
+             \x20 br label %build_loop\n\
+             extract_init:\n\
+             \x20 %end_addr = alloca i64\n\
+             \x20 %len_m1 = sub i64 %len, 1\n\
+             \x20 store i64 %len_m1, ptr %end_addr\n\
+             \x20 br label %extract_loop\n\
+             extract_loop:\n\
+             \x20 %end = load i64, ptr %end_addr\n\
+             \x20 %e_done = icmp sle i64 %end, 0\n\
+             \x20 br i1 %e_done, label %build_fat, label %extract_swap\n\
+             extract_swap:\n\
+             \x20 %e0p = getelementptr i64, ptr %new_data, i64 0\n\
+             \x20 %e0v = load i64, ptr %e0p\n\
+             \x20 %end2 = load i64, ptr %end_addr\n\
+             \x20 %eep = getelementptr i64, ptr %new_data, i64 %end2\n\
+             \x20 %eev = load i64, ptr %eep\n\
+             \x20 store i64 %eev, ptr %e0p\n\
+             \x20 store i64 %e0v, ptr %eep\n\
+             \x20 ; sift down [0, end)\n\
+             \x20 %se_root = alloca i64\n\
+             \x20 store i64 0, ptr %se_root\n\
+             \x20 br label %sift_e\n\
+             sift_e:\n\
+             \x20 %se_r = load i64, ptr %se_root\n\
+             \x20 %se_left1 = add i64 %se_r, %se_r\n\
+             \x20 %se_left = add i64 %se_left1, 1\n\
+             \x20 %se_right = add i64 %se_left, 1\n\
+             \x20 %se_lg_addr = alloca i64\n\
+             \x20 store i64 %se_r, ptr %se_lg_addr\n\
+             \x20 %se_end = load i64, ptr %end_addr\n\
+             \x20 %se_lvalid = icmp slt i64 %se_left, %se_end\n\
+             \x20 br i1 %se_lvalid, label %sift_e_lcmp, label %sift_e_rchk\n\
+             sift_e_lcmp:\n\
+             \x20 %se_lg1 = load i64, ptr %se_lg_addr\n\
+             \x20 %se_lp = getelementptr i64, ptr %new_data, i64 %se_left\n\
+             \x20 %se_lv = load i64, ptr %se_lp\n\
+             \x20 %se_bp = getelementptr i64, ptr %new_data, i64 %se_lg1\n\
+             \x20 %se_bv = load i64, ptr %se_bp\n\
+             \x20 %se_lgt = icmp sgt i64 %se_lv, %se_bv\n\
+             \x20 br i1 %se_lgt, label %sift_e_lset, label %sift_e_rchk\n\
+             sift_e_lset:\n\
+             \x20 store i64 %se_left, ptr %se_lg_addr\n\
+             \x20 br label %sift_e_rchk\n\
+             sift_e_rchk:\n\
+             \x20 %se_end2 = load i64, ptr %end_addr\n\
+             \x20 %se_rvalid = icmp slt i64 %se_right, %se_end2\n\
+             \x20 br i1 %se_rvalid, label %sift_e_rcmp, label %sift_e_chk\n\
+             sift_e_rcmp:\n\
+             \x20 %se_lg2 = load i64, ptr %se_lg_addr\n\
+             \x20 %se_rp = getelementptr i64, ptr %new_data, i64 %se_right\n\
+             \x20 %se_rv = load i64, ptr %se_rp\n\
+             \x20 %se_b3p = getelementptr i64, ptr %new_data, i64 %se_lg2\n\
+             \x20 %se_b3v = load i64, ptr %se_b3p\n\
+             \x20 %se_rgt = icmp sgt i64 %se_rv, %se_b3v\n\
+             \x20 br i1 %se_rgt, label %sift_e_rset, label %sift_e_chk\n\
+             sift_e_rset:\n\
+             \x20 store i64 %se_right, ptr %se_lg_addr\n\
+             \x20 br label %sift_e_chk\n\
+             sift_e_chk:\n\
+             \x20 %se_largest = load i64, ptr %se_lg_addr\n\
+             \x20 %se_r2 = load i64, ptr %se_root\n\
+             \x20 %se_changed = icmp ne i64 %se_largest, %se_r2\n\
+             \x20 br i1 %se_changed, label %sift_e_swap, label %sift_e_done\n\
+             sift_e_swap:\n\
+             \x20 %se_r3 = load i64, ptr %se_root\n\
+             \x20 %se_rp2 = getelementptr i64, ptr %new_data, i64 %se_r3\n\
+             \x20 %se_rv2 = load i64, ptr %se_rp2\n\
+             \x20 %se_lg3 = load i64, ptr %se_lg_addr\n\
+             \x20 %se_lp2 = getelementptr i64, ptr %new_data, i64 %se_lg3\n\
+             \x20 %se_lv2 = load i64, ptr %se_lp2\n\
+             \x20 store i64 %se_lv2, ptr %se_rp2\n\
+             \x20 store i64 %se_rv2, ptr %se_lp2\n\
+             \x20 store i64 %se_lg3, ptr %se_root\n\
+             \x20 br label %sift_e\n\
+             sift_e_done:\n\
+             \x20 %end3 = load i64, ptr %end_addr\n\
+             \x20 %end_next = sub i64 %end3, 1\n\
+             \x20 store i64 %end_next, ptr %end_addr\n\
+             \x20 br label %extract_loop\n\
+             build_fat:\n\
              \x20 %fat = call ptr @malloc(i64 24)\n\
              \x20 %fd = getelementptr { ptr, i64, i64 }, ptr %fat, i32 0, i32 0\n\
              \x20 store ptr %new_data, ptr %fd\n\
@@ -1896,7 +2023,7 @@ impl Codegen {
              \x20 ret ptr %fat\n\
              }\n\n",
         );
-        // sort_str — copy array and in-place insertion sort using strcmp
+        // sort_str — copy array and in-place heap sort using strcmp, O(n log n)
         self.body.push_str(
             "define ptr @sort_str(ptr %arr) {\n\
              entry:\n\
@@ -1908,43 +2035,157 @@ impl Codegen {
              \x20 %bytes = mul i64 %len, 8\n\
              \x20 %new_data = call ptr @malloc(i64 %bytes)\n\
              \x20 call ptr @memcpy(ptr %new_data, ptr %data, i64 %bytes)\n\
-             \x20 ; insertion sort\n\
-             \x20 br label %outer\n\
-             outer:\n\
-             \x20 %oi = phi i64 [ 1, %entry ], [ %oi_next, %outer_cont ]\n\
-             \x20 %o_done = icmp sge i64 %oi, %len\n\
-             \x20 br i1 %o_done, label %build, label %outer_body\n\
-             outer_body:\n\
-             \x20 %kp = getelementptr ptr, ptr %new_data, i64 %oi\n\
-             \x20 %key = load ptr, ptr %kp\n\
-             \x20 %ji = sub i64 %oi, 1\n\
-             \x20 br label %inner\n\
-             inner:\n\
-             \x20 %j = phi i64 [ %ji, %outer_body ], [ %j_prev, %shift ]\n\
-             \x20 %j_ge0 = icmp sge i64 %j, 0\n\
-             \x20 br i1 %j_ge0, label %inner_check, label %insert\n\
-             inner_check:\n\
-             \x20 %jp = getelementptr ptr, ptr %new_data, i64 %j\n\
-             \x20 %jv = load ptr, ptr %jp\n\
-             \x20 %cmp = call i32 @strcmp(ptr %jv, ptr %key)\n\
-             \x20 %gt = icmp sgt i32 %cmp, 0\n\
-             \x20 br i1 %gt, label %shift, label %insert\n\
-             shift:\n\
-             \x20 %j1 = add i64 %j, 1\n\
-             \x20 %dp = getelementptr ptr, ptr %new_data, i64 %j1\n\
-             \x20 store ptr %jv, ptr %dp\n\
-             \x20 %j_prev = sub i64 %j, 1\n\
-             \x20 br label %inner\n\
-             insert:\n\
-             \x20 %ins_j = phi i64 [ %j, %inner ], [ %j, %inner_check ]\n\
-             \x20 %ins_pos = add i64 %ins_j, 1\n\
-             \x20 %ins_p = getelementptr ptr, ptr %new_data, i64 %ins_pos\n\
-             \x20 store ptr %key, ptr %ins_p\n\
-             \x20 br label %outer_cont\n\
-             outer_cont:\n\
-             \x20 %oi_next = add i64 %oi, 1\n\
-             \x20 br label %outer\n\
-             build:\n\
+             \x20 ; heap sort phase 1: build max-heap\n\
+             \x20 %bi_addr = alloca i64\n\
+             \x20 %half = sdiv i64 %len, 2\n\
+             \x20 %start = sub i64 %half, 1\n\
+             \x20 store i64 %start, ptr %bi_addr\n\
+             \x20 br label %build_loop\n\
+             build_loop:\n\
+             \x20 %bi = load i64, ptr %bi_addr\n\
+             \x20 %b_done = icmp slt i64 %bi, 0\n\
+             \x20 br i1 %b_done, label %extract_init, label %build_sift\n\
+             build_sift:\n\
+             \x20 %root_addr = alloca i64\n\
+             \x20 store i64 %bi, ptr %root_addr\n\
+             \x20 br label %sift_b\n\
+             sift_b:\n\
+             \x20 %sb_r = load i64, ptr %root_addr\n\
+             \x20 %sb_left1 = add i64 %sb_r, %sb_r\n\
+             \x20 %sb_left = add i64 %sb_left1, 1\n\
+             \x20 %sb_right = add i64 %sb_left, 1\n\
+             \x20 %lg_addr = alloca i64\n\
+             \x20 store i64 %sb_r, ptr %lg_addr\n\
+             \x20 %sb_lvalid = icmp slt i64 %sb_left, %len\n\
+             \x20 br i1 %sb_lvalid, label %sift_b_lcmp, label %sift_b_rchk\n\
+             sift_b_lcmp:\n\
+             \x20 %sb_lg1 = load i64, ptr %lg_addr\n\
+             \x20 %sb_lp = getelementptr ptr, ptr %new_data, i64 %sb_left\n\
+             \x20 %sb_lv = load ptr, ptr %sb_lp\n\
+             \x20 %sb_bp = getelementptr ptr, ptr %new_data, i64 %sb_lg1\n\
+             \x20 %sb_bv = load ptr, ptr %sb_bp\n\
+             \x20 %sb_cmp = call i32 @strcmp(ptr %sb_lv, ptr %sb_bv)\n\
+             \x20 %sb_lgt = icmp sgt i32 %sb_cmp, 0\n\
+             \x20 br i1 %sb_lgt, label %sift_b_lset, label %sift_b_rchk\n\
+             sift_b_lset:\n\
+             \x20 store i64 %sb_left, ptr %lg_addr\n\
+             \x20 br label %sift_b_rchk\n\
+             sift_b_rchk:\n\
+             \x20 %sb_rvalid = icmp slt i64 %sb_right, %len\n\
+             \x20 br i1 %sb_rvalid, label %sift_b_rcmp, label %sift_b_chk\n\
+             sift_b_rcmp:\n\
+             \x20 %sb_lg2 = load i64, ptr %lg_addr\n\
+             \x20 %sb_rp = getelementptr ptr, ptr %new_data, i64 %sb_right\n\
+             \x20 %sb_rv = load ptr, ptr %sb_rp\n\
+             \x20 %sb_b3p = getelementptr ptr, ptr %new_data, i64 %sb_lg2\n\
+             \x20 %sb_b3v = load ptr, ptr %sb_b3p\n\
+             \x20 %sb_cmp2 = call i32 @strcmp(ptr %sb_rv, ptr %sb_b3v)\n\
+             \x20 %sb_rgt = icmp sgt i32 %sb_cmp2, 0\n\
+             \x20 br i1 %sb_rgt, label %sift_b_rset, label %sift_b_chk\n\
+             sift_b_rset:\n\
+             \x20 store i64 %sb_right, ptr %lg_addr\n\
+             \x20 br label %sift_b_chk\n\
+             sift_b_chk:\n\
+             \x20 %sb_largest = load i64, ptr %lg_addr\n\
+             \x20 %sb_r2 = load i64, ptr %root_addr\n\
+             \x20 %sb_changed = icmp ne i64 %sb_largest, %sb_r2\n\
+             \x20 br i1 %sb_changed, label %sift_b_swap, label %build_cont\n\
+             sift_b_swap:\n\
+             \x20 %sb_r3 = load i64, ptr %root_addr\n\
+             \x20 %sb_rp2 = getelementptr ptr, ptr %new_data, i64 %sb_r3\n\
+             \x20 %sb_rv2 = load ptr, ptr %sb_rp2\n\
+             \x20 %sb_lg3 = load i64, ptr %lg_addr\n\
+             \x20 %sb_lp2 = getelementptr ptr, ptr %new_data, i64 %sb_lg3\n\
+             \x20 %sb_lv2 = load ptr, ptr %sb_lp2\n\
+             \x20 store ptr %sb_lv2, ptr %sb_rp2\n\
+             \x20 store ptr %sb_rv2, ptr %sb_lp2\n\
+             \x20 store i64 %sb_lg3, ptr %root_addr\n\
+             \x20 br label %sift_b\n\
+             build_cont:\n\
+             \x20 %bi2 = load i64, ptr %bi_addr\n\
+             \x20 %bi_next = sub i64 %bi2, 1\n\
+             \x20 store i64 %bi_next, ptr %bi_addr\n\
+             \x20 br label %build_loop\n\
+             extract_init:\n\
+             \x20 %end_addr = alloca i64\n\
+             \x20 %len_m1 = sub i64 %len, 1\n\
+             \x20 store i64 %len_m1, ptr %end_addr\n\
+             \x20 br label %extract_loop\n\
+             extract_loop:\n\
+             \x20 %end = load i64, ptr %end_addr\n\
+             \x20 %e_done = icmp sle i64 %end, 0\n\
+             \x20 br i1 %e_done, label %build_fat, label %extract_swap\n\
+             extract_swap:\n\
+             \x20 %e0p = getelementptr ptr, ptr %new_data, i64 0\n\
+             \x20 %e0v = load ptr, ptr %e0p\n\
+             \x20 %end2 = load i64, ptr %end_addr\n\
+             \x20 %eep = getelementptr ptr, ptr %new_data, i64 %end2\n\
+             \x20 %eev = load ptr, ptr %eep\n\
+             \x20 store ptr %eev, ptr %e0p\n\
+             \x20 store ptr %e0v, ptr %eep\n\
+             \x20 %se_root = alloca i64\n\
+             \x20 store i64 0, ptr %se_root\n\
+             \x20 br label %sift_e\n\
+             sift_e:\n\
+             \x20 %se_r = load i64, ptr %se_root\n\
+             \x20 %se_left1 = add i64 %se_r, %se_r\n\
+             \x20 %se_left = add i64 %se_left1, 1\n\
+             \x20 %se_right = add i64 %se_left, 1\n\
+             \x20 %se_lg_addr = alloca i64\n\
+             \x20 store i64 %se_r, ptr %se_lg_addr\n\
+             \x20 %se_end = load i64, ptr %end_addr\n\
+             \x20 %se_lvalid = icmp slt i64 %se_left, %se_end\n\
+             \x20 br i1 %se_lvalid, label %sift_e_lcmp, label %sift_e_rchk\n\
+             sift_e_lcmp:\n\
+             \x20 %se_lg1 = load i64, ptr %se_lg_addr\n\
+             \x20 %se_lp = getelementptr ptr, ptr %new_data, i64 %se_left\n\
+             \x20 %se_lv = load ptr, ptr %se_lp\n\
+             \x20 %se_bp = getelementptr ptr, ptr %new_data, i64 %se_lg1\n\
+             \x20 %se_bv = load ptr, ptr %se_bp\n\
+             \x20 %se_cmp = call i32 @strcmp(ptr %se_lv, ptr %se_bv)\n\
+             \x20 %se_lgt = icmp sgt i32 %se_cmp, 0\n\
+             \x20 br i1 %se_lgt, label %sift_e_lset, label %sift_e_rchk\n\
+             sift_e_lset:\n\
+             \x20 store i64 %se_left, ptr %se_lg_addr\n\
+             \x20 br label %sift_e_rchk\n\
+             sift_e_rchk:\n\
+             \x20 %se_end2 = load i64, ptr %end_addr\n\
+             \x20 %se_rvalid = icmp slt i64 %se_right, %se_end2\n\
+             \x20 br i1 %se_rvalid, label %sift_e_rcmp, label %sift_e_chk\n\
+             sift_e_rcmp:\n\
+             \x20 %se_lg2 = load i64, ptr %se_lg_addr\n\
+             \x20 %se_rp = getelementptr ptr, ptr %new_data, i64 %se_right\n\
+             \x20 %se_rv = load ptr, ptr %se_rp\n\
+             \x20 %se_b3p = getelementptr ptr, ptr %new_data, i64 %se_lg2\n\
+             \x20 %se_b3v = load ptr, ptr %se_b3p\n\
+             \x20 %se_cmp2 = call i32 @strcmp(ptr %se_rv, ptr %se_b3v)\n\
+             \x20 %se_rgt = icmp sgt i32 %se_cmp2, 0\n\
+             \x20 br i1 %se_rgt, label %sift_e_rset, label %sift_e_chk\n\
+             sift_e_rset:\n\
+             \x20 store i64 %se_right, ptr %se_lg_addr\n\
+             \x20 br label %sift_e_chk\n\
+             sift_e_chk:\n\
+             \x20 %se_largest = load i64, ptr %se_lg_addr\n\
+             \x20 %se_r2 = load i64, ptr %se_root\n\
+             \x20 %se_changed = icmp ne i64 %se_largest, %se_r2\n\
+             \x20 br i1 %se_changed, label %sift_e_swap, label %sift_e_done\n\
+             sift_e_swap:\n\
+             \x20 %se_r3 = load i64, ptr %se_root\n\
+             \x20 %se_rp2 = getelementptr ptr, ptr %new_data, i64 %se_r3\n\
+             \x20 %se_rv2 = load ptr, ptr %se_rp2\n\
+             \x20 %se_lg3 = load i64, ptr %se_lg_addr\n\
+             \x20 %se_lp2 = getelementptr ptr, ptr %new_data, i64 %se_lg3\n\
+             \x20 %se_lv2 = load ptr, ptr %se_lp2\n\
+             \x20 store ptr %se_lv2, ptr %se_rp2\n\
+             \x20 store ptr %se_rv2, ptr %se_lp2\n\
+             \x20 store i64 %se_lg3, ptr %se_root\n\
+             \x20 br label %sift_e\n\
+             sift_e_done:\n\
+             \x20 %end3 = load i64, ptr %end_addr\n\
+             \x20 %end_next = sub i64 %end3, 1\n\
+             \x20 store i64 %end_next, ptr %end_addr\n\
+             \x20 br label %extract_loop\n\
+             build_fat:\n\
              \x20 %fat = call ptr @malloc(i64 24)\n\
              \x20 %fd = getelementptr { ptr, i64, i64 }, ptr %fat, i32 0, i32 0\n\
              \x20 store ptr %new_data, ptr %fd\n\
@@ -3884,6 +4125,17 @@ impl Codegen {
 
     // ── Function emission ────────────────────────────────────
 
+    /// Check if a function qualifies for the `alwaysinline` LLVM attribute.
+    fn should_inline(f: &FnDecl) -> bool {
+        f.is_pure
+            && f.name != "main"
+            && f.body.stmts.len() <= 3
+            && !f
+                .contracts
+                .iter()
+                .any(|c| matches!(c, Contract::Requires(_) | Contract::Ensures(_)))
+    }
+
     fn emit_function(&mut self, f: &FnDecl) -> Result<(), CodegenError> {
         self.temp_counter = 0;
         self.label_counter = 0;
@@ -3925,12 +4177,20 @@ impl Codegen {
             String::new()
         };
 
+        let inline_attr = if Self::should_inline(f) {
+            self.has_inline_fns = true;
+            " #0"
+        } else {
+            ""
+        };
+
         self.body.push_str(&format!(
-            "define {} @{}({}){} {{\n",
+            "define {} @{}({}){}{} {{\n",
             ret_ty,
             f.name,
             params.join(", "),
-            dbg_suffix
+            dbg_suffix,
+            inline_attr
         ));
         self.body.push_str("entry:\n");
 
@@ -4050,12 +4310,20 @@ impl Codegen {
             String::new()
         };
 
+        let inline_attr = if Self::should_inline(f) {
+            self.has_inline_fns = true;
+            " #0"
+        } else {
+            ""
+        };
+
         self.body.push_str(&format!(
-            "define {} @{}({}){} {{\n",
+            "define {} @{}({}){}{} {{\n",
             ret_ty,
             mangled_name,
             params.join(", "),
-            dbg_suffix
+            dbg_suffix,
+            inline_attr
         ));
         self.body.push_str("entry:\n");
 
@@ -4386,6 +4654,21 @@ impl Codegen {
         if ret_ty == "void" {
             self.emit_line("ret void");
         } else {
+            // Tail call optimization: detect `return f(args)` pattern
+            let is_tail_call = {
+                let contracts = &self.current_fn_contracts;
+                let no_ensures = !Self::has_ensures(contracts);
+                let is_simple_call = matches!(
+                    &s.value.kind,
+                    ExprKind::Call(callee, _) if matches!(&callee.kind, ExprKind::Ident(_))
+                );
+                let no_ptr_load = !(ret_ty.starts_with('%') && self.expr_returns_ptr(&s.value));
+                no_ensures && is_simple_call && no_ptr_load
+            };
+            if is_tail_call {
+                self.tail_call_hint = true;
+            }
+
             // Set expected enum hint for return value (e.g., return Some(42);)
             if let Some(stripped) = ret_ty.strip_prefix('%') {
                 if self.enum_layouts.contains_key(stripped) {
@@ -4394,6 +4677,7 @@ impl Codegen {
             }
             let val = self.emit_expr(&s.value)?;
             self.current_expected_enum = None;
+            self.tail_call_hint = false;
 
             // Enum/struct variant constructors return alloca pointers (ptr type),
             // but `ret %EnumType %ptr` is invalid — need to load the value first
@@ -4947,7 +5231,108 @@ impl Codegen {
     // ── Expression emission ──────────────────────────────────
     // Each `emit_expr` returns the LLVM value name (SSA temp or literal).
 
+    // ── Constant folding ─────────────────────────────────────
+
+    /// Try to evaluate a constant expression at compile time.
+    /// Returns the LLVM literal string if fully foldable, None otherwise.
+    fn try_const_fold(expr: &Expr) -> Option<String> {
+        match &expr.kind {
+            ExprKind::Literal(Literal::Int(n)) => Some(n.to_string()),
+            ExprKind::Literal(Literal::Bool(b)) => {
+                Some(if *b { "true" } else { "false" }.to_string())
+            }
+            ExprKind::Unary(UnaryOp::Neg, operand) => {
+                if let Some(val) = Self::try_const_fold(operand) {
+                    val.parse::<i64>()
+                        .ok()
+                        .map(|n| n.wrapping_neg().to_string())
+                } else {
+                    None
+                }
+            }
+            ExprKind::Unary(UnaryOp::Not, operand) => {
+                match Self::try_const_fold(operand)?.as_str() {
+                    "true" => Some("false".to_string()),
+                    "false" => Some("true".to_string()),
+                    _ => None,
+                }
+            }
+            ExprKind::Binary(lhs, op, rhs) => {
+                let l = Self::try_const_fold(lhs)?;
+                let r = Self::try_const_fold(rhs)?;
+                // Try int arithmetic
+                if let (Ok(li), Ok(ri)) = (l.parse::<i64>(), r.parse::<i64>()) {
+                    return Self::fold_binary_int(li, op, ri);
+                }
+                // Try bool logic
+                let lb = match l.as_str() {
+                    "true" => Some(true),
+                    "false" => Some(false),
+                    _ => None,
+                };
+                let rb = match r.as_str() {
+                    "true" => Some(true),
+                    "false" => Some(false),
+                    _ => None,
+                };
+                if let (Some(lb), Some(rb)) = (lb, rb) {
+                    return match op {
+                        BinOp::And => Some(if lb && rb { "true" } else { "false" }.to_string()),
+                        BinOp::Or => Some(if lb || rb { "true" } else { "false" }.to_string()),
+                        BinOp::Eq => Some(if lb == rb { "true" } else { "false" }.to_string()),
+                        BinOp::NotEq => Some(if lb != rb { "true" } else { "false" }.to_string()),
+                        _ => None,
+                    };
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// Fold a binary operation on two integer constants.
+    fn fold_binary_int(l: i64, op: &BinOp, r: i64) -> Option<String> {
+        match op {
+            BinOp::Add => Some(l.wrapping_add(r).to_string()),
+            BinOp::Sub => Some(l.wrapping_sub(r).to_string()),
+            BinOp::Mul => Some(l.wrapping_mul(r).to_string()),
+            BinOp::Div => {
+                if r == 0 {
+                    None
+                } else {
+                    l.checked_div(r).map(|v| v.to_string())
+                }
+            }
+            BinOp::Mod => {
+                if r == 0 {
+                    None
+                } else {
+                    l.checked_rem(r).map(|v| v.to_string())
+                }
+            }
+            BinOp::BitAnd => Some((l & r).to_string()),
+            BinOp::BitOr => Some((l | r).to_string()),
+            BinOp::BitXor => Some((l ^ r).to_string()),
+            BinOp::Shl => Some(l.wrapping_shl(r as u32).to_string()),
+            BinOp::Shr => Some(l.wrapping_shr(r as u32).to_string()),
+            BinOp::Eq => Some(if l == r { "true" } else { "false" }.to_string()),
+            BinOp::NotEq => Some(if l != r { "true" } else { "false" }.to_string()),
+            BinOp::Lt => Some(if l < r { "true" } else { "false" }.to_string()),
+            BinOp::Gt => Some(if l > r { "true" } else { "false" }.to_string()),
+            BinOp::LtEq => Some(if l <= r { "true" } else { "false" }.to_string()),
+            BinOp::GtEq => Some(if l >= r { "true" } else { "false" }.to_string()),
+            BinOp::And | BinOp::Or => None, // and/or on ints not applicable
+        }
+    }
+
+    // ── Expression emission ─────────────────────────────────
+
     fn emit_expr(&mut self, expr: &Expr) -> Result<String, CodegenError> {
+        // Constant folding: evaluate compile-time constant expressions
+        if let Some(folded) = Self::try_const_fold(expr) {
+            return Ok(folded);
+        }
+
         match &expr.kind {
             ExprKind::Literal(lit) => self.emit_literal(lit),
 
@@ -5703,10 +6088,16 @@ impl Codegen {
 
                         let ret_ty = self.fn_ret_types[name.as_str()].clone();
                         let llvm_ret = self.llvm_type(&ret_ty);
+                        let call_prefix = if self.tail_call_hint {
+                            "tail call"
+                        } else {
+                            "call"
+                        };
 
                         if llvm_ret == "void" {
                             self.emit_line(&format!(
-                                "call void @{}({})",
+                                "{} void @{}({})",
+                                call_prefix,
                                 name,
                                 arg_strs.join(", ")
                             ));
@@ -5714,8 +6105,9 @@ impl Codegen {
                         } else {
                             let tmp = self.fresh_temp();
                             self.emit_line(&format!(
-                                "{} = call {} @{}({})",
+                                "{} = {} {} @{}({})",
                                 tmp,
+                                call_prefix,
                                 llvm_ret,
                                 name,
                                 arg_strs.join(", ")

@@ -1,3 +1,8 @@
+// closures.yrm — Closures and higher-order functions.
+//
+// Demonstrates: closure literals, environment capture,
+// higher-order functions, block-end comments.
+
 fn apply(f: fn(int) -> int, x: int) -> int {
     return f(x);
 }
@@ -22,5 +27,6 @@ fn main() -> int {
     let sum_all: fn(int) -> int = |x: int| -> int { return x + a + b; };
     print_int(sum_all(3));
 
+    // end of main
     return result;
 }

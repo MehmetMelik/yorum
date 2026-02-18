@@ -58,6 +58,7 @@ yorum ast     <file.yrm>                    Dump the full AST as JSON
 yorum build   [-o output]                   Build multi-file project (requires yorum.toml)
 yorum init    [name]                        Scaffold a new project
 yorum run     <file.yrm> [-- args...]       Compile, link, and execute in one step
+yorum fmt     [--check] <file.yrm>...       Auto-format source files
 yorum repl                                  Interactive expression evaluator
 yorum lsp                                   Start LSP server (stdin/stdout)
 ```
@@ -782,6 +783,8 @@ cargo test test_fibonacci     # single test by name
 | **v1.4** | Effect system enforcement: 6 effect categories (io, fs, net, time, env, concurrency), compile-time checking, effect inference, backward compatibility | Done |
 | **v1.4.1** | Restore self-hosting bootstrap, fix 4 compiler bugs (ownership, codegen, typechecker) | Done |
 | **v1.5.0** | Tooling & DX: `yorum run`, `yorum repl`, LSP completions/code actions, DWARF debug info (`-g`) | Done |
+| **v1.6.0** | Auto-formatter: `yorum fmt` with comment preservation, `--check` for CI | Done |
+| **v1.7** | Performance & optimization: tail calls, constant folding, dead code elimination | Planned |
 
 ## License
 

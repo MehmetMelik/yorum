@@ -33,6 +33,17 @@ pure fn manhattan(px: int, py: int) -> int {
     return ax + ay;
 }
 
+// Classify a number as negative, zero, or positive.
+fn classify(n: int) -> int {
+    if n < 0 {
+        return -1;
+    } else if n == 0 {
+        return 0;
+    } else {
+        return 1;
+    }
+}
+
 fn main() -> int {
     let p: Point = Point { x: 3, y: 4 };
     let r: Rect = Rect { width: 10, height: 5 };
@@ -41,6 +52,11 @@ fn main() -> int {
     print_int(p.y);
     print_int(area(r.width, r.height));
     print_int(manhattan(p.x, p.y));
+
+    // if/else if/else chain
+    print_int(classify(-5));
+    print_int(classify(0));
+    print_int(classify(7));
 
     return 0;
 }

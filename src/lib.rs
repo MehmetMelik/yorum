@@ -223,6 +223,28 @@ pub fn compile_to_ir_with_options(
     Ok(ir)
 }
 
+/// Format Yorum source code.
+///
+/// Lexes with comment collection, parses, then walks the AST to produce
+/// consistently formatted output. Does not type-check — works on any
+/// syntactically valid source.
+pub fn format_source(source: &str) -> Result<String, String> {
+    use compiler::formatter::Formatter;
+    use compiler::lexer::Lexer;
+    use compiler::parser::Parser;
+
+    let lexer = Lexer::new_with_comments(source);
+    let (tokens, comments, source_chars) = lexer
+        .tokenize_with_comments()
+        .map_err(|e| format!("{}", e))?;
+
+    let mut parser = Parser::new(tokens);
+    let program = parser.parse_program().map_err(|e| format!("{}", e))?;
+
+    let formatter = Formatter::new(source_chars, comments);
+    Ok(formatter.format_program(&program))
+}
+
 /// Return the list of builtin function names and their signatures.
 pub fn builtin_function_list() -> Vec<(String, String)> {
     compiler::typechecker::TypeChecker::builtin_names()

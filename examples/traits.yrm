@@ -1,8 +1,18 @@
+// traits.yrm — Traits with method implementations.
+//
+// Demonstrates: trait definitions, impl blocks, method dispatch,
+// unit-returning trait methods, comments inside impl blocks.
+
 struct Point { x: int, y: int }
 struct Rect { w: int, h: int }
 
 trait Describable {
     fn describe(self: &Self) -> int;
+}
+
+// Trait with a unit-returning method
+trait Printable {
+    fn print_info(self: &Self) -> unit;
 }
 
 impl Describable for Point {
@@ -17,10 +27,33 @@ impl Describable for Rect {
     }
 }
 
+impl Printable for Point {
+    // Print the x and y coordinates
+    fn print_info(self: &Point) -> unit {
+        print_int(self.x);
+        print_int(self.y);
+    }
+}
+
+impl Printable for Rect {
+    // Print width and height
+    fn print_info(self: &Rect) -> unit {
+        print_int(self.w);
+        print_int(self.h);
+    }
+}
+
 fn main() -> int {
     let p: Point = Point { x: 10, y: 20 };
     let r: Rect = Rect { w: 3, h: 4 };
+
+    // Describable trait (returns int)
     print_int(p.describe());
     print_int(r.describe());
+
+    // Printable trait (returns unit)
+    p.print_info();
+    r.print_info();
+
     return 0;
 }

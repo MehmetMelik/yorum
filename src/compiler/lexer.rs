@@ -21,6 +21,17 @@ impl fmt::Display for LexError {
 impl std::error::Error for LexError {}
 
 // ═══════════════════════════════════════════════════════════════
+//  Comment (for formatter)
+// ═══════════════════════════════════════════════════════════════
+
+#[derive(Debug, Clone)]
+pub struct Comment {
+    pub text: String,
+    pub span: Span,
+    pub is_block: bool,
+}
+
+// ═══════════════════════════════════════════════════════════════
 //  Lexer
 // ═══════════════════════════════════════════════════════════════
 
@@ -29,6 +40,8 @@ pub struct Lexer {
     pos: usize,
     line: u32,
     col: u32,
+    collect_comments: bool,
+    comments: Vec<Comment>,
 }
 
 impl Lexer {
@@ -38,7 +51,28 @@ impl Lexer {
             pos: 0,
             line: 1,
             col: 1,
+            collect_comments: false,
+            comments: Vec::new(),
         }
+    }
+
+    pub fn new_with_comments(source: &str) -> Self {
+        Self {
+            source: source.chars().collect(),
+            pos: 0,
+            line: 1,
+            col: 1,
+            collect_comments: true,
+            comments: Vec::new(),
+        }
+    }
+
+    #[allow(clippy::type_complexity)]
+    pub fn tokenize_with_comments(
+        mut self,
+    ) -> Result<(Vec<Token>, Vec<Comment>, Vec<char>), LexError> {
+        let tokens = self.tokenize()?;
+        Ok((tokens, self.comments, self.source))
     }
 
     /// Tokenize the entire source into a Vec<Token>.
@@ -257,14 +291,28 @@ impl Lexer {
 
             // Skip line comments: //
             if self.peek() == Some('/') && self.peek_next() == Some('/') {
+                let start = self.pos;
+                let start_line = self.line;
+                let start_col = self.col;
                 while !self.is_at_end() && self.peek() != Some('\n') {
                     self.advance();
+                }
+                if self.collect_comments {
+                    let text: String = self.source[start..self.pos].iter().collect();
+                    self.comments.push(Comment {
+                        text,
+                        span: Span::new(start, self.pos, start_line, start_col),
+                        is_block: false,
+                    });
                 }
                 continue;
             }
 
             // Skip block comments: /* ... */
             if self.peek() == Some('/') && self.peek_next() == Some('*') {
+                let start = self.pos;
+                let start_line = self.line;
+                let start_col = self.col;
                 self.advance(); // /
                 self.advance(); // *
                 let mut depth = 1;
@@ -280,6 +328,14 @@ impl Lexer {
                     } else {
                         self.advance();
                     }
+                }
+                if self.collect_comments {
+                    let text: String = self.source[start..self.pos].iter().collect();
+                    self.comments.push(Comment {
+                        text,
+                        span: Span::new(start, self.pos, start_line, start_col),
+                        is_block: false,
+                    });
                 }
                 continue;
             }

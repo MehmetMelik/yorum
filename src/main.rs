@@ -17,6 +17,7 @@ fn main() {
         "build" => cmd_build(&args[2..]),
         "init" => cmd_init(&args[2..]),
         "run" => cmd_run(&args[2..]),
+        "fmt" => cmd_fmt(&args[2..]),
         "repl" => cmd_repl(),
         "lsp" => cmd_lsp(),
         "help" | "--help" | "-h" => print_usage(),
@@ -47,6 +48,7 @@ fn print_usage() {
          \x20 yorum build   [-o output]                     Build project (requires yorum.toml)\n\
          \x20 yorum init    [name]                          Initialize a new project\n\
          \x20 yorum run     <file.yrm> [-- args...]         Compile, link, and execute\n\
+         \x20 yorum fmt     [--check] <file.yrm>...        Auto-format source files\n\
          \x20 yorum repl                                    Interactive REPL\n\
          \x20 yorum lsp                                     Start LSP server (stdin/stdout)\n\
          \x20 yorum help                                    Show this message\n\
@@ -442,6 +444,57 @@ fn cmd_run(args: &[String]) {
     let _ = fs::remove_file(&bin_path);
 
     process::exit(status.code().unwrap_or(0));
+}
+
+fn cmd_fmt(args: &[String]) {
+    let mut check_only = false;
+    let mut files: Vec<String> = Vec::new();
+
+    for arg in args {
+        match arg.as_str() {
+            "--check" => check_only = true,
+            _ => files.push(arg.clone()),
+        }
+    }
+
+    if files.is_empty() {
+        eprintln!("error: no input files specified");
+        eprintln!("usage: yorum fmt [--check] <file.yrm>...");
+        process::exit(1);
+    }
+
+    let mut any_changed = false;
+
+    for file in &files {
+        let source = read_source(file);
+        let formatted = match yorum::format_source(&source) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("error: {}: {}", file, e);
+                process::exit(1);
+            }
+        };
+
+        if source == formatted {
+            continue;
+        }
+
+        any_changed = true;
+
+        if check_only {
+            eprintln!("{} needs formatting", file);
+        } else {
+            fs::write(file, &formatted).unwrap_or_else(|e| {
+                eprintln!("error: cannot write '{}': {}", file, e);
+                process::exit(1);
+            });
+            eprintln!("formatted {}", file);
+        }
+    }
+
+    if check_only && any_changed {
+        process::exit(1);
+    }
 }
 
 fn cmd_repl() {

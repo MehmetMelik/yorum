@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 cargo build                          # dev build
 cargo build --release                # release build
-cargo test                           # all tests (478: 50 unit + 428 integration)
+cargo test                           # all tests (503: 50 unit + 453 integration)
 cargo test compiler::lexer           # tests in one module
 cargo test test_fibonacci_compiles   # single test by name
 cargo test -- --nocapture            # see stdout from tests
@@ -26,6 +26,8 @@ cargo run -- build -o out.ll               # build project to file
 cargo run -- init myproject                # scaffold new project
 cargo run -- run file.yrm                  # compile + link + execute (requires clang)
 cargo run -- run file.yrm -- arg1 arg2     # run with arguments
+cargo run -- fmt file.yrm                  # auto-format source file
+cargo run -- fmt --check file.yrm          # check formatting (CI mode, exit 1 if unformatted)
 cargo run -- repl                          # interactive REPL
 cargo run -- lsp                           # start LSP server (stdin/stdout)
 ```

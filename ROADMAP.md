@@ -48,13 +48,22 @@ The language is functionally complete but has daily-use paper cuts.
 - ~~**LSP code actions** — quick fixes: "Did you mean X?" (Levenshtein), effect clause hints, missing match arms~~
 - ~~**REPL** (`yorum repl`) — interactive expression evaluation via compile-link-execute loop, definition accumulation, `:type` command~~
 - ~~**Debug info** — DWARF metadata in LLVM IR (`-g` flag) so `lldb`/`gdb` support source-level stepping~~
-- **`yorum fmt`** — deferred (requires lexer to preserve comments/whitespace, major architectural refactoring)
-
 Rationale: The gap between "language features" and "usable language" is mostly tooling.
 
 ---
 
-## v1.6 — Performance & Optimization
+## v1.6 — Auto-Formatter (Done)
+
+- ~~**`yorum fmt`** — auto-formatter using hybrid approach: lexer comment collection + AST walk + source extraction for desugared constructs~~
+- ~~**`--check` flag** — CI integration (exit 1 if any file needs formatting)~~
+- ~~**Comment preservation** — line and block comments collected via lexer side-channel, reattached with blank-line-aware spacing~~
+- ~~**Round-trip safety** — string interpolation, compound assignments, and brace escaping preserved through format cycle~~
+
+Rationale: Deferred from v1.5 because the lexer discarded comments. Solved with a hybrid approach — modified lexer optionally collects comments into a side-channel, then the formatter walks the AST for structure while using source extraction for desugared constructs.
+
+---
+
+## v1.7 — Performance & Optimization
 
 Currently the compiler emits unoptimized alloca/load/store IR and relies entirely on LLVM's mem2reg.
 
@@ -68,7 +77,7 @@ Rationale: Performance doesn't matter until people write real programs, but thes
 
 ---
 
-## v1.7 — Package Manager
+## v1.8 — Package Manager
 
 - **`yorum.toml` dependencies section** — declare deps with git URLs or a registry
 - **`yorum install`** — fetch and cache dependencies
@@ -80,7 +89,7 @@ Rationale: No language ecosystem grows without a package manager. Prerequisite f
 
 ---
 
-## v1.8 — Iterators & Functional Patterns
+## v1.9 — Iterators & Functional Patterns
 
 - **Iterator trait/protocol** — `for x in expr` works with any type implementing `Iterator`
 - **Lazy iterator combinators** — `map`, `filter`, `fold`, `take`, `skip`, `zip`, `enumerate`, `chain`
@@ -115,4 +124,5 @@ The top 3 highest-impact releases:
 3. ~~**v1.3 (Generic Collections & Error Sugar)** — `Map<K,V>`, `Set<T>`, `?` operator~~ **Done**
 4. ~~**v1.4 (Effect System)** — the unique differentiator that no other language has done well~~ **Done**
 5. ~~**v1.5 (Tooling)** — `yorum run`, `yorum repl`, LSP completions/code actions, debug info~~ **Done**
-6. **v1.6 (Performance)** — tail call optimization, constant folding, dead code elimination
+6. ~~**v1.6 (Formatter)** — `yorum fmt` auto-formatter with comment preservation~~ **Done**
+7. **v1.7 (Performance)** — tail call optimization, constant folding, dead code elimination

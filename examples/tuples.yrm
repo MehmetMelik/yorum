@@ -42,5 +42,9 @@ fn main() -> int {
     let triple: (int, int, int) = (10, 20, 30);
     print_int(triple.0 + triple.1 + triple.2);
 
+    // Singleton tuple — trailing comma is required
+    let single: (int,) = (99,);
+    print_int(single.0);
+
     return 0;
 }

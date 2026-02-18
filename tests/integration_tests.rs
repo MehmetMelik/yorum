@@ -7109,3 +7109,484 @@ fn test_dce_keeps_enum_impl_methods() {
         ir
     );
 }
+
+// ═══════════════════════════════════════════════════════════════
+//  Package manager tests
+// ═══════════════════════════════════════════════════════════════
+
+fn create_lib_package(dir: &std::path::Path, name: &str, source: &str) {
+    let pkg_dir = dir.join(name);
+    let src_dir = pkg_dir.join("src");
+    std::fs::create_dir_all(&src_dir).unwrap();
+    std::fs::write(
+        pkg_dir.join("yorum.toml"),
+        format!("[package]\nname = \"{}\"\nversion = \"0.1.0\"\n", name),
+    )
+    .unwrap();
+    std::fs::write(src_dir.join(format!("{}.yrm", name)), source).unwrap();
+}
+
+#[test]
+fn test_path_dep_fn_export() {
+    let dir = tempfile::tempdir().unwrap();
+
+    // Create a library package
+    create_lib_package(
+        dir.path(),
+        "mathlib",
+        "module mathlib;\n\
+         pub fn add(a: int, b: int) -> int { return a + b; }\n",
+    );
+
+    // Create main app that depends on it
+    let app_dir = dir.path().join("app");
+    let app_src = app_dir.join("src");
+    std::fs::create_dir_all(&app_src).unwrap();
+    std::fs::write(
+        app_dir.join("yorum.toml"),
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n\
+         [dependencies]\nmathlib = { path = \"../mathlib\" }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        app_src.join("main.yrm"),
+        "module main;\n\
+         use mathlib;\n\
+         fn main() -> int {\n\
+         \x20   let result: int = add(10, 32);\n\
+         \x20   return result;\n\
+         }\n",
+    )
+    .unwrap();
+
+    let ir = yorum::compile_project(app_dir.as_path()).expect("path dep fn export failed");
+    assert!(ir.contains("define i64 @main(i32 %__argc, ptr %__argv)"));
+    assert!(ir.contains("define i64 @mathlib__add(i64 %a, i64 %b)"));
+}
+
+#[test]
+fn test_path_dep_struct_export() {
+    let dir = tempfile::tempdir().unwrap();
+
+    create_lib_package(
+        dir.path(),
+        "geom",
+        "module geom;\n\
+         pub struct Point { x: int, y: int }\n\
+         pub fn origin() -> Point { return Point { x: 0, y: 0 }; }\n",
+    );
+
+    let app_dir = dir.path().join("app");
+    let app_src = app_dir.join("src");
+    std::fs::create_dir_all(&app_src).unwrap();
+    std::fs::write(
+        app_dir.join("yorum.toml"),
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n\
+         [dependencies]\ngeom = { path = \"../geom\" }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        app_src.join("main.yrm"),
+        "module main;\n\
+         use geom;\n\
+         fn main() -> int {\n\
+         \x20   let p: Point = origin();\n\
+         \x20   return p.x;\n\
+         }\n",
+    )
+    .unwrap();
+
+    let ir = yorum::compile_project(app_dir.as_path()).expect("path dep struct export failed");
+    assert!(ir.contains("@geom__origin"));
+    assert!(ir.contains("%geom__Point"));
+}
+
+#[test]
+fn test_path_dep_enum_export() {
+    let dir = tempfile::tempdir().unwrap();
+
+    create_lib_package(
+        dir.path(),
+        "colors",
+        "module colors;\n\
+         pub enum Color { Red, Green, Blue }\n\
+         pub fn favorite() -> Color { return Green; }\n",
+    );
+
+    let app_dir = dir.path().join("app");
+    let app_src = app_dir.join("src");
+    std::fs::create_dir_all(&app_src).unwrap();
+    std::fs::write(
+        app_dir.join("yorum.toml"),
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n\
+         [dependencies]\ncolors = { path = \"../colors\" }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        app_src.join("main.yrm"),
+        "module main;\n\
+         use colors;\n\
+         fn main() -> int {\n\
+         \x20   let c: Color = favorite();\n\
+         \x20   match c {\n\
+         \x20       Red => { return 1; }\n\
+         \x20       Green => { return 2; }\n\
+         \x20       Blue => { return 3; }\n\
+         \x20   }\n\
+         }\n",
+    )
+    .unwrap();
+
+    let ir = yorum::compile_project(app_dir.as_path()).expect("path dep enum export failed");
+    assert!(ir.contains("@colors__favorite"));
+}
+
+#[test]
+fn test_multiple_path_deps() {
+    let dir = tempfile::tempdir().unwrap();
+
+    create_lib_package(
+        dir.path(),
+        "alpha",
+        "module alpha;\n\
+         pub fn get_a() -> int { return 1; }\n",
+    );
+    create_lib_package(
+        dir.path(),
+        "beta",
+        "module beta;\n\
+         pub fn get_b() -> int { return 2; }\n",
+    );
+
+    let app_dir = dir.path().join("app");
+    let app_src = app_dir.join("src");
+    std::fs::create_dir_all(&app_src).unwrap();
+    std::fs::write(
+        app_dir.join("yorum.toml"),
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n\
+         [dependencies]\nalpha = { path = \"../alpha\" }\nbeta = { path = \"../beta\" }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        app_src.join("main.yrm"),
+        "module main;\n\
+         use alpha;\n\
+         use beta;\n\
+         fn main() -> int {\n\
+         \x20   return get_a() + get_b();\n\
+         }\n",
+    )
+    .unwrap();
+
+    let ir = yorum::compile_project(app_dir.as_path()).expect("multiple path deps failed");
+    assert!(ir.contains("@alpha__get_a"));
+    assert!(ir.contains("@beta__get_b"));
+}
+
+#[test]
+fn test_missing_dep_path_error() {
+    let dir = tempfile::tempdir().unwrap();
+
+    let app_dir = dir.path().join("app");
+    let app_src = app_dir.join("src");
+    std::fs::create_dir_all(&app_src).unwrap();
+    std::fs::write(
+        app_dir.join("yorum.toml"),
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n\
+         [dependencies]\nmissing = { path = \"../nonexistent\" }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        app_src.join("main.yrm"),
+        "module main;\n\
+         fn main() -> int { return 0; }\n",
+    )
+    .unwrap();
+
+    let result = yorum::compile_project(app_dir.as_path());
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("does not exist"));
+}
+
+#[test]
+fn test_dep_without_manifest_error() {
+    let dir = tempfile::tempdir().unwrap();
+
+    // Create a directory without yorum.toml
+    let lib_dir = dir.path().join("badlib");
+    std::fs::create_dir_all(&lib_dir).unwrap();
+
+    let app_dir = dir.path().join("app");
+    let app_src = app_dir.join("src");
+    std::fs::create_dir_all(&app_src).unwrap();
+    std::fs::write(
+        app_dir.join("yorum.toml"),
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n\
+         [dependencies]\nbadlib = { path = \"../badlib\" }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        app_src.join("main.yrm"),
+        "module main;\n\
+         fn main() -> int { return 0; }\n",
+    )
+    .unwrap();
+
+    let result = yorum::compile_project(app_dir.as_path());
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("not a valid Yorum package"));
+}
+
+#[test]
+fn test_dep_name_mismatch_error() {
+    let dir = tempfile::tempdir().unwrap();
+
+    // Create lib with different name in yorum.toml
+    let lib_dir = dir.path().join("mylib");
+    let lib_src = lib_dir.join("src");
+    std::fs::create_dir_all(&lib_src).unwrap();
+    std::fs::write(
+        lib_dir.join("yorum.toml"),
+        "[package]\nname = \"different_name\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        lib_src.join("different_name.yrm"),
+        "module different_name;\n\
+         pub fn foo() -> int { return 1; }\n",
+    )
+    .unwrap();
+
+    let app_dir = dir.path().join("app");
+    let app_src = app_dir.join("src");
+    std::fs::create_dir_all(&app_src).unwrap();
+    std::fs::write(
+        app_dir.join("yorum.toml"),
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n\
+         [dependencies]\nmylib = { path = \"../mylib\" }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        app_src.join("main.yrm"),
+        "module main;\n\
+         fn main() -> int { return 0; }\n",
+    )
+    .unwrap();
+
+    let result = yorum::compile_project(app_dir.as_path());
+    assert!(result.is_err());
+    assert!(result
+        .unwrap_err()
+        .contains("package name in yorum.toml is 'different_name', expected 'mylib'"));
+}
+
+#[test]
+fn test_private_symbols_not_exported() {
+    let dir = tempfile::tempdir().unwrap();
+
+    create_lib_package(
+        dir.path(),
+        "privlib",
+        "module privlib;\n\
+         pub fn public_fn() -> int { return internal_fn(); }\n\
+         fn internal_fn() -> int { return 42; }\n",
+    );
+
+    let app_dir = dir.path().join("app");
+    let app_src = app_dir.join("src");
+    std::fs::create_dir_all(&app_src).unwrap();
+    std::fs::write(
+        app_dir.join("yorum.toml"),
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n\
+         [dependencies]\nprivlib = { path = \"../privlib\" }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        app_src.join("main.yrm"),
+        "module main;\n\
+         use privlib;\n\
+         fn main() -> int {\n\
+         \x20   return internal_fn();\n\
+         }\n",
+    )
+    .unwrap();
+
+    let result = yorum::compile_project(app_dir.as_path());
+    // internal_fn is private, so this should fail at type-check
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_no_deps_backward_compat() {
+    // Existing projects with no deps still work
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+
+    std::fs::write(
+        dir.path().join("yorum.toml"),
+        "[package]\nname = \"nodeps\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+
+    std::fs::write(
+        src.join("main.yrm"),
+        "module main;\n\
+         fn main() -> int { return 0; }\n",
+    )
+    .unwrap();
+
+    let ir = yorum::compile_project(dir.path()).expect("no deps backward compat failed");
+    assert!(ir.contains("define i64 @main(i32 %__argc, ptr %__argv)"));
+    // No lock file should be created when there are no deps
+    assert!(!dir.path().join("yorum.lock").exists());
+}
+
+#[test]
+fn test_lock_file_generated_after_build() {
+    let dir = tempfile::tempdir().unwrap();
+
+    create_lib_package(
+        dir.path(),
+        "locklib",
+        "module locklib;\n\
+         pub fn value() -> int { return 99; }\n",
+    );
+
+    let app_dir = dir.path().join("app");
+    let app_src = app_dir.join("src");
+    std::fs::create_dir_all(&app_src).unwrap();
+    std::fs::write(
+        app_dir.join("yorum.toml"),
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n\
+         [dependencies]\nlocklib = { path = \"../locklib\" }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        app_src.join("main.yrm"),
+        "module main;\n\
+         use locklib;\n\
+         fn main() -> int { return value(); }\n",
+    )
+    .unwrap();
+
+    let _ir = yorum::compile_project(app_dir.as_path()).expect("build with lock file failed");
+
+    // Lock file should exist after build
+    let lock_path = app_dir.join("yorum.lock");
+    assert!(
+        lock_path.exists(),
+        "yorum.lock should be created after build"
+    );
+
+    let lock_content = std::fs::read_to_string(&lock_path).unwrap();
+    assert!(lock_content.contains("locklib"));
+    assert!(lock_content.contains("path+../locklib"));
+}
+
+#[test]
+fn test_install_with_path_deps() {
+    let dir = tempfile::tempdir().unwrap();
+
+    create_lib_package(
+        dir.path(),
+        "instlib",
+        "module instlib;\n\
+         pub fn hello() -> int { return 1; }\n",
+    );
+
+    let app_dir = dir.path().join("app");
+    let app_src = app_dir.join("src");
+    std::fs::create_dir_all(&app_src).unwrap();
+    std::fs::write(
+        app_dir.join("yorum.toml"),
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n\
+         [dependencies]\ninstlib = { path = \"../instlib\" }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        app_src.join("main.yrm"),
+        "module main;\n\
+         fn main() -> int { return 0; }\n",
+    )
+    .unwrap();
+
+    let count = yorum::install_dependencies(app_dir.as_path()).expect("install failed");
+    assert_eq!(count, 1);
+
+    let lock_path = app_dir.join("yorum.lock");
+    assert!(lock_path.exists());
+}
+
+#[test]
+fn test_update_regenerates_lock() {
+    let dir = tempfile::tempdir().unwrap();
+
+    create_lib_package(
+        dir.path(),
+        "updlib",
+        "module updlib;\n\
+         pub fn val() -> int { return 1; }\n",
+    );
+
+    let app_dir = dir.path().join("app");
+    let app_src = app_dir.join("src");
+    std::fs::create_dir_all(&app_src).unwrap();
+    std::fs::write(
+        app_dir.join("yorum.toml"),
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n\
+         [dependencies]\nupdlib = { path = \"../updlib\" }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        app_src.join("main.yrm"),
+        "module main;\n\
+         fn main() -> int { return 0; }\n",
+    )
+    .unwrap();
+
+    // Install first
+    yorum::install_dependencies(app_dir.as_path()).unwrap();
+
+    // Update
+    let count = yorum::update_dependencies(app_dir.as_path(), None).expect("update failed");
+    assert_eq!(count, 1);
+
+    let lock_path = app_dir.join("yorum.lock");
+    assert!(lock_path.exists());
+}
+
+#[test]
+fn test_use_unknown_module_with_deps() {
+    let dir = tempfile::tempdir().unwrap();
+
+    create_lib_package(
+        dir.path(),
+        "reallib",
+        "module reallib;\n\
+         pub fn foo() -> int { return 1; }\n",
+    );
+
+    let app_dir = dir.path().join("app");
+    let app_src = app_dir.join("src");
+    std::fs::create_dir_all(&app_src).unwrap();
+    std::fs::write(
+        app_dir.join("yorum.toml"),
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n\
+         [dependencies]\nreallib = { path = \"../reallib\" }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        app_src.join("main.yrm"),
+        "module main;\n\
+         use nonexistent;\n\
+         fn main() -> int { return 0; }\n",
+    )
+    .unwrap();
+
+    let result = yorum::compile_project(app_dir.as_path());
+    assert!(result.is_err());
+    assert!(result
+        .unwrap_err()
+        .contains("not a local module or declared dependency"));
+}

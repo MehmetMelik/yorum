@@ -1,0 +1,11 @@
+module main;
+
+use string_utils;
+
+fn main() -> int {
+    let msg: string = exclaim("Yorum packages work");
+    print_str(msg);
+    let greeting: string = greet("World");
+    print_str(greeting);
+    return 0;
+}

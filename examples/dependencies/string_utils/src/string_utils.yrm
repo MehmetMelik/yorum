@@ -1,0 +1,13 @@
+module string_utils;
+
+pub fn exclaim(s: string) -> string {
+    return str_concat(s, "!");
+}
+
+pub fn greet(name: string) -> string {
+    return str_concat("Hello, ", str_concat(name, "!"));
+}
+
+fn internal_helper() -> int {
+    return 0;
+}

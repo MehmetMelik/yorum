@@ -2,6 +2,23 @@
 
 All notable changes to the Yorum programming language compiler.
 
+## [1.8.1] - 2026-02-18
+
+**Codegen Bug Fix** — duplicate variable names in nested scopes no longer produce invalid LLVM IR.
+
+### Fixed
+
+- **Unique alloca names** — `emit_let` and function parameter allocas now use `fresh_temp()` instead of `format!("%{}.addr", name)`, preventing duplicate LLVM SSA names when the same variable name appears in nested scopes or is re-bound in the same scope
+- **Block scoping in codegen** — `emit_if` (then/else branches) and `emit_while` (loop body) now push/pop variable scopes, so inner `let` bindings correctly shadow outer variables instead of overwriting them
+
+### Added
+
+- 4 new integration tests for variable shadowing: `test_variable_shadowing_in_if`, `test_variable_shadowing_in_else`, `test_variable_rebinding_same_scope`, `test_variable_shadowing_param`
+
+**Stats:** 2 files changed | Tests: 503 (68 unit + 503 integration)
+
+---
+
 ## [1.8.0] - 2026-02-18
 
 **Package Manager** — external dependencies via git URLs or local filesystem paths.

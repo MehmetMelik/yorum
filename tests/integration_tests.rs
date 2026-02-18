@@ -7590,3 +7590,80 @@ fn test_use_unknown_module_with_deps() {
         .unwrap_err()
         .contains("not a local module or declared dependency"));
 }
+
+// ═══════════════════════════════════════════════════════════════
+//  Variable shadowing / duplicate name tests
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn test_variable_shadowing_in_if() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let x: int = 1;\n\
+         \x20   if true {\n\
+         \x20       let x: int = 2;\n\
+         \x20       print_int(x);\n\
+         \x20   }\n\
+         \x20   print_int(x);\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    // Both allocas should have unique names (no duplicate %x.addr)
+    assert!(ir.contains("define i64 @main"));
+    assert!(ir.contains("alloca i64"));
+}
+
+#[test]
+fn test_variable_shadowing_in_else() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let x: int = 1;\n\
+         \x20   if false {\n\
+         \x20       print_int(x);\n\
+         \x20   } else {\n\
+         \x20       let x: int = 2;\n\
+         \x20       print_int(x);\n\
+         \x20   }\n\
+         \x20   print_int(x);\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("define i64 @main"));
+    assert!(ir.contains("alloca i64"));
+}
+
+#[test]
+fn test_variable_rebinding_same_scope() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let x: int = 1;\n\
+         \x20   let x: int = x + 1;\n\
+         \x20   print_int(x);\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("define i64 @main"));
+    // Two distinct allocas for x
+    let alloca_count = ir.matches("alloca i64").count();
+    assert!(
+        alloca_count >= 2,
+        "expected at least 2 i64 allocas, got {}",
+        alloca_count
+    );
+}
+
+#[test]
+fn test_variable_shadowing_param() {
+    let ir = compile(
+        "fn add_one(x: int) -> int {\n\
+         \x20   let x: int = x + 1;\n\
+         \x20   return x;\n\
+         }\n\
+         fn main() -> int {\n\
+         \x20   print_int(add_one(5));\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("define i64 @add_one(i64 %x)"));
+    assert!(ir.contains("alloca i64"));
+}

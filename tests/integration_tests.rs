@@ -8035,3 +8035,89 @@ fn test_inclusive_range_ast_json() {
     );
     assert!(json.contains("RangeInclusive"));
 }
+
+#[test]
+fn test_array_iter_outside_for_rejected() {
+    // arr.iter() outside a for-loop should be a type error,
+    // same as range expressions
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   arr.iter();\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_inclusive_range_overflow_guard() {
+    // Inclusive range codegen must guard against i64::MAX wraparound:
+    // the increment block should check counter == end before incrementing.
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let mut count: int = 0;\n\
+         \x20   for i in 0..=5 {\n\
+         \x20       count += 1;\n\
+         \x20   }\n\
+         \x20   return count;\n\
+         }\n",
+    );
+    // The inclusive range increment block must contain an equality guard
+    assert!(
+        ir.contains("icmp eq i64"),
+        "missing overflow guard in inclusive range"
+    );
+    // And the regular inclusive condition check
+    assert!(ir.contains("icmp sle i64"));
+}
+
+#[test]
+fn test_struct_iter_method_in_for_loop() {
+    // A user struct with an iter() method that returns [int]
+    // should work in for-loops via normal method dispatch, not be
+    // confused with the builtin array .iter() rewrite.
+    parse_and_check(
+        "struct Wrapper {\n\
+         \x20   data: [int],\n\
+         }\n\
+         impl Wrapper {\n\
+         \x20   fn iter(self: Wrapper) -> [int] {\n\
+         \x20       return self.data;\n\
+         \x20   }\n\
+         }\n\
+         fn main() -> int {\n\
+         \x20   let w: Wrapper = Wrapper { data: [1, 2, 3] };\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for x in w.iter() {\n\
+         \x20       sum += x;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+}
+
+#[test]
+fn test_struct_iter_method_compiles() {
+    // Same as above, but verify it actually produces valid LLVM IR
+    let ir = compile(
+        "struct Wrapper {\n\
+         \x20   data: [int],\n\
+         }\n\
+         impl Wrapper {\n\
+         \x20   fn iter(self: Wrapper) -> [int] {\n\
+         \x20       return self.data;\n\
+         \x20   }\n\
+         }\n\
+         fn main() -> int {\n\
+         \x20   let w: Wrapper = Wrapper { data: [1, 2, 3] };\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for x in w.iter() {\n\
+         \x20       sum += x;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    assert!(ir.contains("for.cond"));
+    assert!(ir.contains("for.body"));
+}

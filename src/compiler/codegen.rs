@@ -5091,17 +5091,25 @@ impl Codegen {
         if let ExprKind::RangeInclusive(ref start, ref end) = s.iterable.kind {
             return self.emit_for_range(&s.var_name, start, end, true, &s.body);
         }
-        // .iter() on arrays: delegate to array for-loop codegen
+        // .iter() on arrays: delegate to array for-loop codegen.
+        // Only rewrite when the receiver is a known array variable (or literal),
+        // so that user-defined iter() methods on structs fall through to normal codegen.
         if let ExprKind::MethodCall(ref receiver, ref method, ref args) = s.iterable.kind {
             if method == "iter" && args.is_empty() {
-                // Treat arr.iter() exactly like iterating over arr directly
-                let arr_for = ForStmt {
-                    var_name: s.var_name.clone(),
-                    iterable: *receiver.clone(),
-                    body: s.body.clone(),
-                    span: s.span,
+                let is_array_receiver = match &receiver.kind {
+                    ExprKind::Ident(name) => self.array_elem_types.contains_key(name),
+                    ExprKind::ArrayLit(_) => true,
+                    _ => false,
                 };
-                return self.emit_for(&arr_for);
+                if is_array_receiver {
+                    let arr_for = ForStmt {
+                        var_name: s.var_name.clone(),
+                        iterable: *receiver.clone(),
+                        body: s.body.clone(),
+                        span: s.span,
+                    };
+                    return self.emit_for(&arr_for);
+                }
             }
         }
 
@@ -5275,9 +5283,26 @@ impl Codegen {
         // Increment block
         self.emit_label(&inc_label);
         self.block_terminated = false;
-        let next_val = self.fresh_temp();
         let cur_val2 = self.fresh_temp();
         self.emit_line(&format!("{} = load i64, ptr {}", cur_val2, var_ptr));
+        if inclusive {
+            // Guard against overflow: if counter == end, this was the last
+            // iteration — exit instead of incrementing (which would wrap
+            // i64::MAX to i64::MIN and loop forever).
+            let at_end = self.fresh_temp();
+            self.emit_line(&format!(
+                "{} = icmp eq i64 {}, {}",
+                at_end, cur_val2, end_val
+            ));
+            let inc_do_label = self.fresh_label("for.inc.do");
+            self.emit_line(&format!(
+                "br i1 {}, label %{}, label %{}",
+                at_end, end_label, inc_do_label
+            ));
+            self.emit_label(&inc_do_label);
+            self.block_terminated = false;
+        }
+        let next_val = self.fresh_temp();
         self.emit_line(&format!("{} = add i64 {}, 1", next_val, cur_val2));
         self.emit_line(&format!("store i64 {}, ptr {}", next_val, var_ptr));
         self.emit_line(&format!("br label %{}", cond_label));

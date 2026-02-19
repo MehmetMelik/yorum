@@ -45,7 +45,7 @@ fn is_copy_type(ty: &Type) -> bool {
         // Arrays, Maps, and Sets use reference semantics at runtime (heap-allocated,
         // accessed via pointer), so copying is cheap and safe — like string.
         Type::Array(_) => true,
-        Type::Generic(name, _) if name == "Map" || name == "Set" || name == "ArrayIter" => true,
+        Type::Generic(name, _) if name == "Map" || name == "Set" => true,
         Type::Tuple(types) => types.iter().all(is_copy_type),
         _ => false,
     }

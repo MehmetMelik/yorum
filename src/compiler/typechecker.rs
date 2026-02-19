@@ -1297,42 +1297,13 @@ impl TypeChecker {
                     self.check_block(&s.body);
                     self.pop_scope();
                     self.loop_depth -= 1;
-                } else if let Some(iter_ty) = self.infer_expr(&s.iterable) {
-                    // Accept arrays directly
-                    if let Type::Array(inner) = iter_ty {
-                        self.loop_depth += 1;
-                        self.push_scope();
-                        self.define_with_span(&s.var_name, *inner, false, s.span);
-                        self.check_block(&s.body);
-                        self.pop_scope();
-                        self.loop_depth -= 1;
-                    // Accept ArrayIter<T> (from .iter())
-                    } else if let Type::Generic(ref name, ref args) = iter_ty {
-                        if name == "ArrayIter" && args.len() == 1 {
-                            self.loop_depth += 1;
-                            self.push_scope();
-                            self.define_with_span(&s.var_name, args[0].clone(), false, s.span);
-                            self.check_block(&s.body);
-                            self.pop_scope();
-                            self.loop_depth -= 1;
-                        } else {
-                            self.errors.push(TypeError {
-                                message: format!(
-                                    "for loop requires an array or range, found '{}'",
-                                    iter_ty
-                                ),
-                                span: s.iterable.span,
-                            });
-                        }
-                    } else {
-                        self.errors.push(TypeError {
-                            message: format!(
-                                "for loop requires an array or range, found '{}'",
-                                iter_ty
-                            ),
-                            span: s.iterable.span,
-                        });
-                    }
+                } else if let Some(elem_ty) = self.infer_for_iterable(&s.iterable) {
+                    self.loop_depth += 1;
+                    self.push_scope();
+                    self.define_with_span(&s.var_name, elem_ty, false, s.span);
+                    self.check_block(&s.body);
+                    self.pop_scope();
+                    self.loop_depth -= 1;
                 }
             }
 
@@ -1566,6 +1537,42 @@ impl TypeChecker {
                 span,
             });
         }
+    }
+
+    /// Infer the element type for a for-loop iterable expression.
+    /// Handles `.iter()` on arrays structurally (without introducing a phantom type),
+    /// then falls back to general expression inference for other iterables.
+    fn infer_for_iterable(&mut self, iterable: &Expr) -> Option<Type> {
+        // Special case: .iter() on arrays — handle before general inference
+        // because arrays have no method table and infer_expr would reject the call.
+        if let ExprKind::MethodCall(ref receiver, ref method, ref args) = iterable.kind {
+            if method == "iter" {
+                let recv_ty = self.infer_expr(receiver);
+                match recv_ty {
+                    Some(Type::Array(inner)) => {
+                        if !args.is_empty() {
+                            self.errors.push(TypeError {
+                                message: "iter() takes no arguments".to_string(),
+                                span: iterable.span,
+                            });
+                        }
+                        return Some(*inner);
+                    }
+                    None => return None, // Receiver has errors, don't cascade
+                    _ => {}              // Not an array, fall through to general inference
+                }
+            }
+        }
+
+        let iter_ty = self.infer_expr(iterable)?;
+        if let Type::Array(inner) = iter_ty {
+            return Some(*inner);
+        }
+        self.errors.push(TypeError {
+            message: format!("for loop requires an array or range, found '{}'", iter_ty),
+            span: iterable.span,
+        });
+        None
     }
 
     // ── Expression type inference ────────────────────────────
@@ -2868,31 +2875,6 @@ impl TypeChecker {
                                 return None;
                             }
                         }
-                    }
-                }
-
-                // Handle .iter() on arrays → ArrayIter<T>
-                if let Type::Array(ref elem_ty) = recv_ty {
-                    if method_name == "iter" {
-                        if !args.is_empty() {
-                            self.errors.push(TypeError {
-                                message: "iter() takes no arguments".to_string(),
-                                span: expr.span,
-                            });
-                        }
-                        return Some(Type::Generic(
-                            "ArrayIter".to_string(),
-                            vec![*elem_ty.clone()],
-                        ));
-                    } else {
-                        self.errors.push(TypeError {
-                            message: format!(
-                                "no method '{}' found for type '{}'",
-                                method_name, recv_ty
-                            ),
-                            span: expr.span,
-                        });
-                        return None;
                     }
                 }
 

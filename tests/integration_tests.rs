@@ -7790,3 +7790,22 @@ fn test_str_concat_memcpy_definition() {
         "str_concat should not use strcat"
     );
 }
+
+#[test]
+fn test_param_name_no_collision_with_temps() {
+    // Parameter names like t0, t1 must not collide with fresh_temp() names
+    let ir = compile(
+        "fn add(t0: int, t1: int) -> int {\n\
+         \x20   return t0 + t1;\n\
+         }\n\
+         fn main() -> int {\n\
+         \x20   print_int(add(3, 4));\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    // Parameters use %t0, %t1; temps use %.tN — no collision
+    assert!(ir.contains("define i64 @add(i64 %t0, i64 %t1)"));
+    // Allocas should use the %.tN namespace, not %t0/%t1
+    assert!(ir.contains("%.t0 = alloca i64"));
+    assert!(ir.contains("store i64 %t0, ptr %.t0"));
+}

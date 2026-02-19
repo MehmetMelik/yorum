@@ -8485,7 +8485,7 @@ impl Codegen {
     fn fresh_temp(&mut self) -> String {
         let n = self.temp_counter;
         self.temp_counter += 1;
-        format!("%t{}", n)
+        format!("%.t{}", n)
     }
 
     fn fresh_label(&mut self, prefix: &str) -> String {

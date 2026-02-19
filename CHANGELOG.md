@@ -15,7 +15,12 @@ All notable changes to the Yorum programming language compiler.
 
 - 6 new integration tests for string builder optimization: `test_str_concat_inplace_loop`, `test_str_concat_non_self_fallback`, `test_str_concat_literal_init`, `test_str_concat_reassignment_resets`, `test_str_concat_self_self_fallback`, `test_str_concat_memcpy_definition`
 
-**Stats:** 3 files changed | Tests: 509 (68 unit + 509 integration)
+### Fixed
+
+- **Temp/parameter name collision** — `fresh_temp()` now emits `%.tN` instead of `%tN`, preventing collisions with user parameter names like `t0`, `t1` that occupy the same LLVM namespace
+- 1 new regression test: `test_param_name_no_collision_with_temps`
+
+**Stats:** 3 files changed | Tests: 510 (68 unit + 510 integration)
 
 ---
 

@@ -271,19 +271,30 @@ returns the last element. Index access includes runtime bounds checking.
 ```
 fn main() -> int {
     let nums: [int] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+
+    // Combinators in for-loops: filter, map, enumerate, zip, take, skip
     let mut sum: int = 0;
     for x in nums.iter().filter(|v: int| -> bool { return v % 2 == 0; }).map(|v: int| -> int { return v * v; }) {
         sum += x;
     }
     print_int(sum);    // 220 (4+16+36+64+100)
+
+    // Terminators as standalone expressions
+    let evens: [int] = nums.iter().filter(|v: int| -> bool { return v % 2 == 0; }).collect();
+    let total: int = nums.iter().fold(0, |acc: int, x: int| -> int { return acc + x; });
+    let has_big: bool = nums.iter().any(|v: int| -> bool { return v > 8; });
+    let first: Option<int> = nums.iter().find(|v: int| -> bool { return v > 5; });
     return 0;
 }
 ```
 
-`.iter()` on an array starts an iterator pipeline. `.map(|x: T| -> U { ... })` transforms
-each element. `.filter(|x: T| -> bool { ... })` keeps elements that satisfy the predicate.
-Chains like `.iter().map(f).filter(g).map(h)` are fused into a single loop — no intermediate
-allocations, no iterator structs. Closures must be inline (not named variables).
+`.iter()` on an array starts an iterator pipeline. **Combinators** transform the stream inside for-loops:
+`.map(f)` transforms elements, `.filter(f)` keeps matching elements, `.enumerate()` adds indices,
+`.zip(arr2)` pairs elements, `.take(n)` limits count, `.skip(n)` skips elements.
+**Terminators** consume the pipeline as standalone expressions: `.collect()` materializes to an array,
+`.fold(init, f)` accumulates a value, `.any(f)`/`.all(f)` test predicates, `.find(f)` returns
+`Option<T>`, `.reduce(f)` accumulates without an initial value. All pipelines are fused into a single
+loop — no intermediate allocations (except `.collect()`), no iterator structs. Closures must be inline.
 
 ### Char Type and String Operations
 
@@ -811,7 +822,7 @@ diff gen1.ll gen2.ll    # identical — fixed-point achieved
 ## Testing
 
 ```bash
-cargo test                    # 622 tests (68 unit + 554 integration)
+cargo test                    # 655 tests (68 unit + 587 integration)
 cargo test compiler::lexer    # tests in one module
 cargo test test_fibonacci     # single test by name
 ```
@@ -853,7 +864,7 @@ cargo test test_fibonacci     # single test by name
 | **v1.8.2** | Performance: capacity-aware `str_concat` optimization (~1000x faster string building loops) | Done |
 | **v1.9-alpha** | Inclusive range (`..=`), `.iter()` on arrays, struct iter dispatch, overflow guard | Done |
 | **v1.9-beta** | Iterator pipelines: `.map()`, `.filter()` with fused for-loop codegen | Done |
-| **v1.9** | Iterators & functional patterns (remaining phases) | In progress |
+| **v1.9** | Iterator combinators (`.enumerate()`, `.zip()`, `.take()`, `.skip()`) and terminators (`.collect()`, `.fold()`, `.any()`, `.all()`, `.find()`, `.reduce()`) | Done |
 
 ## License
 

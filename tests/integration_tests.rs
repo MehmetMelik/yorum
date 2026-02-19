@@ -8578,3 +8578,477 @@ fn test_for_iter_map_unit_return_rejected() {
     let msg = result.unwrap_err().to_string();
     assert!(msg.contains("must not return unit"));
 }
+
+// ═══════════════════════════════════════════════════════════════
+//  Iterator combinator tests (take, skip, enumerate, zip)
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn test_for_iter_take_basic() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3, 4, 5];\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for x in arr.iter().take(3) {\n\
+         \x20       sum += x;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    assert!(ir.contains("for.take.cont"));
+}
+
+#[test]
+fn test_for_iter_take_with_filter() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3, 4, 5, 6, 7, 8];\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for x in arr.iter().filter(|v: int| -> bool { return v % 2 == 0; }).take(2) {\n\
+         \x20       sum += x;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    assert!(ir.contains("call i1")); // filter
+    assert!(ir.contains("for.take.cont")); // take
+}
+
+#[test]
+fn test_for_iter_take_wrong_type() {
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   for x in arr.iter().take(true) {\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+    let msg = result.unwrap_err().to_string();
+    assert!(msg.contains("must be int"));
+}
+
+#[test]
+fn test_for_iter_skip_basic() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3, 4, 5];\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for x in arr.iter().skip(2) {\n\
+         \x20       sum += x;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    assert!(ir.contains("for.skip.do"));
+    assert!(ir.contains("for.skip.done"));
+}
+
+#[test]
+fn test_for_iter_skip_with_enumerate() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [10, 20, 30, 40, 50];\n\
+         \x20   for pair in arr.iter().skip(2).enumerate() {\n\
+         \x20       let (i, v): (int, int) = pair;\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("for.skip.do"));
+    assert!(ir.contains("tuple.int.int"));
+}
+
+#[test]
+fn test_for_iter_skip_all() {
+    // Skipping all elements should yield an empty loop
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for x in arr.iter().skip(100) {\n\
+         \x20       sum += x;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    assert!(ir.contains("for.skip.do"));
+}
+
+#[test]
+fn test_for_iter_enumerate_basic() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [10, 20, 30];\n\
+         \x20   for pair in arr.iter().enumerate() {\n\
+         \x20       let (i, v): (int, int) = pair;\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("tuple.int.int"));
+}
+
+#[test]
+fn test_for_iter_enumerate_with_filter() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3, 4, 5];\n\
+         \x20   for pair in arr.iter().filter(|v: int| -> bool { return v > 2; }).enumerate() {\n\
+         \x20       let (i, v): (int, int) = pair;\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call i1")); // filter
+    assert!(ir.contains("tuple.int.int")); // enumerate tuple
+}
+
+#[test]
+fn test_for_iter_enumerate_with_map() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   for pair in arr.iter().map(|v: int| -> int { return v * 2; }).enumerate() {\n\
+         \x20       let (i, v): (int, int) = pair;\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("tuple.int.int"));
+    assert!(ir.contains("__closure_"));
+}
+
+#[test]
+fn test_for_iter_enumerate_wrong_args() {
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   for x in arr.iter().enumerate(5) {\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+    let msg = result.unwrap_err().to_string();
+    assert!(msg.contains("enumerate() takes no arguments"));
+}
+
+#[test]
+fn test_for_iter_zip_basic() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let a: [int] = [1, 2, 3];\n\
+         \x20   let b: [int] = [10, 20, 30];\n\
+         \x20   for pair in a.iter().zip(b) {\n\
+         \x20       let (x, y): (int, int) = pair;\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("tuple.int.int"));
+    assert!(ir.contains("for.zip.cont"));
+}
+
+#[test]
+fn test_for_iter_zip_with_filter() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let a: [int] = [1, 2, 3, 4, 5];\n\
+         \x20   let b: [int] = [10, 20, 30, 40, 50];\n\
+         \x20   for pair in a.iter().filter(|v: int| -> bool { return v > 2; }).zip(b) {\n\
+         \x20       let (x, y): (int, int) = pair;\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call i1")); // filter
+    assert!(ir.contains("tuple.int.int")); // zip tuple
+}
+
+#[test]
+fn test_for_iter_zip_not_array() {
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20   let a: [int] = [1, 2, 3];\n\
+         \x20   for x in a.iter().zip(42) {\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+    let msg = result.unwrap_err().to_string();
+    assert!(msg.contains("must be an array"));
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  Iterator terminator tests (collect, fold, any, all, find, reduce)
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn test_iter_collect_basic() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3, 4, 5];\n\
+         \x20   let doubled: [int] = arr.iter().map(|v: int| -> int { return v * 2; }).collect();\n\
+         \x20   return len(doubled);\n\
+         }\n",
+    );
+    assert!(ir.contains("col.cond"));
+    assert!(ir.contains("col.body"));
+}
+
+#[test]
+fn test_iter_collect_filter() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3, 4, 5, 6];\n\
+         \x20   let evens: [int] = arr.iter().filter(|v: int| -> bool { return v % 2 == 0; }).collect();\n\
+         \x20   return len(evens);\n\
+         }\n",
+    );
+    assert!(ir.contains("col.cond"));
+}
+
+#[test]
+fn test_iter_collect_empty() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let none: [int] = arr.iter().filter(|v: int| -> bool { return v > 100; }).collect();\n\
+         \x20   return len(none);\n\
+         }\n",
+    );
+    assert!(ir.contains("col.end"));
+}
+
+#[test]
+fn test_iter_find_basic() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3, 4, 5];\n\
+         \x20   let found: Option<int> = arr.iter().find(|v: int| -> bool { return v > 3; });\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("find.cond"));
+    assert!(ir.contains("find.found"));
+}
+
+#[test]
+fn test_iter_find_not_found() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let result: Option<int> = arr.iter().find(|v: int| -> bool { return v > 100; });\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("find.cond"));
+}
+
+#[test]
+fn test_iter_find_with_map() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3, 4, 5];\n\
+         \x20   let found: Option<int> = arr.iter().map(|v: int| -> int { return v * 10; }).find(|v: int| -> bool { return v > 30; });\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("find.found"));
+    assert!(ir.contains("__closure_")); // map closure
+}
+
+#[test]
+fn test_iter_any_true() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3, 4, 5];\n\
+         \x20   let result: bool = arr.iter().any(|v: int| -> bool { return v > 4; });\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("any.cond"));
+    assert!(ir.contains("any.found"));
+}
+
+#[test]
+fn test_iter_any_false() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let result: bool = arr.iter().any(|v: int| -> bool { return v > 100; });\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("any.cond"));
+}
+
+#[test]
+fn test_iter_any_empty() {
+    // any() on empty pipeline returns false
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let result: bool = arr.iter().filter(|v: int| -> bool { return v > 100; }).any(|v: int| -> bool { return v > 0; });\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("any.cond"));
+}
+
+#[test]
+fn test_iter_all_true() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3, 4, 5];\n\
+         \x20   let result: bool = arr.iter().all(|v: int| -> bool { return v > 0; });\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("all.cond"));
+}
+
+#[test]
+fn test_iter_all_false() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3, 4, 5];\n\
+         \x20   let result: bool = arr.iter().all(|v: int| -> bool { return v > 3; });\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("all.fail"));
+}
+
+#[test]
+fn test_iter_all_empty() {
+    // all() on empty returns true (vacuous truth)
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let result: bool = arr.iter().filter(|v: int| -> bool { return v > 100; }).all(|v: int| -> bool { return v > 0; });\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("all.cond"));
+}
+
+#[test]
+fn test_iter_reduce_basic() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3, 4, 5];\n\
+         \x20   let sum: Option<int> = arr.iter().reduce(|acc: int, x: int| -> int { return acc + x; });\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("red.cond"));
+    assert!(ir.contains("red.first"));
+    assert!(ir.contains("red.accum"));
+}
+
+#[test]
+fn test_iter_reduce_with_filter() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3, 4, 5, 6];\n\
+         \x20   let sum: Option<int> = arr.iter().filter(|v: int| -> bool { return v % 2 == 0; }).reduce(|acc: int, x: int| -> int { return acc + x; });\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("red.cond"));
+    assert!(ir.contains("call i1")); // filter
+}
+
+#[test]
+fn test_iter_fold_basic() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3, 4, 5];\n\
+         \x20   let sum: int = arr.iter().fold(0, |acc: int, x: int| -> int { return acc + x; });\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    assert!(ir.contains("fold.cond"));
+    assert!(ir.contains("fold.body"));
+}
+
+#[test]
+fn test_iter_fold_type_change() {
+    // fold can change the accumulator type
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let result: bool = arr.iter().fold(true, |acc: bool, x: int| -> bool { return acc and (x > 0); });\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("fold.cond"));
+}
+
+#[test]
+fn test_iter_fold_empty() {
+    // fold on empty array returns init
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let sum: int = arr.iter().filter(|v: int| -> bool { return v > 100; }).fold(42, |acc: int, x: int| -> int { return acc + x; });\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    assert!(ir.contains("fold.cond"));
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  Combined pipeline tests
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn test_iter_long_chain_with_combinators() {
+    // .skip(1).filter(f).map(g).take(3) in for-loop
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for x in arr.iter().skip(1).filter(|v: int| -> bool { return v % 2 == 0; }).map(|v: int| -> int { return v * 10; }).take(3) {\n\
+         \x20       sum += x;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    assert!(ir.contains("for.skip.do")); // skip
+    assert!(ir.contains("call i1")); // filter
+    assert!(ir.contains("for.take.cont")); // take
+}
+
+#[test]
+fn test_iter_terminator_chain() {
+    // .filter(f).map(g).collect() as expression
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3, 4, 5, 6];\n\
+         \x20   let result: [int] = arr.iter().filter(|v: int| -> bool { return v > 2; }).map(|v: int| -> int { return v * v; }).collect();\n\
+         \x20   return len(result);\n\
+         }\n",
+    );
+    assert!(ir.contains("col.body"));
+    assert!(ir.contains("__closure_")); // closures emitted
+}
+
+#[test]
+fn test_iter_terminator_wrong_closure() {
+    // Type mismatch in terminator closure
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let result: bool = arr.iter().any(|v: float| -> bool { return v > 0.0; });\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+    let msg = result.unwrap_err().to_string();
+    assert!(msg.contains("does not match element type"));
+}

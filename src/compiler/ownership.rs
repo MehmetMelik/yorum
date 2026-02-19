@@ -410,6 +410,21 @@ impl OwnershipChecker {
                 "filter" if Self::has_iter_base(receiver) => {
                     return self.infer_iterable_elem_type(receiver);
                 }
+                "enumerate" if Self::has_iter_base(receiver) => {
+                    let inner = self.infer_iterable_elem_type(receiver);
+                    return Type::Tuple(vec![Type::Int, inner]);
+                }
+                "zip" if Self::has_iter_base(receiver) => {
+                    let left = self.infer_iterable_elem_type(receiver);
+                    if args.len() == 1 {
+                        let right = self.infer_iterable_elem_type(&args[0]);
+                        return Type::Tuple(vec![left, right]);
+                    }
+                    return Type::Unit;
+                }
+                "take" | "skip" if Self::has_iter_base(receiver) => {
+                    return self.infer_iterable_elem_type(receiver);
+                }
                 "iter" => {
                     if let ExprKind::Ident(name) = &receiver.kind {
                         if let Some(info) = self.lookup(name) {
@@ -437,7 +452,8 @@ impl OwnershipChecker {
         if let ExprKind::MethodCall(ref receiver, ref method, _) = expr.kind {
             match method.as_str() {
                 "iter" => true,
-                "map" | "filter" => Self::has_iter_base(receiver),
+                "map" | "filter" | "enumerate" | "zip" | "take" | "skip" | "reduce" | "fold"
+                | "collect" | "find" | "any" | "all" => Self::has_iter_base(receiver),
                 _ => false,
             }
         } else {

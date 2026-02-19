@@ -2,6 +2,43 @@
 
 All notable changes to the Yorum programming language compiler.
 
+## [1.9.0] - 2026-02-19
+
+**Iterator Combinators & Pipeline Terminators** — `.enumerate()`, `.zip()`, `.take()`, `.skip()` combinators and `.collect()`, `.fold()`, `.any()`, `.all()`, `.find()`, `.reduce()` terminators (Phase 3).
+
+### Added
+
+- **4 combinators** for for-loop pipelines, all fused into a single loop:
+  - `.enumerate()` — yields `(int, T)` tuples with 0-based index
+  - `.zip(arr2)` — pairs elements from two arrays as `(T, U)` tuples, stops at shorter length
+  - `.take(n)` — yields only the first N elements, then exits the loop
+  - `.skip(n)` — skips the first N elements, then yields the rest
+- **6 terminators** as standalone expressions (not inside for-loops):
+  - `.collect()` — materializes a pipeline into a new array `[T]` (only allocation in the system)
+  - `.fold(init, |acc, x| -> U)` — accumulates with initial value, returns `U`
+  - `.any(|x| -> bool)` — short-circuits on first true, returns `bool`
+  - `.all(|x| -> bool)` — short-circuits on first false, returns `bool`
+  - `.find(|x| -> bool)` — short-circuits on first match, returns `Option<T>`
+  - `.reduce(|acc, x| -> T)` — accumulates without initial value, returns `Option<T>`
+- **Terminator infrastructure:** `PipelineTerminator` enum, `TerminatedPipeline` struct, `try_extract_terminated_pipeline()` in codegen, `is_pipeline_terminator()` and `infer_pipeline_terminator_type()` in typechecker. Terminators intercepted before receiver inference in both `infer_expr` and `emit_expr`
+- **Monomorphizer extension:** `find()` and `reduce()` automatically register `Option<T>` monomorphization via `has_iter_base_static()` in `collect_from_expr`
+- `examples/iterators.yrm` expanded — 22 demos total: enumerate, zip, take, skip, skip+enumerate, complex combinator chains, collect, fold, any, all, find, reduce, combined pipeline
+- 33 new integration tests (combinators: 14, terminators: 16, combined chains: 3)
+
+### Design decisions
+
+- Combinators compose freely with existing `.map()` and `.filter()` in any order
+- Terminators work on any pipeline chain (e.g., `.iter().filter(f).map(g).collect()`)
+- All fused — zero allocations except `.collect()` which pre-allocates capacity equal to source length
+- `.find()` and `.reduce()` return `Option<T>`, requiring monomorphizer coordination
+- `.any()` and `.all()` short-circuit for performance (break out of loop on first decisive element)
+- `.fold()` supports type-changing accumulation (init type can differ from element type)
+- Empty arrays: `.any()` returns false, `.all()` returns true (vacuous truth), `.reduce()` returns None, `.fold()` returns init
+
+**Stats:** 6 files changed, +2,582 -210 | Tests: 655 (68 unit + 587 integration)
+
+---
+
 ## [1.9.0-beta] - 2026-02-19
 
 **Iterator Pipelines** — `.map()` and `.filter()` with fused for-loop codegen (Phase 2).
@@ -626,6 +663,13 @@ The compiler written in Yorum itself (5,226 lines), achieving bootstrap fixed-po
 
 ---
 
+[1.9.0]: https://github.com/MehmetMelik/yorum/compare/v1.9.0-beta...v1.9.0
+[1.9.0-beta]: https://github.com/MehmetMelik/yorum/compare/v1.9.0-alpha...v1.9.0-beta
+[1.9.0-alpha]: https://github.com/MehmetMelik/yorum/compare/v1.8.2...v1.9.0-alpha
+[1.8.2]: https://github.com/MehmetMelik/yorum/compare/v1.8.1...v1.8.2
+[1.8.1]: https://github.com/MehmetMelik/yorum/compare/v1.8.0...v1.8.1
+[1.8.0]: https://github.com/MehmetMelik/yorum/compare/v1.7.0...v1.8.0
+[1.7.0]: https://github.com/MehmetMelik/yorum/compare/v1.6.1...v1.7.0
 [1.6.1]: https://github.com/MehmetMelik/yorum/compare/v1.6.0...v1.6.1
 [1.6.0]: https://github.com/MehmetMelik/yorum/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/MehmetMelik/yorum/compare/v1.4.1...v1.5.0

@@ -241,10 +241,23 @@ impl Monomorphizer {
             ExprKind::FieldAccess(obj, _) => {
                 self.collect_from_expr(obj);
             }
-            ExprKind::MethodCall(receiver, _, args) => {
+            ExprKind::MethodCall(receiver, method, args) => {
                 self.collect_from_expr(receiver);
                 for arg in args {
                     self.collect_from_expr(arg);
+                }
+                // Pipeline terminators that return Option<T>: find() and reduce()
+                if (method == "find" || method == "reduce") && has_iter_base_static(receiver) {
+                    if let Some(first_arg) = args.first() {
+                        if let ExprKind::Closure(c) = &first_arg.kind {
+                            if let Some(param) = c.params.first() {
+                                self.collect_from_type(&Type::Generic(
+                                    "Option".to_string(),
+                                    vec![param.ty.clone()],
+                                ));
+                            }
+                        }
+                    }
                 }
             }
             ExprKind::Index(arr, idx) => {
@@ -494,6 +507,21 @@ impl Monomorphizer {
         }
 
         program
+    }
+}
+
+/// Walk a MethodCall chain looking for `.iter()` at the base (static version).
+fn has_iter_base_static(expr: &Expr) -> bool {
+    if let ExprKind::MethodCall(ref receiver, ref method, _) = expr.kind {
+        match method.as_str() {
+            "iter" => true,
+            "map" | "filter" | "enumerate" | "zip" | "take" | "skip" => {
+                has_iter_base_static(receiver)
+            }
+            _ => false,
+        }
+    } else {
+        false
     }
 }
 

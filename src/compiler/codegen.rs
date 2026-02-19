@@ -5102,14 +5102,7 @@ impl Codegen {
             }
             _ => &s.iterable,
         };
-        let elem_ty = if let ExprKind::Ident(name) = &arr_expr.kind {
-            self.array_elem_types
-                .get(name)
-                .cloned()
-                .unwrap_or_else(|| "i64".to_string())
-        } else {
-            "i64".to_string()
-        };
+        let elem_ty = self.infer_array_elem_type(arr_expr);
 
         // Load data ptr and length from { ptr, i64, i64 }
         let data_gep = self.fresh_temp();
@@ -8367,9 +8360,55 @@ impl Codegen {
                     message: "cannot determine struct name from call expression".to_string(),
                 })
             }
+            ExprKind::FieldAccess(recv, field) => {
+                // Resolve the parent struct, then look up the field's type
+                let parent_struct = self.expr_struct_name(recv)?;
+                let (_, field_ty) = self.struct_field_index(&parent_struct, field)?;
+                if let Type::Named(name) = field_ty {
+                    if self.struct_layouts.contains_key(&name)
+                        || self.enum_layouts.contains_key(&name)
+                    {
+                        return Ok(name);
+                    }
+                }
+                Err(CodegenError {
+                    message: format!("field '{}' is not a struct type", field),
+                })
+            }
             _ => Err(CodegenError {
                 message: "cannot determine struct name from expression".to_string(),
             }),
+        }
+    }
+
+    /// Infer the LLVM element type for an array expression (used by for-loop codegen).
+    /// Handles identifiers, struct field accesses, and function call return types.
+    fn infer_array_elem_type(&self, expr: &Expr) -> String {
+        match &expr.kind {
+            ExprKind::Ident(name) => self
+                .array_elem_types
+                .get(name)
+                .cloned()
+                .unwrap_or_else(|| "i64".to_string()),
+            ExprKind::FieldAccess(recv, field) => {
+                if let Ok(struct_name) = self.expr_struct_name(recv) {
+                    if let Ok((_, Type::Array(inner))) =
+                        self.struct_field_index(&struct_name, field)
+                    {
+                        return self.llvm_type(&inner);
+                    }
+                }
+                "i64".to_string()
+            }
+            ExprKind::Call(callee, _) => {
+                if let ExprKind::Ident(fn_name) = &callee.kind {
+                    if let Some(Type::Array(inner)) = self.fn_ret_types.get(fn_name) {
+                        return self.llvm_type(inner);
+                    }
+                }
+                "i64".to_string()
+            }
+            _ => "i64".to_string(),
         }
     }
 

@@ -8142,3 +8142,52 @@ fn test_struct_iter_method_compiles() {
     assert!(ir.contains("for.cond"));
     assert!(ir.contains("for.body"));
 }
+
+#[test]
+fn test_array_field_iter_float_elem_type() {
+    // b.items.iter() where items: [float] must use "double" element type,
+    // not default to "i64".
+    let ir = compile(
+        "struct Bag {\n\
+         \x20   items: [float],\n\
+         }\n\
+         fn main() -> int {\n\
+         \x20   let b: Bag = Bag { items: [1.0, 2.0, 3.0] };\n\
+         \x20   for x in b.items.iter() {\n\
+         \x20       print_float(x);\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    // The loop element should be loaded as double, not i64
+    assert!(ir.contains("load double"));
+}
+
+#[test]
+fn test_nested_struct_field_iter_dispatches_to_method() {
+    // h.w.iter() where w is a struct with a user-defined iter() method
+    // must dispatch to the struct method, not treat as array .iter().
+    let ir = compile(
+        "struct Widget {\n\
+         \x20   data: [int],\n\
+         }\n\
+         impl Widget {\n\
+         \x20   fn iter(self: Widget) -> [int] {\n\
+         \x20       return self.data;\n\
+         \x20   }\n\
+         }\n\
+         struct Holder {\n\
+         \x20   w: Widget,\n\
+         }\n\
+         fn main() -> int {\n\
+         \x20   let h: Holder = Holder { w: Widget { data: [1, 2, 3] } };\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for x in h.w.iter() {\n\
+         \x20       sum += x;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    // Should call Widget_iter, not just inline array iteration
+    assert!(ir.contains("Widget_iter"));
+}

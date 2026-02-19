@@ -8098,6 +8098,27 @@ fn test_struct_iter_method_in_for_loop() {
 }
 
 #[test]
+fn test_array_field_iter() {
+    // for x in w.data.iter() where data is an array field — the .iter()
+    // receiver is a FieldAccess, not a simple Ident or ArrayLit.
+    let ir = compile(
+        "struct Bag {\n\
+         \x20   items: [int],\n\
+         }\n\
+         fn main() -> int {\n\
+         \x20   let b: Bag = Bag { items: [10, 20, 30] };\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for x in b.items.iter() {\n\
+         \x20       sum += x;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    assert!(ir.contains("for.cond"));
+    assert!(ir.contains("for.body"));
+}
+
+#[test]
 fn test_struct_iter_method_compiles() {
     // Same as above, but verify it actually produces valid LLVM IR
     let ir = compile(

@@ -5091,33 +5091,18 @@ impl Codegen {
         if let ExprKind::RangeInclusive(ref start, ref end) = s.iterable.kind {
             return self.emit_for_range(&s.var_name, start, end, true, &s.body);
         }
-        // .iter() on arrays: delegate to array for-loop codegen.
-        // Only rewrite when the receiver is a known array variable (or literal),
-        // so that user-defined iter() methods on structs fall through to normal codegen.
-        if let ExprKind::MethodCall(ref receiver, ref method, ref args) = s.iterable.kind {
-            if method == "iter" && args.is_empty() {
-                let is_array_receiver = match &receiver.kind {
-                    ExprKind::Ident(name) => self.array_elem_types.contains_key(name),
-                    ExprKind::ArrayLit(_) => true,
-                    _ => false,
-                };
-                if is_array_receiver {
-                    let arr_for = ForStmt {
-                        var_name: s.var_name.clone(),
-                        iterable: *receiver.clone(),
-                        body: s.body.clone(),
-                        span: s.span,
-                    };
-                    return self.emit_for(&arr_for);
-                }
-            }
-        }
-
         // Evaluate the iterable (array fat pointer)
         let arr_val = self.emit_expr(&s.iterable)?;
 
-        // Determine the array variable name to look up elem type
-        let elem_ty = if let ExprKind::Ident(name) = &s.iterable.kind {
+        // Determine the array element type. For .iter() calls, look through
+        // to the receiver expression for the elem type lookup.
+        let arr_expr = match &s.iterable.kind {
+            ExprKind::MethodCall(receiver, method, args) if method == "iter" && args.is_empty() => {
+                receiver.as_ref()
+            }
+            _ => &s.iterable,
+        };
+        let elem_ty = if let ExprKind::Ident(name) = &arr_expr.kind {
             self.array_elem_types
                 .get(name)
                 .cloned()
@@ -6528,6 +6513,17 @@ impl Codegen {
                             _ => {}
                         }
                     }
+                }
+
+                // Handle .iter() on arrays: if the receiver is not a struct,
+                // it's an array .iter() — just evaluate the receiver (a no-op
+                // that returns the array fat pointer). This covers all array
+                // receiver forms: idents, literals, field accesses, calls, etc.
+                if method_name == "iter"
+                    && args.is_empty()
+                    && self.expr_struct_name(receiver).is_err()
+                {
+                    return self.emit_expr(receiver);
                 }
 
                 let struct_name = self.expr_struct_name(receiver)?;

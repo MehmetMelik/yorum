@@ -8501,3 +8501,80 @@ fn test_for_iter_long_pipeline() {
     assert!(ir.contains("__closure_2"));
     assert!(ir.contains("__closure_3"));
 }
+
+#[test]
+fn test_for_iter_map_named_closure_rejected() {
+    // Named closure variables are not supported in pipelines — must be inline
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let f: fn(int) -> int = |v: int| -> int { return v * 2; };\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for x in arr.iter().map(f) {\n\
+         \x20       sum += x;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+    let msg = result.unwrap_err().to_string();
+    assert!(msg.contains("requires an inline closure"));
+}
+
+#[test]
+fn test_for_iter_filter_named_closure_rejected() {
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let f: fn(int) -> bool = |v: int| -> bool { return v > 1; };\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for x in arr.iter().filter(f) {\n\
+         \x20       sum += x;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+    let msg = result.unwrap_err().to_string();
+    assert!(msg.contains("requires an inline closure"));
+}
+
+#[test]
+fn test_struct_method_named_map_in_for_loop() {
+    // Struct methods named "map" or "filter" should not be blocked by
+    // the pipeline guard — they are ordinary methods returning arrays.
+    parse_and_check(
+        "struct Source {\n\
+         \x20   data: [int],\n\
+         }\n\
+         impl Source {\n\
+         \x20   fn filter(self: Source) -> [int] {\n\
+         \x20       return self.data;\n\
+         \x20   }\n\
+         }\n\
+         fn main() -> int {\n\
+         \x20   let s: Source = Source { data: [1, 2, 3] };\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for x in s.filter() {\n\
+         \x20       sum += x;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+}
+
+#[test]
+fn test_for_iter_map_unit_return_rejected() {
+    // map() with unit return type is rejected — void loop variables are invalid
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   for x in arr.iter().map(|v: int| -> unit { print_int(v); }) {\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+    let msg = result.unwrap_err().to_string();
+    assert!(msg.contains("must not return unit"));
+}

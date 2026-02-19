@@ -1539,16 +1539,32 @@ impl TypeChecker {
         }
     }
 
-    /// Quick check: does the expression contain `.map()` or `.filter()` in a MethodCall chain?
-    /// Used to avoid cascade errors when pipeline validation has already reported errors.
-    fn is_pipeline_shaped(expr: &Expr) -> bool {
+    /// Check if the expression is an iterator pipeline: a `.map()` or `.filter()` chain
+    /// that ultimately reaches `.iter()` as the base. Returns false for bare `.iter()`
+    /// calls (no combinators) and for struct methods named `map`/`filter` that are not
+    /// part of an `.iter()` pipeline — those fall through to normal method resolution.
+    fn is_iter_pipeline(expr: &Expr) -> bool {
         if let ExprKind::MethodCall(ref receiver, ref method, _) = expr.kind {
-            if method == "map" || method == "filter" {
-                return true;
+            match method.as_str() {
+                "map" | "filter" => Self::has_iter_base(receiver),
+                _ => false,
             }
-            return Self::is_pipeline_shaped(receiver);
+        } else {
+            false
         }
-        false
+    }
+
+    /// Walk a MethodCall chain looking for `.iter()` at the base.
+    fn has_iter_base(expr: &Expr) -> bool {
+        if let ExprKind::MethodCall(ref receiver, ref method, _) = expr.kind {
+            match method.as_str() {
+                "iter" => true,
+                "map" | "filter" => Self::has_iter_base(receiver),
+                _ => false,
+            }
+        } else {
+            false
+        }
     }
 
     /// Infer the element type for an iterator pipeline chain.
@@ -1585,6 +1601,15 @@ impl TypeChecker {
                         });
                         return None;
                     }
+                    // Require inline closure — named closure variables are not
+                    // supported by the fused pipeline codegen.
+                    if !matches!(args[0].kind, ExprKind::Closure(_)) {
+                        self.errors.push(TypeError {
+                            message: "map() requires an inline closure".to_string(),
+                            span: args[0].span,
+                        });
+                        return None;
+                    }
                     let closure_ty = self.infer_expr(&args[0])?;
                     if let Type::Fn(params, ret) = closure_ty {
                         if params.len() != 1 {
@@ -1607,6 +1632,13 @@ impl TypeChecker {
                             });
                             return None;
                         }
+                        if *ret == Type::Unit {
+                            self.errors.push(TypeError {
+                                message: "map() closure must not return unit".to_string(),
+                                span: args[0].span,
+                            });
+                            return None;
+                        }
                         return Some(*ret);
                     }
                     self.errors.push(TypeError {
@@ -1624,6 +1656,15 @@ impl TypeChecker {
                                 args.len()
                             ),
                             span: expr.span,
+                        });
+                        return None;
+                    }
+                    // Require inline closure — named closure variables are not
+                    // supported by the fused pipeline codegen.
+                    if !matches!(args[0].kind, ExprKind::Closure(_)) {
+                        self.errors.push(TypeError {
+                            message: "filter() requires an inline closure".to_string(),
+                            span: args[0].span,
                         });
                         return None;
                     }
@@ -1684,11 +1725,12 @@ impl TypeChecker {
             return Some(ty);
         }
 
-        // If the iterable is pipeline-shaped (.map() or .filter() call) but
-        // infer_pipeline_elem_type returned None, either errors have already been
-        // reported, or the pipeline base is not .iter(). Report an error if none
-        // was pushed by the pipeline check and don't fall through.
-        if Self::is_pipeline_shaped(iterable) {
+        // If the iterable is an iterator pipeline (.iter().map()/.filter() chain)
+        // but validation failed, errors have already been reported. Don't fall
+        // through to avoid confusing cascade errors. Only applies to chains that
+        // actually have .iter() as the base — struct methods named map/filter
+        // should fall through to normal method resolution.
+        if Self::is_iter_pipeline(iterable) {
             if self.errors.len() == errors_before {
                 self.errors.push(TypeError {
                     message: "map()/filter() require .iter() on an array".to_string(),

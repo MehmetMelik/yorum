@@ -5147,16 +5147,31 @@ impl Codegen {
         }
     }
 
-    /// Quick syntactic check: does the expression contain .map() or .filter()?
-    /// Used for error reporting when try_extract_pipeline returns None.
-    fn is_pipeline_shaped(expr: &Expr) -> bool {
+    /// Check if the expression is a pipeline-shaped iterable: a `.map()` or `.filter()`
+    /// chain with `.iter()` at the base. Used for error reporting when
+    /// `try_extract_pipeline` returns `None` (e.g., named closure variables).
+    /// Returns false for struct methods named map/filter without `.iter()`.
+    fn is_iter_pipeline(expr: &Expr) -> bool {
         if let ExprKind::MethodCall(ref receiver, ref method, _) = expr.kind {
-            if method == "map" || method == "filter" {
-                return true;
+            match method.as_str() {
+                "map" | "filter" => Self::has_iter_base(receiver),
+                _ => false,
             }
-            return Self::is_pipeline_shaped(receiver);
+        } else {
+            false
         }
-        false
+    }
+
+    fn has_iter_base(expr: &Expr) -> bool {
+        if let ExprKind::MethodCall(ref receiver, ref method, _) = expr.kind {
+            match method.as_str() {
+                "iter" => true,
+                "map" | "filter" => Self::has_iter_base(receiver),
+                _ => false,
+            }
+        } else {
+            false
+        }
     }
 
     fn emit_for(&mut self, s: &ForStmt) -> Result<(), CodegenError> {
@@ -5175,7 +5190,7 @@ impl Codegen {
         }
 
         // Guard: reject pipeline-shaped iterables that couldn't be extracted
-        if Self::is_pipeline_shaped(&s.iterable) {
+        if Self::is_iter_pipeline(&s.iterable) {
             return Err(CodegenError {
                 message: "iterator pipeline requires inline closures".to_string(),
             });

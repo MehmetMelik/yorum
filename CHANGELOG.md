@@ -2,6 +2,56 @@
 
 All notable changes to the Yorum programming language compiler.
 
+## [1.9.0-beta] - 2026-02-19
+
+**Iterator Pipelines** — `.map()` and `.filter()` with fused for-loop codegen (Phase 2).
+
+### Added
+
+- **Iterator pipelines:** `for x in arr.iter().map(f).filter(g) { ... }` compiles to a single fused LLVM loop with inline closure calls — zero allocation, zero iterator struct overhead
+- **Typechecker pipeline validation:** `infer_pipeline_elem_type()` recursively walks `.iter().map().filter()` chains, validates closure parameter/return types at each step. Requires inline closures (named closure variables rejected with clear error). Unit-returning `map()` rejected
+- **Pipeline-aware ownership:** `infer_iterable_elem_type()` extended with `has_iter_base()` guard to correctly infer element types through map/filter chains without affecting struct methods named map/filter
+- **Codegen fused loop emitter:** `try_extract_pipeline()` AST walker + `emit_for_pipeline()` with `IterStep`/`IterPipeline` types. Closures emitted as `{ fn_ptr, env_ptr }` pairs; index incremented in step block before filter branches
+- `examples/iterators.yrm` — 9 demos: basic map, basic filter, filter+map chain, map+filter chain, captures, long 4-step chain, break, continue, float pipeline
+- 21 new integration tests (compilation, type rejection, break/continue, edge cases, regressions)
+
+### Design decisions
+
+- `.map()` and `.filter()` only valid on chains starting with `.iter()` on an array, only inside for-loops
+- Struct methods named `map`/`filter` are not affected — all three checkers (typechecker, codegen, ownership) use `is_iter_pipeline`/`has_iter_base` to require `.iter()` at the chain base
+- Named closure variables not supported in pipelines (typechecker rejects at check time, matching codegen constraint)
+- `continue` in pipeline loops targets `for.cond` (index already incremented in step block)
+- `break` targets `for.end`
+
+**Stats:** 8 files changed | Tests: 622 (68 unit + 554 integration)
+
+---
+
+## [1.9.0-alpha] - 2026-02-19
+
+**Inclusive Range & Array Iterators** — `..=` and `.iter()` for for-loops (Phase 1).
+
+### Added
+
+- **Inclusive range `..=`:** `for i in 0..=n { ... }` iterates from 0 to n (inclusive), using `icmp sle` instead of `icmp slt`. Overflow guard at `i64::MAX` prevents counter wrapping
+- **Array `.iter()` in for-loops:** `for x in arr.iter() { ... }` iterates over array elements. Handled structurally (no phantom `ArrayIter<T>` type) — `.iter()` on arrays is a no-op that returns the receiver directly
+- **Struct `.iter()` preserved:** user-defined `iter()` methods on structs dispatch normally. `expr_struct_name()` extended with `FieldAccess` handling to correctly classify nested struct field accesses (e.g. `h.w.iter()`)
+- **`infer_array_elem_type()` helper:** resolves array element LLVM types through struct field layouts and function return types, fixing `i64` default fallback for non-Ident receivers like `b.items.iter()` where `items: [float]`
+- **Struct iter return type inference:** struct `.iter()` methods that return arrays (e.g. `fn iter(self) -> [float]`) correctly propagate element type to for-loop codegen
+- `.iter()` rejected outside for-loops (hits "requires struct type" error in `infer_expr`)
+- `RangeInclusive` handled across all compiler passes: lexer, parser, typechecker, codegen, ownership, monomorphizer, DCE, formatter, project rewriter
+- 21 new integration tests: inclusive range (basic, variables, expression bounds, type error, outside-for error, typecheck, overflow guard, AST JSON, formatter), array iter (basic, typecheck, string elements, no-args, wrong method, outside-for rejected, field access), struct iter (method in for-loop, compiles, float return type, nested field dispatch)
+
+### Design decisions
+
+- No phantom types — `.iter()` on arrays handled structurally, not via `ArrayIter<T>`
+- `.iter()` only valid in for-loop iterables, not as standalone expressions
+- Struct methods named `iter()` fall through to normal method dispatch via `expr_struct_name()` guard
+
+**Stats:** 12 files changed | Tests: 601 (68 unit + 533 integration)
+
+---
+
 ## [1.8.2] - 2026-02-18
 
 **Performance** — capacity-aware `str_concat` optimization eliminates quadratic string building.

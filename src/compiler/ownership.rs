@@ -395,16 +395,19 @@ impl OwnershipChecker {
             return Type::Int;
         }
         // Handle iterator pipeline chains: .iter().map(f).filter(g)
+        // Only treat map/filter as pipeline steps when the chain has .iter()
+        // at the base — struct methods named map/filter should fall through
+        // to normal array element inference.
         if let ExprKind::MethodCall(receiver, method, args) = &iterable.kind {
             match method.as_str() {
-                "map" => {
+                "map" if Self::has_iter_base(receiver) => {
                     if args.len() == 1 {
                         if let ExprKind::Closure(c) = &args[0].kind {
                             return c.return_type.clone();
                         }
                     }
                 }
-                "filter" => {
+                "filter" if Self::has_iter_base(receiver) => {
                     return self.infer_iterable_elem_type(receiver);
                 }
                 "iter" => {
@@ -427,6 +430,19 @@ impl OwnershipChecker {
             }
         }
         Type::Unit
+    }
+
+    /// Walk a MethodCall chain looking for `.iter()` at the base.
+    fn has_iter_base(expr: &Expr) -> bool {
+        if let ExprKind::MethodCall(ref receiver, ref method, _) = expr.kind {
+            match method.as_str() {
+                "iter" => true,
+                "map" | "filter" => Self::has_iter_base(receiver),
+                _ => false,
+            }
+        } else {
+            false
+        }
     }
 
     // ── Scope management ─────────────────────────────────────

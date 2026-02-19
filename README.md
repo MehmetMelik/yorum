@@ -264,7 +264,26 @@ Arrays are heap-allocated fat pointers (`{ ptr, i64, i64 }` — data pointer +
 length + capacity). `len(arr)` returns the length. `push(arr, val)` appends an
 element (growing the buffer via `realloc` when needed). `pop(arr)` removes and
 returns the last element. Index access includes runtime bounds checking.
-`for x in arr { ... }` iterates over array elements. `for i in 0..n { ... }` iterates with a counter from 0 to n-1.
+`for x in arr { ... }` iterates over array elements. `for x in arr.iter() { ... }` is equivalent. `for i in 0..n { ... }` iterates with a counter from 0 to n-1. `for i in 0..=n { ... }` iterates inclusively from 0 to n.
+
+### Iterator Pipelines
+
+```
+fn main() -> int {
+    let nums: [int] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+    let mut sum: int = 0;
+    for x in nums.iter().filter(|v: int| -> bool { return v % 2 == 0; }).map(|v: int| -> int { return v * v; }) {
+        sum += x;
+    }
+    print_int(sum);    // 220 (4+16+36+64+100)
+    return 0;
+}
+```
+
+`.iter()` on an array starts an iterator pipeline. `.map(|x: T| -> U { ... })` transforms
+each element. `.filter(|x: T| -> bool { ... })` keeps elements that satisfy the predicate.
+Chains like `.iter().map(f).filter(g).map(h)` are fused into a single loop — no intermediate
+allocations, no iterator structs. Closures must be inline (not named variables).
 
 ### Char Type and String Operations
 
@@ -792,7 +811,7 @@ diff gen1.ll gen2.ll    # identical — fixed-point achieved
 ## Testing
 
 ```bash
-cargo test                    # 580 tests (68 unit + 512 integration)
+cargo test                    # 622 tests (68 unit + 554 integration)
 cargo test compiler::lexer    # tests in one module
 cargo test test_fibonacci     # single test by name
 ```
@@ -832,6 +851,9 @@ cargo test test_fibonacci     # single test by name
 | **v1.8** | Package manager: `yorum install`/`update`, git + path dependencies, lock file, namespace isolation | Done |
 | **v1.8.1** | Codegen bug fix: unique alloca names and block scoping for nested variable shadowing | Done |
 | **v1.8.2** | Performance: capacity-aware `str_concat` optimization (~1000x faster string building loops) | Done |
+| **v1.9-alpha** | Inclusive range (`..=`), `.iter()` on arrays, struct iter dispatch, overflow guard | Done |
+| **v1.9-beta** | Iterator pipelines: `.map()`, `.filter()` with fused for-loop codegen | Done |
+| **v1.9** | Iterators & functional patterns (remaining phases) | In progress |
 
 ## License
 

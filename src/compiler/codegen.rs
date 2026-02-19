@@ -5094,10 +5094,15 @@ impl Codegen {
         // Evaluate the iterable (array fat pointer)
         let arr_val = self.emit_expr(&s.iterable)?;
 
-        // Determine the array element type. For .iter() calls, look through
-        // to the receiver expression for the elem type lookup.
+        // Determine the array element type. For array .iter() (the no-op case),
+        // look through to the receiver. For struct .iter() methods, keep the
+        // full MethodCall so infer_array_elem_type can resolve the return type.
         let arr_expr = match &s.iterable.kind {
-            ExprKind::MethodCall(receiver, method, args) if method == "iter" && args.is_empty() => {
+            ExprKind::MethodCall(receiver, method, args)
+                if method == "iter"
+                    && args.is_empty()
+                    && self.expr_struct_name(receiver).is_err() =>
+            {
                 receiver.as_ref()
             }
             _ => &s.iterable,
@@ -8403,6 +8408,16 @@ impl Codegen {
             ExprKind::Call(callee, _) => {
                 if let ExprKind::Ident(fn_name) = &callee.kind {
                     if let Some(Type::Array(inner)) = self.fn_ret_types.get(fn_name) {
+                        return self.llvm_type(inner);
+                    }
+                }
+                "i64".to_string()
+            }
+            ExprKind::MethodCall(receiver, method, _) => {
+                // Look up the mangled method name (StructName_method) in fn_ret_types
+                if let Ok(struct_name) = self.expr_struct_name(receiver) {
+                    let mangled = format!("{}_{}", struct_name, method);
+                    if let Some(Type::Array(inner)) = self.fn_ret_types.get(&mangled) {
                         return self.llvm_type(inner);
                     }
                 }

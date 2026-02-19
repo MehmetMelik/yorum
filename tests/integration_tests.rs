@@ -8191,3 +8191,32 @@ fn test_nested_struct_field_iter_dispatches_to_method() {
     // Should call Widget_iter, not just inline array iteration
     assert!(ir.contains("Widget_iter"));
 }
+
+#[test]
+fn test_struct_iter_method_float_return_type() {
+    // h.w.iter() where Widget::iter() -> [float] must use "double" element
+    // type in the loop, not fall back to i64.
+    let ir = compile(
+        "struct Widget {\n\
+         \x20   data: [float],\n\
+         }\n\
+         impl Widget {\n\
+         \x20   fn iter(self: Widget) -> [float] {\n\
+         \x20       return self.data;\n\
+         \x20   }\n\
+         }\n\
+         struct Holder {\n\
+         \x20   w: Widget,\n\
+         }\n\
+         fn main() -> int {\n\
+         \x20   let h: Holder = Holder { w: Widget { data: [1.0, 2.0, 3.0] } };\n\
+         \x20   for x in h.w.iter() {\n\
+         \x20       print_float(x);\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("Widget_iter"));
+    // Loop element must be loaded as double, not i64
+    assert!(ir.contains("alloca double"));
+}

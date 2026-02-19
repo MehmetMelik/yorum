@@ -762,7 +762,7 @@ source.yrm
 | Module Resolver | `src/compiler/module_resolver.rs` | Discovers `.yrm` files, maps filesystem paths to module names |
 | Project Builder | `src/compiler/project.rs` | Reads `yorum.toml`, merges modules, runs compilation pipeline |
 
-The Rust compiler is ~10,000 lines of Rust with `serde`, `serde_json`, and `toml`
+The Rust compiler is ~23,000 lines of Rust with `serde`, `serde_json`, and `toml`
 as dependencies.
 
 ## Self-Hosting
@@ -829,6 +829,9 @@ cargo test test_fibonacci     # single test by name
 | **v1.5.0** | Tooling & DX: `yorum run`, `yorum repl`, LSP completions/code actions, DWARF debug info (`-g`) | Done |
 | **v1.6.0** | Auto-formatter: `yorum fmt` with comment preservation, `--check` for CI | Done |
 | **v1.7** | Performance & optimization: inline hints, constant folding, tail calls, heap sort, dead code elimination | Done |
+| **v1.8** | Package manager: `yorum install`/`update`, git + path dependencies, lock file, namespace isolation | Done |
+| **v1.8.1** | Codegen bug fix: unique alloca names and block scoping for nested variable shadowing | Done |
+| **v1.8.2** | Performance: capacity-aware `str_concat` optimization (~1000x faster string building loops) | Done |
 
 ## License
 

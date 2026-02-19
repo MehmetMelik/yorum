@@ -7809,3 +7809,45 @@ fn test_param_name_no_collision_with_temps() {
     assert!(ir.contains("%.t0 = alloca i64"));
     assert!(ir.contains("store i64 %t0, ptr %.t0"));
 }
+
+#[test]
+fn test_str_concat_variable_suffix_fallback() {
+    // s = str_concat(s, other_var) should NOT use inline optimization
+    // (variable suffix could alias the target buffer)
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let mut s: string = \"hello\";\n\
+         \x20   let suffix: string = \" world\";\n\
+         \x20   s = str_concat(s, suffix);\n\
+         \x20   print_str(s);\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    // Should fall back to regular str_concat call (suffix is not a literal)
+    assert!(!ir.contains("sbuf_init"));
+}
+
+#[test]
+fn test_str_concat_shadowing_safety() {
+    // Inner scope shadows `s` — outer `s` must not use inner scope's metadata
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let mut s: string = \"outer\";\n\
+         \x20   if true {\n\
+         \x20       let mut s: string = \"inner\";\n\
+         \x20       s = str_concat(s, \"!\");\n\
+         \x20       print_str(s);\n\
+         \x20   }\n\
+         \x20   s = str_concat(s, \" end\");\n\
+         \x20   print_str(s);\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    // Both concat sites should emit inline code (separate buf metadata per alloca)
+    let init_count = ir.matches("sbuf_init").count();
+    assert!(
+        init_count >= 2,
+        "expected at least 2 sbuf_init blocks (one per scope), got {}",
+        init_count
+    );
+}

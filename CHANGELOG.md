@@ -18,9 +18,12 @@ All notable changes to the Yorum programming language compiler.
 ### Fixed
 
 - **Temp/parameter name collision** — `fresh_temp()` now emits `%.tN` instead of `%tN`, preventing collisions with user parameter names like `t0`, `t1` that occupy the same LLVM namespace
-- 1 new regression test: `test_param_name_no_collision_with_temps`
+- **Scope-safe buffer metadata** — string buffer tracking keyed by alloca pointer (not variable name), preventing cross-scope metadata corruption when inner scopes shadow string variables
+- **Init path heap safety** — `strlen` of existing data computed before `malloc` in the init path, preventing heap overflow when a string initialized from a function call is longer than the initial buffer
+- **Conservative alias safety** — inline concat restricted to string-literal suffixes only, preventing use-after-realloc when the suffix could alias the target buffer
+- 3 new regression tests: `test_param_name_no_collision_with_temps`, `test_str_concat_variable_suffix_fallback`, `test_str_concat_shadowing_safety`
 
-**Stats:** 3 files changed | Tests: 510 (68 unit + 510 integration)
+**Stats:** 3 files changed | Tests: 512 (68 unit + 512 integration)
 
 ---
 

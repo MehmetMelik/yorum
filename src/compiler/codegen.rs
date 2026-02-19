@@ -4573,7 +4573,7 @@ impl Codegen {
             // cap = 0 means "not an owned heap buffer yet"
             self.emit_line(&format!("store i64 0, ptr {}", cap_ptr));
             self.string_buf_vars
-                .insert(s.name.clone(), StringBufInfo { len_ptr, cap_ptr });
+                .insert(ptr.clone(), StringBufInfo { len_ptr, cap_ptr });
         }
 
         // If the RHS was a spawn, record the env info for .join() to use
@@ -4587,30 +4587,32 @@ impl Codegen {
     fn emit_assign(&mut self, s: &AssignStmt) -> Result<(), CodegenError> {
         match &s.target.kind {
             ExprKind::Ident(name) => {
-                // Detect s = str_concat(s, x) pattern for capacity-aware inline concat
-                if let ExprKind::Call(callee, args) = &s.value.kind {
-                    if let ExprKind::Ident(fn_name) = &callee.kind {
-                        if fn_name == "str_concat"
-                            && args.len() == 2
-                            && matches!(&args[0].kind, ExprKind::Ident(a) if a == name)
-                            && !matches!(&args[1].kind, ExprKind::Ident(b) if b == name)
-                            && self.string_buf_vars.contains_key(name)
-                        {
-                            return self.emit_str_concat_inplace(name, &args[1]);
-                        }
-                    }
-                }
-
                 let slot = self
                     .lookup_var(name)
                     .ok_or_else(|| CodegenError {
                         message: format!("undefined variable '{}'", name),
                     })?
                     .clone();
+
+                // Detect s = str_concat(s, literal) for capacity-aware inline concat.
+                // Only applied when the suffix is a string literal (provably non-aliasing).
+                if let ExprKind::Call(callee, args) = &s.value.kind {
+                    if let ExprKind::Ident(fn_name) = &callee.kind {
+                        if fn_name == "str_concat"
+                            && args.len() == 2
+                            && matches!(&args[0].kind, ExprKind::Ident(a) if a == name)
+                            && matches!(&args[1].kind, ExprKind::Literal(Literal::String(_)))
+                            && self.string_buf_vars.contains_key(&slot.ptr)
+                        {
+                            return self.emit_str_concat_inplace(name, &args[1]);
+                        }
+                    }
+                }
+
                 // If assigning a new (non-concat) value to a tracked string var,
                 // reset len/cap to 0 so the next inline concat re-initializes
                 if slot.llvm_ty == "ptr" {
-                    if let Some(buf_info) = self.string_buf_vars.get(name) {
+                    if let Some(buf_info) = self.string_buf_vars.get(&slot.ptr) {
                         let len_ptr = buf_info.len_ptr.clone();
                         let cap_ptr = buf_info.cap_ptr.clone();
                         let val = self.emit_expr(&s.value)?;
@@ -4714,7 +4716,7 @@ impl Codegen {
                 message: format!("undefined variable '{}'", name),
             })?
             .clone();
-        let buf_info = self.string_buf_vars.get(name).unwrap().clone();
+        let buf_info = self.string_buf_vars.get(&slot.ptr).unwrap().clone();
 
         // Load current data, len, cap
         let data = self.fresh_temp();
@@ -4753,9 +4755,19 @@ impl Codegen {
 
         // --- init_buf: first time, malloc a new buffer and copy old data ---
         self.emit_label(&lbl_init);
-        // init_cap = max(need * 2, 64)
+        // Compute actual data length first (tracked len may be 0 for non-literal init)
+        let old_len = self.fresh_temp();
+        self.emit_line(&format!("{} = call i64 @strlen(ptr {})", old_len, data));
+        let real_new_len = self.fresh_temp();
+        self.emit_line(&format!(
+            "{} = add i64 {}, {}",
+            real_new_len, old_len, suffix_len
+        ));
+        let real_need = self.fresh_temp();
+        self.emit_line(&format!("{} = add i64 {}, 1", real_need, real_new_len));
+        // init_cap = max(real_need * 2, 64)
         let need_x2 = self.fresh_temp();
-        self.emit_line(&format!("{} = mul i64 {}, 2", need_x2, need));
+        self.emit_line(&format!("{} = mul i64 {}, 2", need_x2, real_need));
         let cmp_64 = self.fresh_temp();
         self.emit_line(&format!("{} = icmp ugt i64 {}, 64", cmp_64, need_x2));
         let init_cap = self.fresh_temp();
@@ -4768,18 +4780,10 @@ impl Codegen {
             "{} = call ptr @malloc(i64 {})",
             init_buf, init_cap
         ));
-        // Copy old data (len bytes) — need strlen since len may be 0 for non-literal init
-        let old_len = self.fresh_temp();
-        self.emit_line(&format!("{} = call i64 @strlen(ptr {})", old_len, data));
+        // Copy old data into new buffer
         self.emit_line(&format!(
             "call ptr @memcpy(ptr {}, ptr {}, i64 {})",
             init_buf, data, old_len
-        ));
-        // Update len to old_len (the real length) and recompute new_len
-        let real_new_len = self.fresh_temp();
-        self.emit_line(&format!(
-            "{} = add i64 {}, {}",
-            real_new_len, old_len, suffix_len
         ));
         // Store updated data, len, cap
         self.emit_line(&format!("store ptr {}, ptr {}", init_buf, slot.ptr));

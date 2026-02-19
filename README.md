@@ -792,7 +792,7 @@ diff gen1.ll gen2.ll    # identical — fixed-point achieved
 ## Testing
 
 ```bash
-cargo test                    # 578 tests (68 unit + 510 integration)
+cargo test                    # 580 tests (68 unit + 512 integration)
 cargo test compiler::lexer    # tests in one module
 cargo test test_fibonacci     # single test by name
 ```

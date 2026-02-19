@@ -8220,3 +8220,284 @@ fn test_struct_iter_method_float_return_type() {
     // Loop element must be loaded as double, not i64
     assert!(ir.contains("alloca double"));
 }
+
+// ═══════════════════════════════════════════════════════════════
+//  Iterator pipeline: .map() and .filter()
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn test_for_iter_map_basic() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for x in arr.iter().map(|v: int| -> int { return v * 2; }) {\n\
+         \x20       sum += x;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    assert!(ir.contains("for.step"));
+    assert!(ir.contains("__closure_"));
+}
+
+#[test]
+fn test_for_iter_filter_basic() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3, 4, 5, 6];\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for x in arr.iter().filter(|v: int| -> bool { return v > 3; }) {\n\
+         \x20       sum += x;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    assert!(ir.contains("call i1"));
+    assert!(ir.contains("for.body"));
+}
+
+#[test]
+fn test_for_iter_map_filter_chain() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3, 4, 5];\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for x in arr.iter().map(|v: int| -> int { return v * 3; }).filter(|v: int| -> bool { return v > 6; }) {\n\
+         \x20       sum += x;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    // Both closures should appear in the IR
+    assert!(ir.contains("__closure_0"));
+    assert!(ir.contains("__closure_1"));
+}
+
+#[test]
+fn test_for_iter_filter_map_chain() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for x in arr.iter().filter(|v: int| -> bool { return v % 2 == 0; }).map(|v: int| -> int { return v * v; }) {\n\
+         \x20       sum += x;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    assert!(ir.contains("for.step"));
+    assert!(ir.contains("call i1")); // filter call
+}
+
+#[test]
+fn test_for_iter_multiple_maps() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for x in arr.iter().map(|v: int| -> int { return v + 1; }).map(|v: int| -> int { return v * 10; }) {\n\
+         \x20       sum += x;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    assert!(ir.contains("__closure_0"));
+    assert!(ir.contains("__closure_1"));
+}
+
+#[test]
+fn test_for_iter_multiple_filters() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for x in arr.iter().filter(|v: int| -> bool { return v > 3; }).filter(|v: int| -> bool { return v < 8; }) {\n\
+         \x20       sum += x;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    assert!(ir.contains("call i1"));
+    assert!(ir.contains("for.pipe")); // intermediate filter label
+}
+
+#[test]
+fn test_for_iter_map_type_transform() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   for s in arr.iter().map(|v: int| -> string { return to_str(v); }) {\n\
+         \x20       print_str(s);\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    // The closure should return ptr (string type)
+    assert!(ir.contains("call ptr"));
+}
+
+#[test]
+fn test_for_iter_map_with_captures() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let factor: int = 10;\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for x in arr.iter().map(|v: int| -> int { return v * factor; }) {\n\
+         \x20       sum += x;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    // Closure should capture factor via env struct
+    assert!(ir.contains("__env_"));
+    assert!(ir.contains("__closure_"));
+}
+
+#[test]
+fn test_for_iter_map_float_elements() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [float] = [1.0, 2.0, 3.0];\n\
+         \x20   let mut sum: float = 0.0;\n\
+         \x20   for x in arr.iter().map(|v: float| -> float { return v * 2.0; }) {\n\
+         \x20       sum = sum + x;\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("double"));
+}
+
+#[test]
+fn test_for_iter_map_wrong_param_type() {
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   for x in arr.iter().map(|v: string| -> string { return v; }) {\n\
+         \x20       print_str(x);\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+    let msg = result.unwrap_err().to_string();
+    assert!(msg.contains("does not match element type"));
+}
+
+#[test]
+fn test_for_iter_filter_non_bool_return() {
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   for x in arr.iter().filter(|v: int| -> int { return v; }) {\n\
+         \x20       print_int(x);\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+    let msg = result.unwrap_err().to_string();
+    assert!(msg.contains("must return bool"));
+}
+
+#[test]
+fn test_for_iter_map_wrong_arity() {
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   for x in arr.iter().map() {\n\
+         \x20       print_int(x);\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+    let msg = result.unwrap_err().to_string();
+    assert!(msg.contains("map() takes exactly 1 argument"));
+}
+
+#[test]
+fn test_for_iter_map_without_iter() {
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   for x in arr.map(|v: int| -> int { return v; }) {\n\
+         \x20       print_int(x);\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_for_pipeline_break() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3, 4, 5];\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for x in arr.iter().map(|v: int| -> int { return v * 2; }) {\n\
+         \x20       if x > 6 {\n\
+         \x20           break;\n\
+         \x20       }\n\
+         \x20       sum += x;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    assert!(ir.contains("for.end"));
+}
+
+#[test]
+fn test_for_pipeline_continue() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3, 4, 5];\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for x in arr.iter().map(|v: int| -> int { return v * 2; }) {\n\
+         \x20       if x == 6 {\n\
+         \x20           continue;\n\
+         \x20       }\n\
+         \x20       sum += x;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    assert!(ir.contains("for.cond"));
+}
+
+#[test]
+fn test_for_iter_filter_all_out() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for x in arr.iter().filter(|v: int| -> bool { return v > 100; }) {\n\
+         \x20       sum += x;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    assert!(ir.contains("for.step"));
+}
+
+#[test]
+fn test_for_iter_long_pipeline() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for x in arr.iter().map(|v: int| -> int { return v * 2; }).filter(|v: int| -> bool { return v > 5; }).map(|v: int| -> int { return v + 1; }).filter(|v: int| -> bool { return v % 2 == 1; }) {\n\
+         \x20       sum += x;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    // 4 closures emitted
+    assert!(ir.contains("__closure_0"));
+    assert!(ir.contains("__closure_1"));
+    assert!(ir.contains("__closure_2"));
+    assert!(ir.contains("__closure_3"));
+}

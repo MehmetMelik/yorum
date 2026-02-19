@@ -52,6 +52,18 @@ struct VarSlot {
     llvm_ty: String, // LLVM type string (e.g., "i64")
 }
 
+/// A single step in an iterator pipeline (.map or .filter).
+enum IterStep<'a> {
+    Map(&'a ClosureExpr),
+    Filter(&'a ClosureExpr),
+}
+
+/// A fully extracted iterator pipeline: array source + ordered steps.
+struct IterPipeline<'a> {
+    source: &'a Expr,         // array expression (receiver of .iter())
+    steps: Vec<IterStep<'a>>, // ordered pipeline steps
+}
+
 /// Tracks per-variable string buffer metadata for capacity-aware str_concat.
 /// When `cap == 0`, the data pointer is not an owned heap buffer (e.g. a global
 /// literal or a fresh allocation from a function).  The first inline concat
@@ -5082,6 +5094,71 @@ impl Codegen {
         Ok(())
     }
 
+    /// Try to extract an iterator pipeline from an expression.
+    /// Walks a MethodCall chain right-to-left, recognizing .map(closure) and
+    /// .filter(closure) steps. Base case: .iter() on a non-struct receiver.
+    /// Returns None for non-pipeline expressions or pipelines with no combinators
+    /// (just .iter() with no map/filter — let existing codepath handle it).
+    fn try_extract_pipeline<'a>(&self, expr: &'a Expr) -> Option<IterPipeline<'a>> {
+        let mut steps = Vec::new();
+        let mut current = expr;
+
+        loop {
+            if let ExprKind::MethodCall(ref receiver, ref method, ref args) = current.kind {
+                match method.as_str() {
+                    "map" => {
+                        if args.len() == 1 {
+                            if let ExprKind::Closure(ref c) = args[0].kind {
+                                steps.push(IterStep::Map(c));
+                                current = receiver;
+                                continue;
+                            }
+                        }
+                        return None; // Not an inline closure
+                    }
+                    "filter" => {
+                        if args.len() == 1 {
+                            if let ExprKind::Closure(ref c) = args[0].kind {
+                                steps.push(IterStep::Filter(c));
+                                current = receiver;
+                                continue;
+                            }
+                        }
+                        return None;
+                    }
+                    "iter" => {
+                        if args.is_empty() && self.expr_struct_name(receiver).is_err() {
+                            if steps.is_empty() {
+                                return None; // Just .iter() with no combinators
+                            }
+                            steps.reverse(); // We walked right-to-left
+                            return Some(IterPipeline {
+                                source: receiver,
+                                steps,
+                            });
+                        }
+                        return None; // Struct .iter() or .iter() with args
+                    }
+                    _ => return None,
+                }
+            } else {
+                return None;
+            }
+        }
+    }
+
+    /// Quick syntactic check: does the expression contain .map() or .filter()?
+    /// Used for error reporting when try_extract_pipeline returns None.
+    fn is_pipeline_shaped(expr: &Expr) -> bool {
+        if let ExprKind::MethodCall(ref receiver, ref method, _) = expr.kind {
+            if method == "map" || method == "filter" {
+                return true;
+            }
+            return Self::is_pipeline_shaped(receiver);
+        }
+        false
+    }
+
     fn emit_for(&mut self, s: &ForStmt) -> Result<(), CodegenError> {
         // Range-based for loop: for i in start..end
         if let ExprKind::Range(ref start, ref end) = s.iterable.kind {
@@ -5091,6 +5168,19 @@ impl Codegen {
         if let ExprKind::RangeInclusive(ref start, ref end) = s.iterable.kind {
             return self.emit_for_range(&s.var_name, start, end, true, &s.body);
         }
+
+        // Fused iterator pipeline (.iter().map().filter() chains)
+        if let Some(pipeline) = self.try_extract_pipeline(&s.iterable) {
+            return self.emit_for_pipeline(&s.var_name, &pipeline, &s.body);
+        }
+
+        // Guard: reject pipeline-shaped iterables that couldn't be extracted
+        if Self::is_pipeline_shaped(&s.iterable) {
+            return Err(CodegenError {
+                message: "iterator pipeline requires inline closures".to_string(),
+            });
+        }
+
         // Evaluate the iterable (array fat pointer)
         let arr_val = self.emit_expr(&s.iterable)?;
 
@@ -5198,6 +5288,215 @@ impl Codegen {
         self.emit_line(&format!("store i64 {}, ptr {}", next_idx_tmp, idx_ptr));
         self.emit_line(&format!("br label %{}", cond_label));
 
+        self.emit_label(&end_label);
+        self.block_terminated = false;
+        Ok(())
+    }
+
+    /// Emit a fused for-loop over an iterator pipeline.
+    /// Compiles `for x in arr.iter().map(f).filter(g) { body }` into a single
+    /// loop with inline closure calls — no allocation, no iterator structs.
+    fn emit_for_pipeline(
+        &mut self,
+        var_name: &str,
+        pipeline: &IterPipeline<'_>,
+        body: &Block,
+    ) -> Result<(), CodegenError> {
+        // 1. Emit the source array expression → fat pointer
+        let arr_val = self.emit_expr(pipeline.source)?;
+
+        // Determine source element type
+        let src_elem_ty = self.infer_array_elem_type(pipeline.source);
+
+        // Load data ptr and length from { ptr, i64, i64 }
+        let data_gep = self.fresh_temp();
+        self.emit_line(&format!(
+            "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 0",
+            data_gep, arr_val
+        ));
+        let data_ptr = self.fresh_temp();
+        self.emit_line(&format!("{} = load ptr, ptr {}", data_ptr, data_gep));
+
+        let len_gep = self.fresh_temp();
+        self.emit_line(&format!(
+            "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 1",
+            len_gep, arr_val
+        ));
+        let len_val = self.fresh_temp();
+        self.emit_line(&format!("{} = load i64, ptr {}", len_val, len_gep));
+
+        // 2. Emit closures for each pipeline step and extract fn_ptr + env_ptr
+        let mut step_info: Vec<(bool, String, String, String, String)> = Vec::new();
+        // (is_filter, fn_ptr, env_ptr, param_llvm_ty, ret_llvm_ty)
+        for step in &pipeline.steps {
+            let closure = match step {
+                IterStep::Map(c) | IterStep::Filter(c) => *c,
+            };
+            let is_filter = matches!(step, IterStep::Filter(_));
+
+            let pair_ptr = self.emit_closure(closure)?;
+
+            // Load fn_ptr from { ptr, ptr } field 0
+            let fn_gep = self.fresh_temp();
+            self.emit_line(&format!(
+                "{} = getelementptr {{ ptr, ptr }}, ptr {}, i32 0, i32 0",
+                fn_gep, pair_ptr
+            ));
+            let fn_ptr = self.fresh_temp();
+            self.emit_line(&format!("{} = load ptr, ptr {}", fn_ptr, fn_gep));
+
+            // Load env_ptr from { ptr, ptr } field 1
+            let env_gep = self.fresh_temp();
+            self.emit_line(&format!(
+                "{} = getelementptr {{ ptr, ptr }}, ptr {}, i32 0, i32 1",
+                env_gep, pair_ptr
+            ));
+            let env_ptr = self.fresh_temp();
+            self.emit_line(&format!("{} = load ptr, ptr {}", env_ptr, env_gep));
+
+            let param_ty = self.llvm_type(&closure.params[0].ty);
+            let ret_ty = self.llvm_type(&closure.return_type);
+
+            step_info.push((is_filter, fn_ptr, env_ptr, param_ty, ret_ty));
+        }
+
+        // 3. Determine final output type (walk through pipeline steps)
+        let mut final_elem_ty = src_elem_ty.clone();
+        for step in &pipeline.steps {
+            match step {
+                IterStep::Map(c) => {
+                    final_elem_ty = self.llvm_type(&c.return_type);
+                }
+                IterStep::Filter(_) => {} // preserves type
+            }
+        }
+
+        // 4. Alloca for index counter and loop variable
+        let idx_ptr = self.fresh_temp();
+        self.emit_line(&format!("{} = alloca i64", idx_ptr));
+        self.emit_line(&format!("store i64 0, ptr {}", idx_ptr));
+
+        let var_ptr = self.fresh_temp();
+        self.emit_line(&format!("{} = alloca {}", var_ptr, final_elem_ty));
+
+        let cond_label = self.fresh_label("for.cond");
+        let step_label = self.fresh_label("for.step");
+        let body_label = self.fresh_label("for.body");
+        let end_label = self.fresh_label("for.end");
+
+        self.emit_line(&format!("br label %{}", cond_label));
+
+        // 5. Condition: idx < len
+        self.emit_label(&cond_label);
+        self.block_terminated = false;
+        let cur_idx = self.fresh_temp();
+        self.emit_line(&format!("{} = load i64, ptr {}", cur_idx, idx_ptr));
+        let cmp = self.fresh_temp();
+        self.emit_line(&format!("{} = icmp slt i64 {}, {}", cmp, cur_idx, len_val));
+        self.emit_line(&format!(
+            "br i1 {}, label %{}, label %{}",
+            cmp, step_label, end_label
+        ));
+
+        // 6. Step block: load element, increment index, apply pipeline
+        self.emit_label(&step_label);
+        self.block_terminated = false;
+
+        // Load element at current index
+        let elem_gep = self.fresh_temp();
+        self.emit_line(&format!(
+            "{} = getelementptr {}, ptr {}, i64 {}",
+            elem_gep, src_elem_ty, data_ptr, cur_idx
+        ));
+        let mut current_val = self.fresh_temp();
+        self.emit_line(&format!(
+            "{} = load {}, ptr {}",
+            current_val, src_elem_ty, elem_gep
+        ));
+
+        // Increment index (always, even if filtered out)
+        let next_idx = self.fresh_temp();
+        self.emit_line(&format!("{} = add i64 {}, 1", next_idx, cur_idx));
+        self.emit_line(&format!("store i64 {}, ptr {}", next_idx, idx_ptr));
+
+        // Apply each pipeline step
+        let mut current_ty = src_elem_ty.clone();
+        for (i, (is_filter, fn_ptr, env_ptr, _param_ty, ret_ty)) in step_info.iter().enumerate() {
+            if *is_filter {
+                // filter: call fn(env, val) → i1, branch on result
+                let result = self.fresh_temp();
+                self.emit_line(&format!(
+                    "{} = call i1 {}(ptr {}, {} {})",
+                    result, fn_ptr, env_ptr, current_ty, current_val
+                ));
+                // If false, skip to cond (next iteration)
+                // If true, continue to next step or body
+                let is_last = i + 1 == step_info.len();
+                let next_label = if !is_last {
+                    self.fresh_label("for.pipe")
+                } else {
+                    body_label.clone()
+                };
+                self.emit_line(&format!(
+                    "br i1 {}, label %{}, label %{}",
+                    result, next_label, cond_label
+                ));
+                // Only emit a new label for intermediate steps — the body label
+                // for the last filter step is emitted below.
+                if !is_last {
+                    self.emit_label(&next_label);
+                    self.block_terminated = false;
+                }
+            } else {
+                // map: call fn(env, val) → new_val
+                let result = self.fresh_temp();
+                self.emit_line(&format!(
+                    "{} = call {} {}(ptr {}, {} {})",
+                    result, ret_ty, fn_ptr, env_ptr, current_ty, current_val
+                ));
+                current_val = result;
+                current_ty = ret_ty.clone();
+
+                // If this is the last step, branch to body
+                if i + 1 == step_info.len() {
+                    self.emit_line(&format!("br label %{}", body_label));
+                }
+            }
+        }
+
+        // If no steps ended with explicit branch (shouldn't happen since we always
+        // have at least one step), but guard anyway
+        if step_info.is_empty() {
+            self.emit_line(&format!("br label %{}", body_label));
+        }
+
+        // 7. Body block
+        self.emit_label(&body_label);
+        self.block_terminated = false;
+
+        self.push_scope();
+
+        // Store final value into loop variable
+        self.emit_line(&format!(
+            "store {} {}, ptr {}",
+            final_elem_ty, current_val, var_ptr
+        ));
+        self.define_var(var_name, &var_ptr, &final_elem_ty);
+
+        // continue → cond (index already incremented in step block)
+        // break → end
+        self.loop_labels
+            .push((cond_label.clone(), end_label.clone()));
+        self.emit_block(body)?;
+        self.loop_labels.pop();
+
+        if !self.block_terminated {
+            self.emit_line(&format!("br label %{}", cond_label));
+        }
+
+        self.pop_scope();
+
+        // 8. End block
         self.emit_label(&end_label);
         self.block_terminated = false;
         Ok(())

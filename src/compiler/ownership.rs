@@ -394,16 +394,29 @@ impl OwnershipChecker {
         if let ExprKind::Range(_, _) | ExprKind::RangeInclusive(_, _) = &iterable.kind {
             return Type::Int;
         }
-        // Handle .iter() on arrays — unwrap the method call to find the array
-        if let ExprKind::MethodCall(receiver, method, _) = &iterable.kind {
-            if method == "iter" {
-                if let ExprKind::Ident(name) = &receiver.kind {
-                    if let Some(info) = self.lookup(name) {
-                        if let Type::Array(elem) = &info.ty {
-                            return *elem.clone();
+        // Handle iterator pipeline chains: .iter().map(f).filter(g)
+        if let ExprKind::MethodCall(receiver, method, args) = &iterable.kind {
+            match method.as_str() {
+                "map" => {
+                    if args.len() == 1 {
+                        if let ExprKind::Closure(c) = &args[0].kind {
+                            return c.return_type.clone();
                         }
                     }
                 }
+                "filter" => {
+                    return self.infer_iterable_elem_type(receiver);
+                }
+                "iter" => {
+                    if let ExprKind::Ident(name) = &receiver.kind {
+                        if let Some(info) = self.lookup(name) {
+                            if let Type::Array(elem) = &info.ty {
+                                return *elem.clone();
+                            }
+                        }
+                    }
+                }
+                _ => {}
             }
         }
         if let ExprKind::Ident(name) = &iterable.kind {

@@ -1539,12 +1539,169 @@ impl TypeChecker {
         }
     }
 
+    /// Quick check: does the expression contain `.map()` or `.filter()` in a MethodCall chain?
+    /// Used to avoid cascade errors when pipeline validation has already reported errors.
+    fn is_pipeline_shaped(expr: &Expr) -> bool {
+        if let ExprKind::MethodCall(ref receiver, ref method, _) = expr.kind {
+            if method == "map" || method == "filter" {
+                return true;
+            }
+            return Self::is_pipeline_shaped(receiver);
+        }
+        false
+    }
+
+    /// Infer the element type for an iterator pipeline chain.
+    /// Recursively walks `.iter().map(f).filter(g)` chains and validates each step.
+    /// Returns `None` if the expression is not a valid pipeline.
+    fn infer_pipeline_elem_type(&mut self, expr: &Expr) -> Option<Type> {
+        if let ExprKind::MethodCall(ref receiver, ref method, ref args) = expr.kind {
+            match method.as_str() {
+                "iter" => {
+                    let recv_ty = self.infer_expr(receiver);
+                    match recv_ty {
+                        Some(Type::Array(inner)) => {
+                            if !args.is_empty() {
+                                self.errors.push(TypeError {
+                                    message: "iter() takes no arguments".to_string(),
+                                    span: expr.span,
+                                });
+                            }
+                            return Some(*inner);
+                        }
+                        None => return None,
+                        _ => return None, // Not an array — not a pipeline base
+                    }
+                }
+                "map" => {
+                    let input_ty = self.infer_pipeline_elem_type(receiver)?;
+                    if args.len() != 1 {
+                        self.errors.push(TypeError {
+                            message: format!(
+                                "map() takes exactly 1 argument, found {}",
+                                args.len()
+                            ),
+                            span: expr.span,
+                        });
+                        return None;
+                    }
+                    let closure_ty = self.infer_expr(&args[0])?;
+                    if let Type::Fn(params, ret) = closure_ty {
+                        if params.len() != 1 {
+                            self.errors.push(TypeError {
+                                message: format!(
+                                    "map() closure must take exactly 1 parameter, found {}",
+                                    params.len()
+                                ),
+                                span: args[0].span,
+                            });
+                            return None;
+                        }
+                        if params[0] != input_ty {
+                            self.errors.push(TypeError {
+                                message: format!(
+                                    "map() closure parameter type '{}' does not match element type '{}'",
+                                    params[0], input_ty
+                                ),
+                                span: args[0].span,
+                            });
+                            return None;
+                        }
+                        return Some(*ret);
+                    }
+                    self.errors.push(TypeError {
+                        message: "map() argument must be a closure".to_string(),
+                        span: args[0].span,
+                    });
+                    return None;
+                }
+                "filter" => {
+                    let input_ty = self.infer_pipeline_elem_type(receiver)?;
+                    if args.len() != 1 {
+                        self.errors.push(TypeError {
+                            message: format!(
+                                "filter() takes exactly 1 argument, found {}",
+                                args.len()
+                            ),
+                            span: expr.span,
+                        });
+                        return None;
+                    }
+                    let closure_ty = self.infer_expr(&args[0])?;
+                    if let Type::Fn(params, ret) = closure_ty {
+                        if params.len() != 1 {
+                            self.errors.push(TypeError {
+                                message: format!(
+                                    "filter() closure must take exactly 1 parameter, found {}",
+                                    params.len()
+                                ),
+                                span: args[0].span,
+                            });
+                            return None;
+                        }
+                        if params[0] != input_ty {
+                            self.errors.push(TypeError {
+                                message: format!(
+                                    "filter() closure parameter type '{}' does not match element type '{}'",
+                                    params[0], input_ty
+                                ),
+                                span: args[0].span,
+                            });
+                            return None;
+                        }
+                        if *ret != Type::Bool {
+                            self.errors.push(TypeError {
+                                message: format!(
+                                    "filter() closure must return bool, found '{}'",
+                                    ret
+                                ),
+                                span: args[0].span,
+                            });
+                            return None;
+                        }
+                        return Some(input_ty);
+                    }
+                    self.errors.push(TypeError {
+                        message: "filter() argument must be a closure".to_string(),
+                        span: args[0].span,
+                    });
+                    return None;
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
     /// Infer the element type for a for-loop iterable expression.
-    /// Handles `.iter()` on arrays structurally (without introducing a phantom type),
+    /// Handles iterator pipelines (.iter().map().filter() chains) first,
+    /// then `.iter()` on arrays structurally (without introducing a phantom type),
     /// then falls back to general expression inference for other iterables.
     fn infer_for_iterable(&mut self, iterable: &Expr) -> Option<Type> {
+        // Try iterator pipeline (.iter().map().filter() chains)
+        let errors_before = self.errors.len();
+        if let Some(ty) = self.infer_pipeline_elem_type(iterable) {
+            return Some(ty);
+        }
+
+        // If the iterable is pipeline-shaped (.map() or .filter() call) but
+        // infer_pipeline_elem_type returned None, either errors have already been
+        // reported, or the pipeline base is not .iter(). Report an error if none
+        // was pushed by the pipeline check and don't fall through.
+        if Self::is_pipeline_shaped(iterable) {
+            if self.errors.len() == errors_before {
+                self.errors.push(TypeError {
+                    message: "map()/filter() require .iter() on an array".to_string(),
+                    span: iterable.span,
+                });
+            }
+            return None;
+        }
+
         // Special case: .iter() on arrays — handle before general inference
         // because arrays have no method table and infer_expr would reject the call.
+        // (infer_pipeline_elem_type already handles array .iter(), but struct .iter()
+        // methods fall through to here.)
         if let ExprKind::MethodCall(ref receiver, ref method, ref args) = iterable.kind {
             if method == "iter" {
                 let recv_ty = self.infer_expr(receiver);

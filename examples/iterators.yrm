@@ -1,0 +1,90 @@
+// iterators.yrm — Iterator pipelines with map and filter.
+//
+// Demonstrates: .iter(), .map(), .filter(), chained pipelines,
+// closures with captures, type-transforming maps, break/continue.
+
+fn main() -> int {
+    // Basic map: double each element
+    let nums: [int] = [1, 2, 3, 4, 5];
+    let mut sum: int = 0;
+    for x in nums.iter().map(|v: int| -> int { return v * 2; }) {
+        sum += x;
+    }
+    print_str("map double: ");
+    print_int(sum);
+
+    // Basic filter: keep evens
+    sum = 0;
+    for x in nums.iter().filter(|v: int| -> bool { return v % 2 == 0; }) {
+        sum += x;
+    }
+    print_str("filter evens: ");
+    print_int(sum);
+
+    // Chained: filter then map
+    let data: [int] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+    sum = 0;
+    for x in data.iter().filter(|v: int| -> bool { return v % 2 == 0; }).map(|v: int| -> int { return v * v; }) {
+        sum += x;
+    }
+    print_str("filter-map (even squares): ");
+    print_int(sum);
+
+    // Chained: map then filter
+    sum = 0;
+    for x in data.iter().map(|v: int| -> int { return v * 3; }).filter(|v: int| -> bool { return v > 15; }) {
+        sum += x;
+    }
+    print_str("map-filter (triple > 15): ");
+    print_int(sum);
+
+    // Closure with capture
+    let threshold: int = 5;
+    sum = 0;
+    for x in data.iter().filter(|v: int| -> bool { return v > threshold; }) {
+        sum += x;
+    }
+    print_str("filter > threshold: ");
+    print_int(sum);
+
+    // Long chain: map, filter, map, filter
+    sum = 0;
+    for x in data.iter().map(|v: int| -> int { return v * 2; }).filter(|v: int| -> bool { return v > 5; }).map(|v: int| -> int { return v + 1; }).filter(|v: int| -> bool { return v % 2 == 1; }) {
+        sum += x;
+    }
+    print_str("long chain: ");
+    print_int(sum);
+
+    // Break in pipeline loop
+    sum = 0;
+    for x in nums.iter().map(|v: int| -> int { return v * 10; }) {
+        if x > 30 {
+            break;
+        }
+        sum += x;
+    }
+    print_str("break at > 30: ");
+    print_int(sum);
+
+    // Continue in pipeline loop
+    sum = 0;
+    for x in nums.iter().map(|v: int| -> int { return v * 10; }) {
+        if x == 30 {
+            continue;
+        }
+        sum += x;
+    }
+    print_str("skip 30: ");
+    print_int(sum);
+
+    // Float pipeline
+    let floats: [float] = [1.5, 2.5, 3.5, 4.5];
+    let mut fsum: float = 0.0;
+    for x in floats.iter().map(|v: float| -> float { return v * 2.0; }) {
+        fsum = fsum + x;
+    }
+    print_str("float map: ");
+    print_float(fsum);
+
+    return 0;
+}

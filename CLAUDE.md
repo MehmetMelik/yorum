@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 cargo build                          # dev build
 cargo build --release                # release build
-cargo test                           # all tests (580: 68 unit + 512 integration)
+cargo test                           # all tests (622: 68 unit + 554 integration)
 cargo test compiler::lexer           # tests in one module
 cargo test test_fibonacci_compiles   # single test by name
 cargo test -- --nocapture            # see stdout from tests
@@ -73,7 +73,7 @@ Multi-file projects (`yorum build`) add a front-end step: `ModuleResolver` disco
 - **`lexer.rs`** — Hand-written char-by-char lexer. Supports nested `/* */` block comments, string interpolation (`"hello {expr}"`). Returns `Vec<Token>`
 - **`ast.rs`** — Complete AST types. All nodes derive `Serialize`/`Deserialize` for JSON round-tripping. `Type` enum has `PartialEq`/`Eq` for type checking comparisons
 - **`parser.rs`** — Recursive descent parser with Pratt expression parsing (`parse_expr_bp`). Operator precedence is defined in `infix_binding_power()`. Struct init is disambiguated from blocks via 2-token lookahead in `is_struct_init_lookahead()`. Compound assignments (`+=`, `-=`, etc.) desugared here. String interpolation desugared to `str_concat`/`to_str` chains
-- **`typechecker.rs`** — Three-pass: (1) registers all function signatures, struct layouts, and enum definitions; (1.5) infers effects for unannotated functions via fixed-point call graph iteration; (2) checks function bodies. Uses a scope stack (`Vec<HashMap<String, VarInfo>>`) for lexical scoping. ~70 built-in functions registered in `register_builtins()` with effect annotations. Special-cased builtins in Call handler: `len`, `push`, `pop`, `args`, `exit`, `chan`, `send`, `recv`, `slice`, `concat_arrays`, `reverse`, `str_split`, `to_str`, `map_*`, `set_*`. Prelude types `Option<T>` and `Result<T, E>` are registered as generic enums with methods. Purity enforcement: pure functions cannot call impure functions or use `spawn`. Effect enforcement: functions with `effects` clause can only call functions whose effects are a subset of the declared effects
+- **`typechecker.rs`** — Three-pass: (1) registers all function signatures, struct layouts, and enum definitions; (1.5) infers effects for unannotated functions via fixed-point call graph iteration; (2) checks function bodies. Uses a scope stack (`Vec<HashMap<String, VarInfo>>`) for lexical scoping. ~70 built-in functions registered in `register_builtins()` with effect annotations. Special-cased builtins in Call handler: `len`, `push`, `pop`, `args`, `exit`, `chan`, `send`, `recv`, `slice`, `concat_arrays`, `reverse`, `str_split`, `to_str`, `map_*`, `set_*`. Prelude types `Option<T>` and `Result<T, E>` are registered as generic enums with methods. Purity enforcement: pure functions cannot call impure functions or use `spawn`. Effect enforcement: functions with `effects` clause can only call functions whose effects are a subset of the declared effects. Iterator pipelines: `infer_pipeline_elem_type()` recursively validates `.iter().map(f).filter(g)` chains, checking closure param/return types at each step
 - **`ownership.rs`** — Type-aware move checker. Tracks `VarInfo { state, ty, def_span }` per variable with `is_copy_type()` distinguishing copy types (`int`, `float`, `bool`, `char`, `string`, `unit`) from move types (structs, enums, arrays, etc.). Branch merging for if/else and match ensures moves in any branch propagate conservatively. `loop_depth` tracking prevents moving outer-scope variables inside loops. Enforces must-join for `Task` variables
 - **`monomorphize.rs`** — Eliminates generics before codegen. Collects all concrete instantiations of generic functions/structs/enums, clones declarations with type variables substituted, and rewrites call sites to use mangled names (`identity__int`, `Pair__int__float`). Handles generic enum monomorphization for prelude types (`Option__int`, `Result__int__string`)
 - **`dce.rs`** — Dead code elimination. BFS reachability from `main` removes unreachable functions, structs, enums, and impl blocks. Skips programs without `main` (e.g., test-only compilations). Runs between monomorphization and codegen
@@ -103,6 +103,7 @@ Multi-file projects (`yorum build`) add a front-end step: `ModuleResolver` disco
 - Unit-typed let bindings and assignments skip alloca/store — `alloca void` and `store void` are invalid LLVM IR. The RHS is still evaluated for side effects
 - Map struct is 48 bytes `{keys, vals, flags, cap, size, tombstones}`, Set is 40 bytes `{keys, flags, cap, size, tombstones}`
 - Tuples compile to LLVM named structs (`%tuple.int.string = type { i64, ptr }`). `ensure_tuple_type()` lazily emits type defs
+- Iterator pipelines (`.iter().map().filter()` chains) are fused into a single loop by `emit_for_pipeline()`. `try_extract_pipeline()` walks the AST chain right-to-left, extracting `IterStep::Map`/`IterStep::Filter` steps. Closures are emitted as `{ ptr, ptr }` pairs; fn_ptr and env_ptr are loaded pre-loop. Index is incremented in the step block (before filter branches), so `continue` targets `for.cond` and filtered-out elements correctly advance
 - Math builtins inline LLVM intrinsic calls at call sites (no wrapper functions — wrappers would shadow C library symbols)
 
 ### Yorum language design choices
@@ -118,6 +119,7 @@ Multi-file projects (`yorum build`) add a front-end step: `ModuleResolver` disco
 - Bitwise operators: `&`, `|`, `^`, `<<`, `>>` (int only). `>>` is parsed as two `Gt` tokens (avoids conflict with generic closing `>>`)
 - `break` and `continue` for while/for loops
 - Range syntax: `for i in 0..n` (counter-based for loop)
+- Iterator pipelines: `for x in arr.iter().map(|v: int| -> int { ... }).filter(|v: int| -> bool { ... }) { ... }` — fused into a single loop with zero allocation. `.map()` and `.filter()` only valid on chains starting with `.iter()` on an array, only inside for-loops, only with inline closures
 - String interpolation: `"hello {expr}"` with `{{`/`}}` escapes
 - Tuple types: `(int, string)`, destructuring: `let (a, b) = t;`
 - `Option<T>` and `Result<T, E>` are prelude types (always available)
@@ -136,7 +138,7 @@ Multi-file projects (`yorum build`) add a front-end step: `ModuleResolver` disco
 
 ### Example programs
 
-`examples/*.yrm` — 30 examples covering all major language features. All compile to native binaries and run correctly. Use these as references for valid Yorum syntax.
+`examples/*.yrm` — 31 examples covering all major language features. All compile to native binaries and run correctly. Use these as references for valid Yorum syntax.
 
 **Iteration rule:** Every version that adds new language features MUST also add or expand example programs exercising those features. After adding examples, verify the full cycle: compile with `cargo run -- compile`, link with `clang`, and run the binary. Do not use workarounds in examples — if a codegen bug prevents clean usage, fix the bug first.
 

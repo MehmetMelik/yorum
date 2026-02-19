@@ -490,7 +490,7 @@ dependencies = [
 
 [[package]]
 name = "yorum"
-version = "1.8.2"
+version = "1.9.0-beta"
 dependencies = [
  "serde",
  "serde_json",

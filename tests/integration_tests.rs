@@ -7667,3 +7667,126 @@ fn test_variable_shadowing_param() {
     assert!(ir.contains("define i64 @add_one(i64 %x)"));
     assert!(ir.contains("alloca i64"));
 }
+
+// ═══════════════════════════════════════════════════════════════
+//  String builder optimization tests
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn test_str_concat_inplace_loop() {
+    // s = str_concat(s, x) in a loop should use inline buffer optimization
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let mut s: string = \"\";\n\
+         \x20   let mut i: int = 0;\n\
+         \x20   while i < 10 {\n\
+         \x20       s = str_concat(s, \"ab\");\n\
+         \x20       i += 1;\n\
+         \x20   }\n\
+         \x20   print_str(s);\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    // Should contain inline buffer code (realloc/malloc) instead of call @str_concat
+    // The init block uses malloc for the new buffer
+    assert!(ir.contains("sbuf_init"));
+    assert!(ir.contains("sbuf_grow"));
+    assert!(ir.contains("sbuf_append"));
+}
+
+#[test]
+fn test_str_concat_non_self_fallback() {
+    // str_concat(a, b) where target != first arg should still call @str_concat
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let a: string = \"hello\";\n\
+         \x20   let b: string = \" world\";\n\
+         \x20   let s: string = str_concat(a, b);\n\
+         \x20   print_str(s);\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("call ptr @str_concat"));
+}
+
+#[test]
+fn test_str_concat_literal_init() {
+    // Concat with literal init should work correctly
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let mut s: string = \"hello\";\n\
+         \x20   s = str_concat(s, \" world\");\n\
+         \x20   print_str(s);\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    // Should use inline optimization (sbuf_init for first concat)
+    assert!(ir.contains("sbuf_init"));
+}
+
+#[test]
+fn test_str_concat_reassignment_resets() {
+    // Reassigning a new value to a tracked string should reset len/cap
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let mut s: string = \"\";\n\
+         \x20   s = str_concat(s, \"hello\");\n\
+         \x20   s = \"reset\";\n\
+         \x20   s = str_concat(s, \" world\");\n\
+         \x20   print_str(s);\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    // Two inline concat sites — both should have sbuf_init blocks
+    let init_count = ir.matches("sbuf_init").count();
+    assert!(
+        init_count >= 2,
+        "expected at least 2 sbuf_init blocks, got {}",
+        init_count
+    );
+}
+
+#[test]
+fn test_str_concat_self_self_fallback() {
+    // s = str_concat(s, s) should NOT use inline optimization (use-after-realloc risk)
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let mut s: string = \"hello\";\n\
+         \x20   s = str_concat(s, s);\n\
+         \x20   print_str(s);\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    // Should fall back to regular str_concat call
+    assert!(!ir.contains("sbuf_init"));
+}
+
+#[test]
+fn test_str_concat_memcpy_definition() {
+    // The @str_concat function definition should use memcpy, not strcpy/strcat
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let s: string = str_concat(\"a\", \"b\");\n\
+         \x20   print_str(s);\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    // The function body should contain memcpy calls
+    assert!(ir.contains("define ptr @str_concat"));
+    // Should NOT contain strcpy or strcat
+    let str_concat_start = ir.find("define ptr @str_concat").unwrap();
+    let str_concat_end = ir[str_concat_start..].find("\n}\n").unwrap() + str_concat_start;
+    let str_concat_body = &ir[str_concat_start..str_concat_end];
+    assert!(
+        str_concat_body.contains("@memcpy"),
+        "str_concat should use memcpy"
+    );
+    assert!(
+        !str_concat_body.contains("@strcpy"),
+        "str_concat should not use strcpy"
+    );
+    assert!(
+        !str_concat_body.contains("@strcat"),
+        "str_concat should not use strcat"
+    );
+}

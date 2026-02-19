@@ -2,6 +2,23 @@
 
 All notable changes to the Yorum programming language compiler.
 
+## [1.8.2] - 2026-02-18
+
+**Performance** — capacity-aware `str_concat` optimization eliminates quadratic string building.
+
+### Changed
+
+- **`@str_concat` uses `memcpy`** — replaced `strcpy`/`strcat` with `memcpy` in the `@str_concat` LLVM IR definition, eliminating redundant `strlen` scans per call
+- **Inline capacity-aware concat** — `s = str_concat(s, x)` pattern is detected at codegen time and emits inline code with per-variable `{len, cap}` tracking and `realloc`-based growth, turning O(n^2) string building loops into amortized O(n)
+
+### Added
+
+- 6 new integration tests for string builder optimization: `test_str_concat_inplace_loop`, `test_str_concat_non_self_fallback`, `test_str_concat_literal_init`, `test_str_concat_reassignment_resets`, `test_str_concat_self_self_fallback`, `test_str_concat_memcpy_definition`
+
+**Stats:** 3 files changed | Tests: 509 (68 unit + 509 integration)
+
+---
+
 ## [1.8.1] - 2026-02-18
 
 **Codegen Bug Fix** — duplicate variable names in nested scopes no longer produce invalid LLVM IR.

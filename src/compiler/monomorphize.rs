@@ -271,7 +271,7 @@ impl Monomorphizer {
             ExprKind::Spawn(block) => {
                 self.collect_from_block(block);
             }
-            ExprKind::Range(start, end) => {
+            ExprKind::Range(start, end) | ExprKind::RangeInclusive(start, end) => {
                 self.collect_from_expr(start);
                 self.collect_from_expr(end);
             }
@@ -724,6 +724,10 @@ fn substitute_expr(expr: &Expr, subst: &HashMap<String, Type>) -> Expr {
             Box::new(substitute_expr(start, subst)),
             Box::new(substitute_expr(end, subst)),
         ),
+        ExprKind::RangeInclusive(start, end) => ExprKind::RangeInclusive(
+            Box::new(substitute_expr(start, subst)),
+            Box::new(substitute_expr(end, subst)),
+        ),
         ExprKind::Try(inner) => ExprKind::Try(Box::new(substitute_expr(inner, subst))),
         other => other.clone(),
     };
@@ -988,7 +992,7 @@ fn rewrite_expr(
                 _struct_insts,
             );
         }
-        ExprKind::Range(start, end) => {
+        ExprKind::Range(start, end) | ExprKind::RangeInclusive(start, end) => {
             rewrite_expr(
                 start,
                 generic_fns,

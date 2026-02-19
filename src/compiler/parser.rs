@@ -910,16 +910,21 @@ impl Parser {
         let mut lhs = self.parse_unary()?;
 
         loop {
-            // Range operator `..` has lowest precedence (1, 2)
-            if self.check(&TokenKind::DotDot) {
+            // Range operators `..` and `..=` have lowest precedence (1, 2)
+            if self.check(&TokenKind::DotDot) || self.check(&TokenKind::DotDotEq) {
                 if 1 < min_bp {
                     break;
                 }
+                let is_inclusive = self.check(&TokenKind::DotDotEq);
                 self.advance();
                 let rhs = self.parse_expr_bp(2)?;
                 let span = lhs.span.merge(rhs.span);
                 lhs = Expr {
-                    kind: ExprKind::Range(Box::new(lhs), Box::new(rhs)),
+                    kind: if is_inclusive {
+                        ExprKind::RangeInclusive(Box::new(lhs), Box::new(rhs))
+                    } else {
+                        ExprKind::Range(Box::new(lhs), Box::new(rhs))
+                    },
                     span,
                 };
                 continue;

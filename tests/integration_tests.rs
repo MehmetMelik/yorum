@@ -7851,3 +7851,187 @@ fn test_str_concat_shadowing_safety() {
         init_count
     );
 }
+
+// ═══════════════════════════════════════════════════════════════
+//  v1.9 — Iterators & Functional Patterns (Phase 1)
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn test_inclusive_range_basic() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for i in 0..=5 {\n\
+         \x20       sum += i;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    // Should use <= (sle) instead of < (slt)
+    assert!(ir.contains("icmp sle i64"));
+    assert!(ir.contains("for.cond"));
+    assert!(ir.contains("for.body"));
+}
+
+#[test]
+fn test_inclusive_range_variables() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let n: int = 10;\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for i in 1..=n {\n\
+         \x20       sum += i;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    assert!(ir.contains("icmp sle i64"));
+}
+
+#[test]
+fn test_inclusive_range_expression_bounds() {
+    // 0..=n + 1 should parse as 0..=(n + 1) since + binds tighter than ..=
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let n: int = 5;\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for i in 0..=n + 1 {\n\
+         \x20       sum += i;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    assert!(ir.contains("for.cond"));
+    assert!(ir.contains("icmp sle i64"));
+}
+
+#[test]
+fn test_inclusive_range_type_error() {
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20   for i in 0..=true {\n\
+         \x20       print_int(i);\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_inclusive_range_outside_for_error() {
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20   let x: int = 0..=10;\n\
+         \x20   return x;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_inclusive_range_typecheck() {
+    parse_and_check(
+        "fn main() -> int {\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for i in 0..=10 {\n\
+         \x20       sum += i;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+}
+
+#[test]
+fn test_array_iter_basic() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for x in arr.iter() {\n\
+         \x20       sum += x;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    // .iter() should produce the same array for-loop IR as direct iteration
+    assert!(ir.contains("for.cond"));
+    assert!(ir.contains("for.body"));
+    // Should load from array data pointer like a normal array loop
+    assert!(ir.contains("icmp slt i64"));
+}
+
+#[test]
+fn test_array_iter_typecheck() {
+    parse_and_check(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [10, 20, 30];\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for x in arr.iter() {\n\
+         \x20       sum += x;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+}
+
+#[test]
+fn test_array_iter_string_elements() {
+    parse_and_check(
+        "fn main() -> int {\n\
+         \x20   let names: [string] = [\"alice\", \"bob\"];\n\
+         \x20   for name in names.iter() {\n\
+         \x20       print_str(name);\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+}
+
+#[test]
+fn test_array_iter_no_args() {
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   for x in arr.iter(42) {\n\
+         \x20       print_int(x);\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_array_iter_wrong_method() {
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   for x in arr.foo() {\n\
+         \x20       print_int(x);\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_fmt_inclusive_range() {
+    let input = "fn main() -> int { for i in 0..=10 { print_int(i); } return 0; }\n";
+    let output = yorum::format_source(input).expect("format failed");
+    assert!(output.contains("for i in 0..=10 {"));
+}
+
+#[test]
+fn test_inclusive_range_ast_json() {
+    let json = parse_to_json(
+        "fn main() -> int {\n\
+         \x20   for i in 0..=5 {\n\
+         \x20       print_int(i);\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(json.contains("RangeInclusive"));
+}

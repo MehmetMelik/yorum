@@ -96,6 +96,7 @@ pub enum TokenKind {
     Semicolon, // ;
     Dot,       // .
     DotDot,    // ..
+    DotDotEq,  // ..=
     Arrow,     // ->
     FatArrow,  // =>
 
@@ -240,6 +241,7 @@ impl fmt::Display for TokenKind {
             TokenKind::Semicolon => write!(f, ";"),
             TokenKind::Dot => write!(f, "."),
             TokenKind::DotDot => write!(f, ".."),
+            TokenKind::DotDotEq => write!(f, "..="),
             TokenKind::Arrow => write!(f, "->"),
             TokenKind::FatArrow => write!(f, "=>"),
             TokenKind::Eq => write!(f, "="),

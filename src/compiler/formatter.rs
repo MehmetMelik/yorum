@@ -702,10 +702,14 @@ impl Formatter {
         self.write("for ");
         self.write(&f.var_name);
         self.write(" in ");
-        // Range expressions: emit as `start..end`
+        // Range expressions: emit as `start..end` or `start..=end`
         if let ExprKind::Range(ref start, ref end) = f.iterable.kind {
             self.emit_expr(start);
             self.write("..");
+            self.emit_expr(end);
+        } else if let ExprKind::RangeInclusive(ref start, ref end) = f.iterable.kind {
+            self.emit_expr(start);
+            self.write("..=");
             self.emit_expr(end);
         } else {
             self.emit_expr(&f.iterable);
@@ -887,6 +891,11 @@ impl Formatter {
             ExprKind::Range(start, end) => {
                 self.emit_expr(start);
                 self.write("..");
+                self.emit_expr(end);
+            }
+            ExprKind::RangeInclusive(start, end) => {
+                self.emit_expr(start);
+                self.write("..=");
                 self.emit_expr(end);
             }
             ExprKind::Try(inner) => {

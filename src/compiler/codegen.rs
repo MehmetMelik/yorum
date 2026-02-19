@@ -5085,7 +5085,24 @@ impl Codegen {
     fn emit_for(&mut self, s: &ForStmt) -> Result<(), CodegenError> {
         // Range-based for loop: for i in start..end
         if let ExprKind::Range(ref start, ref end) = s.iterable.kind {
-            return self.emit_for_range(&s.var_name, start, end, &s.body);
+            return self.emit_for_range(&s.var_name, start, end, false, &s.body);
+        }
+        // Inclusive range: for i in start..=end
+        if let ExprKind::RangeInclusive(ref start, ref end) = s.iterable.kind {
+            return self.emit_for_range(&s.var_name, start, end, true, &s.body);
+        }
+        // .iter() on arrays: delegate to array for-loop codegen
+        if let ExprKind::MethodCall(ref receiver, ref method, ref args) = s.iterable.kind {
+            if method == "iter" && args.is_empty() {
+                // Treat arr.iter() exactly like iterating over arr directly
+                let arr_for = ForStmt {
+                    var_name: s.var_name.clone(),
+                    iterable: *receiver.clone(),
+                    body: s.body.clone(),
+                    span: s.span,
+                };
+                return self.emit_for(&arr_for);
+            }
         }
 
         // Evaluate the iterable (array fat pointer)
@@ -5200,6 +5217,7 @@ impl Codegen {
         var_name: &str,
         start_expr: &Expr,
         end_expr: &Expr,
+        inclusive: bool,
         body: &Block,
     ) -> Result<(), CodegenError> {
         // Evaluate start and end bounds
@@ -5220,13 +5238,17 @@ impl Codegen {
 
         self.emit_line(&format!("br label %{}", cond_label));
 
-        // Condition: counter < end
+        // Condition: counter < end (exclusive) or counter <= end (inclusive)
         self.emit_label(&cond_label);
         self.block_terminated = false;
         let cur_val = self.fresh_temp();
         self.emit_line(&format!("{} = load i64, ptr {}", cur_val, var_ptr));
         let cmp = self.fresh_temp();
-        self.emit_line(&format!("{} = icmp slt i64 {}, {}", cmp, cur_val, end_val));
+        let cmp_op = if inclusive { "sle" } else { "slt" };
+        self.emit_line(&format!(
+            "{} = icmp {} i64 {}, {}",
+            cmp, cmp_op, cur_val, end_val
+        ));
         self.emit_line(&format!(
             "br i1 {}, label %{}, label %{}",
             cmp, body_label, end_label
@@ -6523,7 +6545,7 @@ impl Codegen {
 
             ExprKind::TupleLit(elements) => self.emit_tuple_lit(elements),
 
-            ExprKind::Range(_, _) => Err(CodegenError {
+            ExprKind::Range(_, _) | ExprKind::RangeInclusive(_, _) => Err(CodegenError {
                 message: "range expression is only valid in for loops".to_string(),
             })?,
 
@@ -7952,7 +7974,7 @@ impl Codegen {
             ExprKind::Spawn(block) => {
                 Self::collect_idents_from_block(block, locals, names);
             }
-            ExprKind::Range(start, end) => {
+            ExprKind::Range(start, end) | ExprKind::RangeInclusive(start, end) => {
                 Self::collect_idents_from_expr(start, locals, names);
                 Self::collect_idents_from_expr(end, locals, names);
             }
@@ -8262,7 +8284,7 @@ impl Codegen {
                 format!("%tuple.{}", semantic_name)
             }
             ExprKind::Spawn(_) => "ptr".to_string(),
-            ExprKind::Range(_, _) => "i64".to_string(),
+            ExprKind::Range(_, _) | ExprKind::RangeInclusive(_, _) => "i64".to_string(),
             ExprKind::Try(inner) => {
                 // The result type of ? is T from Option<T> or T from Result<T, E>
                 let inner_ty = self.expr_llvm_type(inner);

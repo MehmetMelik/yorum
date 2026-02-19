@@ -1271,7 +1271,9 @@ impl TypeChecker {
             }
 
             Stmt::For(s) => {
-                if let ExprKind::Range(ref start, ref end) = s.iterable.kind {
+                if let ExprKind::Range(ref start, ref end)
+                | ExprKind::RangeInclusive(ref start, ref end) = s.iterable.kind
+                {
                     // Range-based for: check bounds are int, loop var is int
                     if let Some(start_ty) = self.infer_expr(start) {
                         if start_ty != Type::Int {
@@ -1295,23 +1297,13 @@ impl TypeChecker {
                     self.check_block(&s.body);
                     self.pop_scope();
                     self.loop_depth -= 1;
-                } else if let Some(iter_ty) = self.infer_expr(&s.iterable) {
-                    if let Type::Array(inner) = iter_ty {
-                        self.loop_depth += 1;
-                        self.push_scope();
-                        self.define_with_span(&s.var_name, *inner, false, s.span);
-                        self.check_block(&s.body);
-                        self.pop_scope();
-                        self.loop_depth -= 1;
-                    } else {
-                        self.errors.push(TypeError {
-                            message: format!(
-                                "for loop requires an array or range, found '{}'",
-                                iter_ty
-                            ),
-                            span: s.iterable.span,
-                        });
-                    }
+                } else if let Some(elem_ty) = self.infer_for_iterable(&s.iterable) {
+                    self.loop_depth += 1;
+                    self.push_scope();
+                    self.define_with_span(&s.var_name, elem_ty, false, s.span);
+                    self.check_block(&s.body);
+                    self.pop_scope();
+                    self.loop_depth -= 1;
                 }
             }
 
@@ -1545,6 +1537,42 @@ impl TypeChecker {
                 span,
             });
         }
+    }
+
+    /// Infer the element type for a for-loop iterable expression.
+    /// Handles `.iter()` on arrays structurally (without introducing a phantom type),
+    /// then falls back to general expression inference for other iterables.
+    fn infer_for_iterable(&mut self, iterable: &Expr) -> Option<Type> {
+        // Special case: .iter() on arrays — handle before general inference
+        // because arrays have no method table and infer_expr would reject the call.
+        if let ExprKind::MethodCall(ref receiver, ref method, ref args) = iterable.kind {
+            if method == "iter" {
+                let recv_ty = self.infer_expr(receiver);
+                match recv_ty {
+                    Some(Type::Array(inner)) => {
+                        if !args.is_empty() {
+                            self.errors.push(TypeError {
+                                message: "iter() takes no arguments".to_string(),
+                                span: iterable.span,
+                            });
+                        }
+                        return Some(*inner);
+                    }
+                    None => return None, // Receiver has errors, don't cascade
+                    _ => {}              // Not an array, fall through to general inference
+                }
+            }
+        }
+
+        let iter_ty = self.infer_expr(iterable)?;
+        if let Type::Array(inner) = iter_ty {
+            return Some(*inner);
+        }
+        self.errors.push(TypeError {
+            message: format!("for loop requires an array or range, found '{}'", iter_ty),
+            span: iterable.span,
+        });
+        None
     }
 
     // ── Expression type inference ────────────────────────────
@@ -3119,7 +3147,7 @@ impl TypeChecker {
                 Some(Type::Task(Box::new(inner_ty)))
             }
 
-            ExprKind::Range(start, end) => {
+            ExprKind::Range(start, end) | ExprKind::RangeInclusive(start, end) => {
                 if let Some(start_ty) = self.infer_expr(start) {
                     if start_ty != Type::Int {
                         self.errors.push(TypeError {
@@ -3596,7 +3624,7 @@ impl TypeChecker {
                 out.push("spawn".to_string());
                 Self::collect_calls_in_block(block, out);
             }
-            ExprKind::Range(start, end) => {
+            ExprKind::Range(start, end) | ExprKind::RangeInclusive(start, end) => {
                 Self::collect_calls_in_expr(start, out);
                 Self::collect_calls_in_expr(end, out);
             }

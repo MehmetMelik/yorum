@@ -360,6 +360,7 @@ pub enum ExprKind {
     TupleLit(Vec<Expr>),
     Spawn(Block),
     Range(Box<Expr>, Box<Expr>),
+    RangeInclusive(Box<Expr>, Box<Expr>),
     Try(Box<Expr>),
 }
 

@@ -5085,21 +5085,29 @@ impl Codegen {
     fn emit_for(&mut self, s: &ForStmt) -> Result<(), CodegenError> {
         // Range-based for loop: for i in start..end
         if let ExprKind::Range(ref start, ref end) = s.iterable.kind {
-            return self.emit_for_range(&s.var_name, start, end, &s.body);
+            return self.emit_for_range(&s.var_name, start, end, false, &s.body);
         }
-
+        // Inclusive range: for i in start..=end
+        if let ExprKind::RangeInclusive(ref start, ref end) = s.iterable.kind {
+            return self.emit_for_range(&s.var_name, start, end, true, &s.body);
+        }
         // Evaluate the iterable (array fat pointer)
         let arr_val = self.emit_expr(&s.iterable)?;
 
-        // Determine the array variable name to look up elem type
-        let elem_ty = if let ExprKind::Ident(name) = &s.iterable.kind {
-            self.array_elem_types
-                .get(name)
-                .cloned()
-                .unwrap_or_else(|| "i64".to_string())
-        } else {
-            "i64".to_string()
+        // Determine the array element type. For array .iter() (the no-op case),
+        // look through to the receiver. For struct .iter() methods, keep the
+        // full MethodCall so infer_array_elem_type can resolve the return type.
+        let arr_expr = match &s.iterable.kind {
+            ExprKind::MethodCall(receiver, method, args)
+                if method == "iter"
+                    && args.is_empty()
+                    && self.expr_struct_name(receiver).is_err() =>
+            {
+                receiver.as_ref()
+            }
+            _ => &s.iterable,
         };
+        let elem_ty = self.infer_array_elem_type(arr_expr);
 
         // Load data ptr and length from { ptr, i64, i64 }
         let data_gep = self.fresh_temp();
@@ -5200,6 +5208,7 @@ impl Codegen {
         var_name: &str,
         start_expr: &Expr,
         end_expr: &Expr,
+        inclusive: bool,
         body: &Block,
     ) -> Result<(), CodegenError> {
         // Evaluate start and end bounds
@@ -5220,13 +5229,17 @@ impl Codegen {
 
         self.emit_line(&format!("br label %{}", cond_label));
 
-        // Condition: counter < end
+        // Condition: counter < end (exclusive) or counter <= end (inclusive)
         self.emit_label(&cond_label);
         self.block_terminated = false;
         let cur_val = self.fresh_temp();
         self.emit_line(&format!("{} = load i64, ptr {}", cur_val, var_ptr));
         let cmp = self.fresh_temp();
-        self.emit_line(&format!("{} = icmp slt i64 {}, {}", cmp, cur_val, end_val));
+        let cmp_op = if inclusive { "sle" } else { "slt" };
+        self.emit_line(&format!(
+            "{} = icmp {} i64 {}, {}",
+            cmp, cmp_op, cur_val, end_val
+        ));
         self.emit_line(&format!(
             "br i1 {}, label %{}, label %{}",
             cmp, body_label, end_label
@@ -5253,9 +5266,26 @@ impl Codegen {
         // Increment block
         self.emit_label(&inc_label);
         self.block_terminated = false;
-        let next_val = self.fresh_temp();
         let cur_val2 = self.fresh_temp();
         self.emit_line(&format!("{} = load i64, ptr {}", cur_val2, var_ptr));
+        if inclusive {
+            // Guard against overflow: if counter == end, this was the last
+            // iteration — exit instead of incrementing (which would wrap
+            // i64::MAX to i64::MIN and loop forever).
+            let at_end = self.fresh_temp();
+            self.emit_line(&format!(
+                "{} = icmp eq i64 {}, {}",
+                at_end, cur_val2, end_val
+            ));
+            let inc_do_label = self.fresh_label("for.inc.do");
+            self.emit_line(&format!(
+                "br i1 {}, label %{}, label %{}",
+                at_end, end_label, inc_do_label
+            ));
+            self.emit_label(&inc_do_label);
+            self.block_terminated = false;
+        }
+        let next_val = self.fresh_temp();
         self.emit_line(&format!("{} = add i64 {}, 1", next_val, cur_val2));
         self.emit_line(&format!("store i64 {}, ptr {}", next_val, var_ptr));
         self.emit_line(&format!("br label %{}", cond_label));
@@ -6483,6 +6513,17 @@ impl Codegen {
                     }
                 }
 
+                // Handle .iter() on arrays: if the receiver is not a struct,
+                // it's an array .iter() — just evaluate the receiver (a no-op
+                // that returns the array fat pointer). This covers all array
+                // receiver forms: idents, literals, field accesses, calls, etc.
+                if method_name == "iter"
+                    && args.is_empty()
+                    && self.expr_struct_name(receiver).is_err()
+                {
+                    return self.emit_expr(receiver);
+                }
+
                 let struct_name = self.expr_struct_name(receiver)?;
                 let recv_ptr = self.emit_expr_ptr(receiver)?;
                 let mangled = format!("{}_{}", struct_name, method_name);
@@ -6523,7 +6564,7 @@ impl Codegen {
 
             ExprKind::TupleLit(elements) => self.emit_tuple_lit(elements),
 
-            ExprKind::Range(_, _) => Err(CodegenError {
+            ExprKind::Range(_, _) | ExprKind::RangeInclusive(_, _) => Err(CodegenError {
                 message: "range expression is only valid in for loops".to_string(),
             })?,
 
@@ -7952,7 +7993,7 @@ impl Codegen {
             ExprKind::Spawn(block) => {
                 Self::collect_idents_from_block(block, locals, names);
             }
-            ExprKind::Range(start, end) => {
+            ExprKind::Range(start, end) | ExprKind::RangeInclusive(start, end) => {
                 Self::collect_idents_from_expr(start, locals, names);
                 Self::collect_idents_from_expr(end, locals, names);
             }
@@ -8262,7 +8303,7 @@ impl Codegen {
                 format!("%tuple.{}", semantic_name)
             }
             ExprKind::Spawn(_) => "ptr".to_string(),
-            ExprKind::Range(_, _) => "i64".to_string(),
+            ExprKind::Range(_, _) | ExprKind::RangeInclusive(_, _) => "i64".to_string(),
             ExprKind::Try(inner) => {
                 // The result type of ? is T from Option<T> or T from Result<T, E>
                 let inner_ty = self.expr_llvm_type(inner);
@@ -8324,9 +8365,65 @@ impl Codegen {
                     message: "cannot determine struct name from call expression".to_string(),
                 })
             }
+            ExprKind::FieldAccess(recv, field) => {
+                // Resolve the parent struct, then look up the field's type
+                let parent_struct = self.expr_struct_name(recv)?;
+                let (_, field_ty) = self.struct_field_index(&parent_struct, field)?;
+                if let Type::Named(name) = field_ty {
+                    if self.struct_layouts.contains_key(&name)
+                        || self.enum_layouts.contains_key(&name)
+                    {
+                        return Ok(name);
+                    }
+                }
+                Err(CodegenError {
+                    message: format!("field '{}' is not a struct type", field),
+                })
+            }
             _ => Err(CodegenError {
                 message: "cannot determine struct name from expression".to_string(),
             }),
+        }
+    }
+
+    /// Infer the LLVM element type for an array expression (used by for-loop codegen).
+    /// Handles identifiers, struct field accesses, and function call return types.
+    fn infer_array_elem_type(&self, expr: &Expr) -> String {
+        match &expr.kind {
+            ExprKind::Ident(name) => self
+                .array_elem_types
+                .get(name)
+                .cloned()
+                .unwrap_or_else(|| "i64".to_string()),
+            ExprKind::FieldAccess(recv, field) => {
+                if let Ok(struct_name) = self.expr_struct_name(recv) {
+                    if let Ok((_, Type::Array(inner))) =
+                        self.struct_field_index(&struct_name, field)
+                    {
+                        return self.llvm_type(&inner);
+                    }
+                }
+                "i64".to_string()
+            }
+            ExprKind::Call(callee, _) => {
+                if let ExprKind::Ident(fn_name) = &callee.kind {
+                    if let Some(Type::Array(inner)) = self.fn_ret_types.get(fn_name) {
+                        return self.llvm_type(inner);
+                    }
+                }
+                "i64".to_string()
+            }
+            ExprKind::MethodCall(receiver, method, _) => {
+                // Look up the mangled method name (StructName_method) in fn_ret_types
+                if let Ok(struct_name) = self.expr_struct_name(receiver) {
+                    let mangled = format!("{}_{}", struct_name, method);
+                    if let Some(Type::Array(inner)) = self.fn_ret_types.get(&mangled) {
+                        return self.llvm_type(inner);
+                    }
+                }
+                "i64".to_string()
+            }
+            _ => "i64".to_string(),
         }
     }
 

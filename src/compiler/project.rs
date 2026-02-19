@@ -688,7 +688,7 @@ fn rewrite_expr_calls(expr: &mut Expr, name_map: &HashMap<String, String>) {
         ExprKind::Spawn(block) => {
             rewrite_block_calls(block, name_map);
         }
-        ExprKind::Range(start, end) => {
+        ExprKind::Range(start, end) | ExprKind::RangeInclusive(start, end) => {
             rewrite_expr_calls(start, name_map);
             rewrite_expr_calls(end, name_map);
         }

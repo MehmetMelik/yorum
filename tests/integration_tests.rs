@@ -7851,3 +7851,372 @@ fn test_str_concat_shadowing_safety() {
         init_count
     );
 }
+
+// ═══════════════════════════════════════════════════════════════
+//  v1.9 — Iterators & Functional Patterns (Phase 1)
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn test_inclusive_range_basic() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for i in 0..=5 {\n\
+         \x20       sum += i;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    // Should use <= (sle) instead of < (slt)
+    assert!(ir.contains("icmp sle i64"));
+    assert!(ir.contains("for.cond"));
+    assert!(ir.contains("for.body"));
+}
+
+#[test]
+fn test_inclusive_range_variables() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let n: int = 10;\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for i in 1..=n {\n\
+         \x20       sum += i;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    assert!(ir.contains("icmp sle i64"));
+}
+
+#[test]
+fn test_inclusive_range_expression_bounds() {
+    // 0..=n + 1 should parse as 0..=(n + 1) since + binds tighter than ..=
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let n: int = 5;\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for i in 0..=n + 1 {\n\
+         \x20       sum += i;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    assert!(ir.contains("for.cond"));
+    assert!(ir.contains("icmp sle i64"));
+}
+
+#[test]
+fn test_inclusive_range_type_error() {
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20   for i in 0..=true {\n\
+         \x20       print_int(i);\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_inclusive_range_outside_for_error() {
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20   let x: int = 0..=10;\n\
+         \x20   return x;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_inclusive_range_typecheck() {
+    parse_and_check(
+        "fn main() -> int {\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for i in 0..=10 {\n\
+         \x20       sum += i;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+}
+
+#[test]
+fn test_array_iter_basic() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for x in arr.iter() {\n\
+         \x20       sum += x;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    // .iter() should produce the same array for-loop IR as direct iteration
+    assert!(ir.contains("for.cond"));
+    assert!(ir.contains("for.body"));
+    // Should load from array data pointer like a normal array loop
+    assert!(ir.contains("icmp slt i64"));
+}
+
+#[test]
+fn test_array_iter_typecheck() {
+    parse_and_check(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [10, 20, 30];\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for x in arr.iter() {\n\
+         \x20       sum += x;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+}
+
+#[test]
+fn test_array_iter_string_elements() {
+    parse_and_check(
+        "fn main() -> int {\n\
+         \x20   let names: [string] = [\"alice\", \"bob\"];\n\
+         \x20   for name in names.iter() {\n\
+         \x20       print_str(name);\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+}
+
+#[test]
+fn test_array_iter_no_args() {
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   for x in arr.iter(42) {\n\
+         \x20       print_int(x);\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_array_iter_wrong_method() {
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   for x in arr.foo() {\n\
+         \x20       print_int(x);\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_fmt_inclusive_range() {
+    let input = "fn main() -> int { for i in 0..=10 { print_int(i); } return 0; }\n";
+    let output = yorum::format_source(input).expect("format failed");
+    assert!(output.contains("for i in 0..=10 {"));
+}
+
+#[test]
+fn test_inclusive_range_ast_json() {
+    let json = parse_to_json(
+        "fn main() -> int {\n\
+         \x20   for i in 0..=5 {\n\
+         \x20       print_int(i);\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(json.contains("RangeInclusive"));
+}
+
+#[test]
+fn test_array_iter_outside_for_rejected() {
+    // arr.iter() outside a for-loop should be a type error,
+    // same as range expressions
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   arr.iter();\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_inclusive_range_overflow_guard() {
+    // Inclusive range codegen must guard against i64::MAX wraparound:
+    // the increment block should check counter == end before incrementing.
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let mut count: int = 0;\n\
+         \x20   for i in 0..=5 {\n\
+         \x20       count += 1;\n\
+         \x20   }\n\
+         \x20   return count;\n\
+         }\n",
+    );
+    // The inclusive range increment block must contain an equality guard
+    assert!(
+        ir.contains("icmp eq i64"),
+        "missing overflow guard in inclusive range"
+    );
+    // And the regular inclusive condition check
+    assert!(ir.contains("icmp sle i64"));
+}
+
+#[test]
+fn test_struct_iter_method_in_for_loop() {
+    // A user struct with an iter() method that returns [int]
+    // should work in for-loops via normal method dispatch, not be
+    // confused with the builtin array .iter() rewrite.
+    parse_and_check(
+        "struct Wrapper {\n\
+         \x20   data: [int],\n\
+         }\n\
+         impl Wrapper {\n\
+         \x20   fn iter(self: Wrapper) -> [int] {\n\
+         \x20       return self.data;\n\
+         \x20   }\n\
+         }\n\
+         fn main() -> int {\n\
+         \x20   let w: Wrapper = Wrapper { data: [1, 2, 3] };\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for x in w.iter() {\n\
+         \x20       sum += x;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+}
+
+#[test]
+fn test_array_field_iter() {
+    // for x in w.data.iter() where data is an array field — the .iter()
+    // receiver is a FieldAccess, not a simple Ident or ArrayLit.
+    let ir = compile(
+        "struct Bag {\n\
+         \x20   items: [int],\n\
+         }\n\
+         fn main() -> int {\n\
+         \x20   let b: Bag = Bag { items: [10, 20, 30] };\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for x in b.items.iter() {\n\
+         \x20       sum += x;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    assert!(ir.contains("for.cond"));
+    assert!(ir.contains("for.body"));
+}
+
+#[test]
+fn test_struct_iter_method_compiles() {
+    // Same as above, but verify it actually produces valid LLVM IR
+    let ir = compile(
+        "struct Wrapper {\n\
+         \x20   data: [int],\n\
+         }\n\
+         impl Wrapper {\n\
+         \x20   fn iter(self: Wrapper) -> [int] {\n\
+         \x20       return self.data;\n\
+         \x20   }\n\
+         }\n\
+         fn main() -> int {\n\
+         \x20   let w: Wrapper = Wrapper { data: [1, 2, 3] };\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for x in w.iter() {\n\
+         \x20       sum += x;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    assert!(ir.contains("for.cond"));
+    assert!(ir.contains("for.body"));
+}
+
+#[test]
+fn test_array_field_iter_float_elem_type() {
+    // b.items.iter() where items: [float] must use "double" element type,
+    // not default to "i64".
+    let ir = compile(
+        "struct Bag {\n\
+         \x20   items: [float],\n\
+         }\n\
+         fn main() -> int {\n\
+         \x20   let b: Bag = Bag { items: [1.0, 2.0, 3.0] };\n\
+         \x20   for x in b.items.iter() {\n\
+         \x20       print_float(x);\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    // The loop element should be loaded as double, not i64
+    assert!(ir.contains("load double"));
+}
+
+#[test]
+fn test_nested_struct_field_iter_dispatches_to_method() {
+    // h.w.iter() where w is a struct with a user-defined iter() method
+    // must dispatch to the struct method, not treat as array .iter().
+    let ir = compile(
+        "struct Widget {\n\
+         \x20   data: [int],\n\
+         }\n\
+         impl Widget {\n\
+         \x20   fn iter(self: Widget) -> [int] {\n\
+         \x20       return self.data;\n\
+         \x20   }\n\
+         }\n\
+         struct Holder {\n\
+         \x20   w: Widget,\n\
+         }\n\
+         fn main() -> int {\n\
+         \x20   let h: Holder = Holder { w: Widget { data: [1, 2, 3] } };\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for x in h.w.iter() {\n\
+         \x20       sum += x;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    // Should call Widget_iter, not just inline array iteration
+    assert!(ir.contains("Widget_iter"));
+}
+
+#[test]
+fn test_struct_iter_method_float_return_type() {
+    // h.w.iter() where Widget::iter() -> [float] must use "double" element
+    // type in the loop, not fall back to i64.
+    let ir = compile(
+        "struct Widget {\n\
+         \x20   data: [float],\n\
+         }\n\
+         impl Widget {\n\
+         \x20   fn iter(self: Widget) -> [float] {\n\
+         \x20       return self.data;\n\
+         \x20   }\n\
+         }\n\
+         struct Holder {\n\
+         \x20   w: Widget,\n\
+         }\n\
+         fn main() -> int {\n\
+         \x20   let h: Holder = Holder { w: Widget { data: [1.0, 2.0, 3.0] } };\n\
+         \x20   for x in h.w.iter() {\n\
+         \x20       print_float(x);\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("Widget_iter"));
+    // Loop element must be loaded as double, not i64
+    assert!(ir.contains("alloca double"));
+}

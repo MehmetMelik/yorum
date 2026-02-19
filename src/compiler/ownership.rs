@@ -329,7 +329,7 @@ impl OwnershipChecker {
                 self.check_block(block);
                 self.pop_scope();
             }
-            ExprKind::Range(start, end) => {
+            ExprKind::Range(start, end) | ExprKind::RangeInclusive(start, end) => {
                 self.check_expr_use(start);
                 self.check_expr_use(end);
             }
@@ -391,8 +391,20 @@ impl OwnershipChecker {
     /// Try to infer the element type of a for-loop iterable.
     /// Falls back to Unit (copy) if the type cannot be determined.
     fn infer_iterable_elem_type(&self, iterable: &Expr) -> Type {
-        if let ExprKind::Range(_, _) = &iterable.kind {
+        if let ExprKind::Range(_, _) | ExprKind::RangeInclusive(_, _) = &iterable.kind {
             return Type::Int;
+        }
+        // Handle .iter() on arrays — unwrap the method call to find the array
+        if let ExprKind::MethodCall(receiver, method, _) = &iterable.kind {
+            if method == "iter" {
+                if let ExprKind::Ident(name) = &receiver.kind {
+                    if let Some(info) = self.lookup(name) {
+                        if let Type::Array(elem) = &info.ty {
+                            return *elem.clone();
+                        }
+                    }
+                }
+            }
         }
         if let ExprKind::Ident(name) = &iterable.kind {
             if let Some(info) = self.lookup(name) {

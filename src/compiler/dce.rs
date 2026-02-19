@@ -333,7 +333,7 @@ fn collect_expr_refs(expr: &Expr, refs: &mut References) {
         ExprKind::Spawn(block) => {
             collect_block_refs(block, refs);
         }
-        ExprKind::Range(start, end) => {
+        ExprKind::Range(start, end) | ExprKind::RangeInclusive(start, end) => {
             collect_expr_refs(start, refs);
             collect_expr_refs(end, refs);
         }

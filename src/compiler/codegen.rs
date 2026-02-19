@@ -52,6 +52,16 @@ struct VarSlot {
     llvm_ty: String, // LLVM type string (e.g., "i64")
 }
 
+/// Tracks per-variable string buffer metadata for capacity-aware str_concat.
+/// When `cap == 0`, the data pointer is not an owned heap buffer (e.g. a global
+/// literal or a fresh allocation from a function).  The first inline concat
+/// transitions it to a tracked buffer.
+#[derive(Debug, Clone)]
+struct StringBufInfo {
+    len_ptr: String, // alloca for tracked length (i64)
+    cap_ptr: String, // alloca for tracked capacity (i64), 0 = uninitialized
+}
+
 #[derive(Debug, Clone)]
 struct StructLayout {
     #[allow(dead_code)]
@@ -141,6 +151,9 @@ pub struct Codegen {
     // Tail call hint: set by emit_return when expression is a simple tail call
     tail_call_hint: bool,
 
+    // String buffer optimization: per-variable {len, cap} tracking
+    string_buf_vars: HashMap<String, StringBufInfo>,
+
     // Debug info (DWARF)
     debug_enabled: bool,
     debug_filename: String,
@@ -194,6 +207,7 @@ impl Codegen {
             last_spawn_env_info: None,
             has_inline_fns: false,
             tail_call_hint: false,
+            string_buf_vars: HashMap::new(),
             debug_enabled: false,
             debug_filename: String::new(),
             debug_directory: String::new(),
@@ -834,6 +848,7 @@ impl Codegen {
              }\n\n",
         );
         // str_concat — concatenates two strings into a new heap-allocated string
+        // Uses memcpy instead of strcpy/strcat to avoid redundant strlen scans
         self.body.push_str(
             "define ptr @str_concat(ptr %a, ptr %b) {\n\
              entry:\n\
@@ -842,8 +857,11 @@ impl Codegen {
              \x20 %sum = add i64 %la, %lb\n\
              \x20 %total = add i64 %sum, 1\n\
              \x20 %buf = call ptr @malloc(i64 %total)\n\
-             \x20 call ptr @strcpy(ptr %buf, ptr %a)\n\
-             \x20 call ptr @strcat(ptr %buf, ptr %b)\n\
+             \x20 call ptr @memcpy(ptr %buf, ptr %a, i64 %la)\n\
+             \x20 %dest = getelementptr i8, ptr %buf, i64 %la\n\
+             \x20 call ptr @memcpy(ptr %dest, ptr %b, i64 %lb)\n\
+             \x20 %end = getelementptr i8, ptr %buf, i64 %sum\n\
+             \x20 store i8 0, ptr %end\n\
              \x20 ret ptr %buf\n\
              }\n\n",
         );
@@ -4143,6 +4161,7 @@ impl Codegen {
         self.current_block = "entry".to_string();
         self.current_fn_contracts = f.contracts.clone();
         self.current_fn_name = f.name.clone();
+        self.string_buf_vars.clear();
 
         // Ensure tuple type definitions exist for params and return type
         if let Type::Tuple(ref types) = f.return_type {
@@ -4537,6 +4556,26 @@ impl Codegen {
         self.emit_line(&format!("store {} {}, ptr {}", ty, val, ptr));
         self.define_var(&s.name, &ptr, &ty);
 
+        // String buffer tracking: create len/cap allocas for string variables
+        if s.ty == Type::Str {
+            let len_ptr = self.fresh_temp();
+            self.emit_line(&format!("{} = alloca i64", len_ptr));
+            let cap_ptr = self.fresh_temp();
+            self.emit_line(&format!("{} = alloca i64", cap_ptr));
+
+            // Determine initial length from string literal, else 0
+            let init_len = if let ExprKind::Literal(Literal::String(ref lit)) = s.value.kind {
+                lit.len() as i64
+            } else {
+                0
+            };
+            self.emit_line(&format!("store i64 {}, ptr {}", init_len, len_ptr));
+            // cap = 0 means "not an owned heap buffer yet"
+            self.emit_line(&format!("store i64 0, ptr {}", cap_ptr));
+            self.string_buf_vars
+                .insert(ptr.clone(), StringBufInfo { len_ptr, cap_ptr });
+        }
+
         // If the RHS was a spawn, record the env info for .join() to use
         if let Some(env_info) = self.last_spawn_env_info.take() {
             self.task_env_info.insert(s.name.clone(), env_info);
@@ -4554,6 +4593,35 @@ impl Codegen {
                         message: format!("undefined variable '{}'", name),
                     })?
                     .clone();
+
+                // Detect s = str_concat(s, literal) for capacity-aware inline concat.
+                // Only applied when the suffix is a string literal (provably non-aliasing).
+                if let ExprKind::Call(callee, args) = &s.value.kind {
+                    if let ExprKind::Ident(fn_name) = &callee.kind {
+                        if fn_name == "str_concat"
+                            && args.len() == 2
+                            && matches!(&args[0].kind, ExprKind::Ident(a) if a == name)
+                            && matches!(&args[1].kind, ExprKind::Literal(Literal::String(_)))
+                            && self.string_buf_vars.contains_key(&slot.ptr)
+                        {
+                            return self.emit_str_concat_inplace(name, &args[1]);
+                        }
+                    }
+                }
+
+                // If assigning a new (non-concat) value to a tracked string var,
+                // reset len/cap to 0 so the next inline concat re-initializes
+                if slot.llvm_ty == "ptr" {
+                    if let Some(buf_info) = self.string_buf_vars.get(&slot.ptr) {
+                        let len_ptr = buf_info.len_ptr.clone();
+                        let cap_ptr = buf_info.cap_ptr.clone();
+                        let val = self.emit_expr(&s.value)?;
+                        self.emit_line(&format!("store ptr {}, ptr {}", val, slot.ptr));
+                        self.emit_line(&format!("store i64 0, ptr {}", len_ptr));
+                        self.emit_line(&format!("store i64 0, ptr {}", cap_ptr));
+                        return Ok(());
+                    }
+                }
                 let val = self.emit_expr(&s.value)?;
                 // Unit-typed assignment: evaluate RHS for side effects only.
                 // `store void` is invalid LLVM IR.
@@ -4631,6 +4699,215 @@ impl Codegen {
                 message: "invalid assignment target".to_string(),
             }),
         }
+    }
+
+    /// Emit inline capacity-aware string concatenation for `name = str_concat(name, suffix)`.
+    ///
+    /// Instead of calling `@str_concat` (which mallocs a new buffer every time),
+    /// this tracks {len, cap} per variable and uses realloc for amortized O(1) appends.
+    fn emit_str_concat_inplace(
+        &mut self,
+        name: &str,
+        suffix_expr: &Expr,
+    ) -> Result<(), CodegenError> {
+        let slot = self
+            .lookup_var(name)
+            .ok_or_else(|| CodegenError {
+                message: format!("undefined variable '{}'", name),
+            })?
+            .clone();
+        let buf_info = self.string_buf_vars.get(&slot.ptr).unwrap().clone();
+
+        // Load current data, len, cap
+        let data = self.fresh_temp();
+        self.emit_line(&format!("{} = load ptr, ptr {}", data, slot.ptr));
+        let len = self.fresh_temp();
+        self.emit_line(&format!("{} = load i64, ptr {}", len, buf_info.len_ptr));
+        let cap = self.fresh_temp();
+        self.emit_line(&format!("{} = load i64, ptr {}", cap, buf_info.cap_ptr));
+
+        // Evaluate suffix and get its length
+        let suffix_val = self.emit_expr(suffix_expr)?;
+        let suffix_len = self.fresh_temp();
+        self.emit_line(&format!(
+            "{} = call i64 @strlen(ptr {})",
+            suffix_len, suffix_val
+        ));
+
+        // Compute new_len and need (new_len + 1 for null terminator)
+        let new_len = self.fresh_temp();
+        self.emit_line(&format!("{} = add i64 {}, {}", new_len, len, suffix_len));
+        let need = self.fresh_temp();
+        self.emit_line(&format!("{} = add i64 {}, 1", need, new_len));
+
+        // Branch on cap == 0 (uninitialized: literal or function result)
+        let cap_zero = self.fresh_temp();
+        self.emit_line(&format!("{} = icmp eq i64 {}, 0", cap_zero, cap));
+        let lbl_init = self.fresh_label("sbuf_init");
+        let lbl_check_grow = self.fresh_label("sbuf_check_grow");
+        let lbl_grow = self.fresh_label("sbuf_grow");
+        let lbl_append = self.fresh_label("sbuf_append");
+        self.emit_line(&format!(
+            "br i1 {}, label %{}, label %{}",
+            cap_zero, lbl_init, lbl_check_grow
+        ));
+        self.block_terminated = true;
+
+        // --- init_buf: first time, malloc a new buffer and copy old data ---
+        self.emit_label(&lbl_init);
+        // Compute actual data length first (tracked len may be 0 for non-literal init)
+        let old_len = self.fresh_temp();
+        self.emit_line(&format!("{} = call i64 @strlen(ptr {})", old_len, data));
+        let real_new_len = self.fresh_temp();
+        self.emit_line(&format!(
+            "{} = add i64 {}, {}",
+            real_new_len, old_len, suffix_len
+        ));
+        let real_need = self.fresh_temp();
+        self.emit_line(&format!("{} = add i64 {}, 1", real_need, real_new_len));
+        // init_cap = max(real_need * 2, 64)
+        let need_x2 = self.fresh_temp();
+        self.emit_line(&format!("{} = mul i64 {}, 2", need_x2, real_need));
+        let cmp_64 = self.fresh_temp();
+        self.emit_line(&format!("{} = icmp ugt i64 {}, 64", cmp_64, need_x2));
+        let init_cap = self.fresh_temp();
+        self.emit_line(&format!(
+            "{} = select i1 {}, i64 {}, i64 64",
+            init_cap, cmp_64, need_x2
+        ));
+        let init_buf = self.fresh_temp();
+        self.emit_line(&format!(
+            "{} = call ptr @malloc(i64 {})",
+            init_buf, init_cap
+        ));
+        // Copy old data into new buffer
+        self.emit_line(&format!(
+            "call ptr @memcpy(ptr {}, ptr {}, i64 {})",
+            init_buf, data, old_len
+        ));
+        // Store updated data, len, cap
+        self.emit_line(&format!("store ptr {}, ptr {}", init_buf, slot.ptr));
+        self.emit_line(&format!("store i64 {}, ptr {}", init_cap, buf_info.cap_ptr));
+        // Append suffix at old_len offset
+        let init_dest = self.fresh_temp();
+        self.emit_line(&format!(
+            "{} = getelementptr i8, ptr {}, i64 {}",
+            init_dest, init_buf, old_len
+        ));
+        self.emit_line(&format!(
+            "call ptr @memcpy(ptr {}, ptr {}, i64 {})",
+            init_dest, suffix_val, suffix_len
+        ));
+        let init_end = self.fresh_temp();
+        self.emit_line(&format!(
+            "{} = getelementptr i8, ptr {}, i64 {}",
+            init_end, init_buf, real_new_len
+        ));
+        self.emit_line(&format!("store i8 0, ptr {}", init_end));
+        self.emit_line(&format!(
+            "store i64 {}, ptr {}",
+            real_new_len, buf_info.len_ptr
+        ));
+        self.emit_line(&format!("br label %{}", lbl_append));
+        self.block_terminated = true;
+
+        // --- check_grow: cap > 0, check if need > cap ---
+        self.emit_label(&lbl_check_grow);
+        let need_grow = self.fresh_temp();
+        self.emit_line(&format!("{} = icmp ugt i64 {}, {}", need_grow, need, cap));
+        self.emit_line(&format!(
+            "br i1 {}, label %{}, label %{}",
+            need_grow, lbl_grow, lbl_append
+        ));
+        self.block_terminated = true;
+
+        // --- grow: realloc to max(need, cap * 2) ---
+        self.emit_label(&lbl_grow);
+        let cap_x2 = self.fresh_temp();
+        self.emit_line(&format!("{} = mul i64 {}, 2", cap_x2, cap));
+        let cmp_grow = self.fresh_temp();
+        self.emit_line(&format!("{} = icmp ugt i64 {}, {}", cmp_grow, need, cap_x2));
+        let grow_cap = self.fresh_temp();
+        self.emit_line(&format!(
+            "{} = select i1 {}, i64 {}, i64 {}",
+            grow_cap, cmp_grow, need, cap_x2
+        ));
+        let grow_buf = self.fresh_temp();
+        self.emit_line(&format!(
+            "{} = call ptr @realloc(ptr {}, i64 {})",
+            grow_buf, data, grow_cap
+        ));
+        self.emit_line(&format!("store ptr {}, ptr {}", grow_buf, slot.ptr));
+        self.emit_line(&format!("store i64 {}, ptr {}", grow_cap, buf_info.cap_ptr));
+        // Append suffix at len offset
+        let grow_dest = self.fresh_temp();
+        self.emit_line(&format!(
+            "{} = getelementptr i8, ptr {}, i64 {}",
+            grow_dest, grow_buf, len
+        ));
+        self.emit_line(&format!(
+            "call ptr @memcpy(ptr {}, ptr {}, i64 {})",
+            grow_dest, suffix_val, suffix_len
+        ));
+        let grow_end = self.fresh_temp();
+        self.emit_line(&format!(
+            "{} = getelementptr i8, ptr {}, i64 {}",
+            grow_end, grow_buf, new_len
+        ));
+        self.emit_line(&format!("store i8 0, ptr {}", grow_end));
+        self.emit_line(&format!("store i64 {}, ptr {}", new_len, buf_info.len_ptr));
+        self.emit_line(&format!("br label %{}", lbl_append));
+        self.block_terminated = true;
+
+        // --- append: no-grow path, cap > 0 and need <= cap ---
+        self.emit_label(&lbl_append);
+        // Reload data from alloca (may have changed in init or grow)
+        let final_data = self.fresh_temp();
+        self.emit_line(&format!("{} = load ptr, ptr {}", final_data, slot.ptr));
+        let final_len = self.fresh_temp();
+        self.emit_line(&format!(
+            "{} = load i64, ptr {}",
+            final_len, buf_info.len_ptr
+        ));
+        // Check if we already handled this in init/grow (len was updated there)
+        let already_done = self.fresh_temp();
+        self.emit_line(&format!(
+            "{} = icmp ne i64 {}, {}",
+            already_done, final_len, len
+        ));
+        let lbl_do_append = self.fresh_label("sbuf_do_append");
+        let lbl_done = self.fresh_label("sbuf_done");
+        self.emit_line(&format!(
+            "br i1 {}, label %{}, label %{}",
+            already_done, lbl_done, lbl_do_append
+        ));
+        self.block_terminated = true;
+
+        // --- do_append: the no-realloc/no-init path ---
+        self.emit_label(&lbl_do_append);
+        let app_dest = self.fresh_temp();
+        self.emit_line(&format!(
+            "{} = getelementptr i8, ptr {}, i64 {}",
+            app_dest, final_data, len
+        ));
+        self.emit_line(&format!(
+            "call ptr @memcpy(ptr {}, ptr {}, i64 {})",
+            app_dest, suffix_val, suffix_len
+        ));
+        let app_end = self.fresh_temp();
+        self.emit_line(&format!(
+            "{} = getelementptr i8, ptr {}, i64 {}",
+            app_end, final_data, new_len
+        ));
+        self.emit_line(&format!("store i8 0, ptr {}", app_end));
+        self.emit_line(&format!("store i64 {}, ptr {}", new_len, buf_info.len_ptr));
+        self.emit_line(&format!("br label %{}", lbl_done));
+        self.block_terminated = true;
+
+        // --- done ---
+        self.emit_label(&lbl_done);
+
+        Ok(())
     }
 
     fn emit_return(&mut self, s: &ReturnStmt) -> Result<(), CodegenError> {
@@ -8212,7 +8489,7 @@ impl Codegen {
     fn fresh_temp(&mut self) -> String {
         let n = self.temp_counter;
         self.temp_counter += 1;
-        format!("%t{}", n)
+        format!("%.t{}", n)
     }
 
     fn fresh_label(&mut self, prefix: &str) -> String {

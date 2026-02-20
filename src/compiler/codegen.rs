@@ -4319,9 +4319,7 @@ impl Codegen {
                 continue;
             }
             let ty = self.llvm_type(&param.ty);
-            let ptr = self.fresh_temp();
-            self.emit_line(&format!("{} = alloca {}", ptr, ty));
-            self.emit_line(&format!("store {} %{}, ptr {}", ty, param.name, ptr));
+            let ptr = self.emit_alloca_store(&ty, &format!("%{}", param.name));
             self.define_var(&param.name, &ptr, &ty);
 
             // Track fn-typed params for indirect calls
@@ -4442,9 +4440,7 @@ impl Codegen {
                 }
             }
             let ty = self.llvm_type(&param.ty);
-            let ptr = self.fresh_temp();
-            self.emit_line(&format!("{} = alloca {}", ptr, ty));
-            self.emit_line(&format!("store {} %{}, ptr {}", ty, param.name, ptr));
+            let ptr = self.emit_alloca_store(&ty, &format!("%{}", param.name));
             self.define_var(&param.name, &ptr, &ty);
         }
 
@@ -4536,9 +4532,7 @@ impl Codegen {
                     self.define_var(&s.name, &val, &ty);
                 } else {
                     // Function call or variable: value returned, need alloca + store
-                    let ptr = self.fresh_temp();
-                    self.emit_line(&format!("{} = alloca {}", ptr, ty));
-                    self.emit_line(&format!("store {} {}, ptr {}", ty, val, ptr));
+                    let ptr = self.emit_alloca_store(&ty, &val);
                     self.define_var(&s.name, &ptr, &ty);
                 }
                 return Ok(());
@@ -4554,9 +4548,7 @@ impl Codegen {
                     self.define_var(&s.name, &val, &ty);
                 } else {
                     // Function call or variable: value returned, need alloca + store
-                    let ptr = self.fresh_temp();
-                    self.emit_line(&format!("{} = alloca {}", ptr, ty));
-                    self.emit_line(&format!("store {} {}, ptr {}", ty, val, ptr));
+                    let ptr = self.emit_alloca_store(&ty, &val);
                     self.define_var(&s.name, &ptr, &ty);
                 }
                 return Ok(());
@@ -4573,10 +4565,7 @@ impl Codegen {
             } else {
                 // Use fresh_temp() to avoid duplicate names when multiple
                 // tuple let bindings or destructures exist in one function.
-                let ptr = self.fresh_temp();
-                self.emit_line(&format!("{} = alloca {}", ptr, ty));
-                self.emit_line(&format!("store {} {}, ptr {}", ty, val, ptr));
-                ptr
+                self.emit_alloca_store(&ty, &val)
             };
 
             // Handle destructuring: let (a, b): (int, string) = expr;
@@ -4596,9 +4585,7 @@ impl Codegen {
                 for (i, name) in names.iter().enumerate() {
                     let elem_ty = &llvm_elem_types[i];
                     let loaded = self.emit_struct_field_load(&tuple_name, &val_ptr, i, elem_ty);
-                    let ptr = self.fresh_temp();
-                    self.emit_line(&format!("{} = alloca {}", ptr, elem_ty));
-                    self.emit_line(&format!("store {} {}, ptr {}", elem_ty, loaded, ptr));
+                    let ptr = self.emit_alloca_store(elem_ty, &loaded);
                     self.define_var(name, &ptr, elem_ty);
                     self.var_ast_types
                         .insert(name.clone(), elem_types[i].clone());
@@ -4775,12 +4762,9 @@ impl Codegen {
         let buf_info = self.string_buf_vars.get(&slot.ptr).unwrap().clone();
 
         // Load current data, len, cap
-        let data = self.fresh_temp();
-        self.emit_line(&format!("{} = load ptr, ptr {}", data, slot.ptr));
-        let len = self.fresh_temp();
-        self.emit_line(&format!("{} = load i64, ptr {}", len, buf_info.len_ptr));
-        let cap = self.fresh_temp();
-        self.emit_line(&format!("{} = load i64, ptr {}", cap, buf_info.cap_ptr));
+        let data = self.emit_load("ptr", &slot.ptr);
+        let len = self.emit_load("i64", &buf_info.len_ptr);
+        let cap = self.emit_load("i64", &buf_info.cap_ptr);
 
         // Evaluate suffix and get its length
         let suffix_val = self.emit_expr(suffix_expr)?;
@@ -4803,10 +4787,7 @@ impl Codegen {
         let lbl_check_grow = self.fresh_label("sbuf_check_grow");
         let lbl_grow = self.fresh_label("sbuf_grow");
         let lbl_append = self.fresh_label("sbuf_append");
-        self.emit_line(&format!(
-            "br i1 {}, label %{}, label %{}",
-            cap_zero, lbl_init, lbl_check_grow
-        ));
+        self.emit_cond_branch(&cap_zero, &lbl_init, &lbl_check_grow);
         self.block_terminated = true;
 
         // --- init_buf: first time, malloc a new buffer and copy old data ---
@@ -4837,10 +4818,7 @@ impl Codegen {
             init_buf, init_cap
         ));
         // Copy old data into new buffer
-        self.emit_line(&format!(
-            "call ptr @memcpy(ptr {}, ptr {}, i64 {})",
-            init_buf, data, old_len
-        ));
+        self.emit_memcpy(&init_buf, &data, &old_len);
         // Store updated data, len, cap
         self.emit_line(&format!("store ptr {}, ptr {}", init_buf, slot.ptr));
         self.emit_line(&format!("store i64 {}, ptr {}", init_cap, buf_info.cap_ptr));
@@ -4850,10 +4828,7 @@ impl Codegen {
             "{} = getelementptr i8, ptr {}, i64 {}",
             init_dest, init_buf, old_len
         ));
-        self.emit_line(&format!(
-            "call ptr @memcpy(ptr {}, ptr {}, i64 {})",
-            init_dest, suffix_val, suffix_len
-        ));
+        self.emit_memcpy(&init_dest, &suffix_val, &suffix_len);
         let init_end = self.fresh_temp();
         self.emit_line(&format!(
             "{} = getelementptr i8, ptr {}, i64 {}",
@@ -4871,10 +4846,7 @@ impl Codegen {
         self.emit_label(&lbl_check_grow);
         let need_grow = self.fresh_temp();
         self.emit_line(&format!("{} = icmp ugt i64 {}, {}", need_grow, need, cap));
-        self.emit_line(&format!(
-            "br i1 {}, label %{}, label %{}",
-            need_grow, lbl_grow, lbl_append
-        ));
+        self.emit_cond_branch(&need_grow, &lbl_grow, &lbl_append);
         self.block_terminated = true;
 
         // --- grow: realloc to max(need, cap * 2) ---
@@ -4901,10 +4873,7 @@ impl Codegen {
             "{} = getelementptr i8, ptr {}, i64 {}",
             grow_dest, grow_buf, len
         ));
-        self.emit_line(&format!(
-            "call ptr @memcpy(ptr {}, ptr {}, i64 {})",
-            grow_dest, suffix_val, suffix_len
-        ));
+        self.emit_memcpy(&grow_dest, &suffix_val, &suffix_len);
         let grow_end = self.fresh_temp();
         self.emit_line(&format!(
             "{} = getelementptr i8, ptr {}, i64 {}",
@@ -4918,13 +4887,8 @@ impl Codegen {
         // --- append: no-grow path, cap > 0 and need <= cap ---
         self.emit_label(&lbl_append);
         // Reload data from alloca (may have changed in init or grow)
-        let final_data = self.fresh_temp();
-        self.emit_line(&format!("{} = load ptr, ptr {}", final_data, slot.ptr));
-        let final_len = self.fresh_temp();
-        self.emit_line(&format!(
-            "{} = load i64, ptr {}",
-            final_len, buf_info.len_ptr
-        ));
+        let final_data = self.emit_load("ptr", &slot.ptr);
+        let final_len = self.emit_load("i64", &buf_info.len_ptr);
         // Check if we already handled this in init/grow (len was updated there)
         let already_done = self.fresh_temp();
         self.emit_line(&format!(
@@ -4933,10 +4897,7 @@ impl Codegen {
         ));
         let lbl_do_append = self.fresh_label("sbuf_do_append");
         let lbl_done = self.fresh_label("sbuf_done");
-        self.emit_line(&format!(
-            "br i1 {}, label %{}, label %{}",
-            already_done, lbl_done, lbl_do_append
-        ));
+        self.emit_cond_branch(&already_done, &lbl_done, &lbl_do_append);
         self.block_terminated = true;
 
         // --- do_append: the no-realloc/no-init path ---
@@ -4946,10 +4907,7 @@ impl Codegen {
             "{} = getelementptr i8, ptr {}, i64 {}",
             app_dest, final_data, len
         ));
-        self.emit_line(&format!(
-            "call ptr @memcpy(ptr {}, ptr {}, i64 {})",
-            app_dest, suffix_val, suffix_len
-        ));
+        self.emit_memcpy(&app_dest, &suffix_val, &suffix_len);
         let app_end = self.fresh_temp();
         self.emit_line(&format!(
             "{} = getelementptr i8, ptr {}, i64 {}",
@@ -5010,9 +4968,7 @@ impl Codegen {
             // Enum/struct variant constructors return alloca pointers (ptr type),
             // but `ret %EnumType %ptr` is invalid — need to load the value first
             let val = if ret_ty.starts_with('%') && self.expr_returns_ptr(&s.value) {
-                let loaded = self.fresh_temp();
-                self.emit_line(&format!("{} = load {}, ptr {}", loaded, ret_ty, val));
-                loaded
+                self.emit_load(&ret_ty, &val)
             } else {
                 val
             };
@@ -5025,8 +4981,7 @@ impl Codegen {
                 self.emit_line(&format!("store {} {}, ptr %result.addr", ret_ty, val));
                 self.emit_ensures_checks(&contracts, &fn_name)?;
                 // Reload the value (it hasn't changed, but keeps IR correct)
-                let reloaded = self.fresh_temp();
-                self.emit_line(&format!("{} = load {}, ptr %result.addr", reloaded, ret_ty));
+                let reloaded = self.emit_load(&ret_ty, "%result.addr");
                 self.emit_line(&format!("ret {} {}", ret_ty, reloaded));
             } else {
                 self.emit_line(&format!("ret {} {}", ret_ty, val));
@@ -5045,10 +5000,7 @@ impl Codegen {
         let has_else = s.else_branch.is_some();
         let target_else = if has_else { &else_label } else { &merge_label };
 
-        self.emit_line(&format!(
-            "br i1 {}, label %{}, label %{}",
-            cond, then_label, target_else
-        ));
+        self.emit_cond_branch(&cond, &then_label, target_else);
 
         // Then block
         self.emit_label(&then_label);
@@ -5109,10 +5061,7 @@ impl Codegen {
         self.emit_label(&cond_label);
         self.block_terminated = false;
         let cond = self.emit_expr(&s.condition)?;
-        self.emit_line(&format!(
-            "br i1 {}, label %{}, label %{}",
-            cond, body_label, end_label
-        ));
+        self.emit_cond_branch(&cond, &body_label, &end_label);
 
         // Loop body
         self.emit_label(&body_label);
@@ -5394,9 +5343,7 @@ impl Codegen {
         let (data_ptr, len_val) = self.emit_fat_ptr_load(&arr_val);
 
         // Alloca for index counter
-        let idx_ptr = self.fresh_temp();
-        self.emit_line(&format!("{} = alloca i64", idx_ptr));
-        self.emit_line(&format!("store i64 0, ptr {}", idx_ptr));
+        let idx_ptr = self.emit_alloca_store("i64", "0");
 
         // Alloca for loop variable — use fresh_temp() to avoid duplicate
         // names when the same variable name is used in multiple for loops.
@@ -5413,14 +5360,10 @@ impl Codegen {
         // Condition: idx < len
         self.emit_label(&cond_label);
         self.block_terminated = false;
-        let cur_idx = self.fresh_temp();
-        self.emit_line(&format!("{} = load i64, ptr {}", cur_idx, idx_ptr));
+        let cur_idx = self.emit_load("i64", &idx_ptr);
         let cmp = self.fresh_temp();
         self.emit_line(&format!("{} = icmp slt i64 {}, {}", cmp, cur_idx, len_val));
-        self.emit_line(&format!(
-            "br i1 {}, label %{}, label %{}",
-            cmp, body_label, end_label
-        ));
+        self.emit_cond_branch(&cmp, &body_label, &end_label);
 
         // Body
         self.emit_label(&body_label);
@@ -5434,11 +5377,7 @@ impl Codegen {
             "{} = getelementptr {}, ptr {}, i64 {}",
             elem_gep, elem_ty, data_ptr, cur_idx
         ));
-        let elem_val = self.fresh_temp();
-        self.emit_line(&format!(
-            "{} = load {}, ptr {}",
-            elem_val, elem_ty, elem_gep
-        ));
+        let elem_val = self.emit_load(&elem_ty, &elem_gep);
         self.emit_line(&format!("store {} {}, ptr {}", elem_ty, elem_val, var_ptr));
 
         self.define_var(&s.var_name, &var_ptr, &elem_ty);
@@ -5459,8 +5398,7 @@ impl Codegen {
         self.emit_label(&inc_label);
         self.block_terminated = false;
         let next_idx_tmp = self.fresh_temp();
-        let cur_idx2 = self.fresh_temp();
-        self.emit_line(&format!("{} = load i64, ptr {}", cur_idx2, idx_ptr));
+        let cur_idx2 = self.emit_load("i64", &idx_ptr);
         self.emit_line(&format!("{} = add i64 {}, 1", next_idx_tmp, cur_idx2));
         self.emit_line(&format!("store i64 {}, ptr {}", next_idx_tmp, idx_ptr));
         self.emit_line(&format!("br label %{}", cond_label));
@@ -5481,15 +5419,13 @@ impl Codegen {
             "{} = getelementptr {{ ptr, ptr }}, ptr {}, i32 0, i32 0",
             fn_gep, pair_ptr
         ));
-        let fn_ptr = self.fresh_temp();
-        self.emit_line(&format!("{} = load ptr, ptr {}", fn_ptr, fn_gep));
+        let fn_ptr = self.emit_load("ptr", &fn_gep);
         let env_gep = self.fresh_temp();
         self.emit_line(&format!(
             "{} = getelementptr {{ ptr, ptr }}, ptr {}, i32 0, i32 1",
             env_gep, pair_ptr
         ));
-        let env_ptr = self.fresh_temp();
-        self.emit_line(&format!("{} = load ptr, ptr {}", env_ptr, env_gep));
+        let env_ptr = self.emit_load("ptr", &env_gep);
         let ret_ty = self.llvm_type(&closure.return_type);
         Ok((fn_ptr, env_ptr, ret_ty))
     }
@@ -5649,9 +5585,7 @@ impl Codegen {
                     );
                     current_elem_ty = format!("%{}", tuple_name);
 
-                    let counter_ptr = self.fresh_temp();
-                    self.emit_line(&format!("{} = alloca i64", counter_ptr));
-                    self.emit_line(&format!("store i64 0, ptr {}", counter_ptr));
+                    let counter_ptr = self.emit_alloca_store("i64", "0");
                     closure_infos.push(None);
                     zip_infos.push(None);
                     take_skip_ptrs.push(None);
@@ -5672,9 +5606,7 @@ impl Codegen {
                     current_elem_ty = format!("%{}", tuple_name);
 
                     let (zip_data, zip_len) = self.emit_fat_ptr_load(&zip_arr);
-                    let zip_idx = self.fresh_temp();
-                    self.emit_line(&format!("{} = alloca i64", zip_idx));
-                    self.emit_line(&format!("store i64 0, ptr {}", zip_idx));
+                    let zip_idx = self.emit_alloca_store("i64", "0");
                     closure_infos.push(None);
                     zip_infos.push(Some(ZipInfo {
                         data_ptr: zip_data,
@@ -5687,9 +5619,7 @@ impl Codegen {
                 }
                 IterStep::Take(n_expr) | IterStep::Skip(n_expr) => {
                     let n_val = self.emit_expr(n_expr)?;
-                    let remaining_ptr = self.fresh_temp();
-                    self.emit_line(&format!("{} = alloca i64", remaining_ptr));
-                    self.emit_line(&format!("store i64 {}, ptr {}", n_val, remaining_ptr));
+                    let remaining_ptr = self.emit_alloca_store("i64", &n_val);
                     closure_infos.push(None);
                     zip_infos.push(None);
                     take_skip_ptrs.push(Some(remaining_ptr));
@@ -5708,8 +5638,7 @@ impl Codegen {
                 match step {
                     IterStep::Take(_) => {
                         if let Some(ref take_ptr) = take_skip_ptrs[i] {
-                            let take_raw = self.fresh_temp();
-                            self.emit_line(&format!("{} = load i64, ptr {}", take_raw, take_ptr));
+                            let take_raw = self.emit_load("i64", take_ptr);
                             // Clamp negative take counts to 0
                             let take_neg = self.fresh_temp();
                             self.emit_line(&format!("{} = icmp slt i64 {}, 0", take_neg, take_raw));
@@ -5771,8 +5700,7 @@ impl Codegen {
         step_label: &str,
         end_label: &str,
     ) -> String {
-        let cur_idx = self.fresh_temp();
-        self.emit_line(&format!("{} = load i64, ptr {}", cur_idx, idx_ptr));
+        let cur_idx = self.emit_load("i64", idx_ptr);
         let cmp = self.fresh_temp();
         if let Some((ref end_val, inclusive)) = *range_end {
             // Range source: compare actual range value against end bound.
@@ -5816,10 +5744,7 @@ impl Codegen {
             // Array source: compare index against length.
             self.emit_line(&format!("{} = icmp slt i64 {}, {}", cmp, cur_idx, len_val));
         }
-        self.emit_line(&format!(
-            "br i1 {}, label %{}, label %{}",
-            cmp, step_label, end_label
-        ));
+        self.emit_cond_branch(&cmp, step_label, end_label);
         cur_idx
     }
 
@@ -5850,9 +5775,7 @@ impl Codegen {
         let final_elem_ty = self.pipeline_final_elem_type(&src_elem_ty, &pipeline.steps);
 
         // 3. Alloca for index counter and loop variable
-        let idx_ptr = self.fresh_temp();
-        self.emit_line(&format!("{} = alloca i64", idx_ptr));
-        self.emit_line(&format!("store i64 0, ptr {}", idx_ptr));
+        let idx_ptr = self.emit_alloca_store("i64", "0");
 
         let var_ptr = self.fresh_temp();
         self.emit_line(&format!("{} = alloca {}", var_ptr, final_elem_ty));
@@ -5986,9 +5909,7 @@ impl Codegen {
         let final_elem_ty = self.pipeline_final_elem_type(&src_elem_ty, &pipeline.steps);
 
         // 3. Alloca for index counter
-        let idx_ptr = self.fresh_temp();
-        self.emit_line(&format!("{} = alloca i64", idx_ptr));
-        self.emit_line(&format!("store i64 0, ptr {}", idx_ptr));
+        let idx_ptr = self.emit_alloca_store("i64", "0");
 
         // 4. Dispatch to specific terminator emitter
         match &pipeline.terminator {
@@ -6144,9 +6065,7 @@ impl Codegen {
                 "{} = getelementptr {}, ptr {}, i64 {}",
                 elem_gep, src_elem_ty, data_ptr, cur_idx
             ));
-            let val = self.fresh_temp();
-            self.emit_line(&format!("{} = load {}, ptr {}", val, src_elem_ty, elem_gep));
-            val
+            self.emit_load(src_elem_ty, &elem_gep)
         };
 
         // Increment index (always, even if filtered out)
@@ -6172,10 +6091,7 @@ impl Codegen {
                     } else {
                         body_label.to_string()
                     };
-                    self.emit_line(&format!(
-                        "br i1 {}, label %{}, label %{}",
-                        result, next_label, cond_label
-                    ));
+                    self.emit_cond_branch(&result, &next_label, cond_label);
                     if !is_last {
                         self.emit_label(&next_label);
                         self.block_terminated = false;
@@ -6196,8 +6112,7 @@ impl Codegen {
                 }
                 IterStep::Enumerate => {
                     let counter_ptr = enumerate_ptrs[i].as_ref().unwrap();
-                    let counter_val = self.fresh_temp();
-                    self.emit_line(&format!("{} = load i64, ptr {}", counter_val, counter_ptr));
+                    let counter_val = self.emit_load("i64", counter_ptr);
                     let inner_semantic = llvm_to_semantic_name(&current_ty);
                     let tuple_name = format!("tuple.int.{}", inner_semantic);
                     let inner_llvm = current_ty.clone();
@@ -6219,11 +6134,7 @@ impl Codegen {
                     self.emit_line(&format!("{} = add i64 {}, 1", next_counter, counter_val));
                     self.emit_line(&format!("store i64 {}, ptr {}", next_counter, counter_ptr));
                     // Load by-value so current_val is always an SSA value, not a pointer
-                    let tuple_loaded = self.fresh_temp();
-                    self.emit_line(&format!(
-                        "{} = load %{}, ptr {}",
-                        tuple_loaded, tuple_name, tuple_ptr
-                    ));
+                    let tuple_loaded = self.emit_load(&format!("%{}", tuple_name), &tuple_ptr);
                     current_val = tuple_loaded;
                     current_ty = format!("%{}", tuple_name);
                     if is_last {
@@ -6232,18 +6143,14 @@ impl Codegen {
                 }
                 IterStep::Zip(_) => {
                     let zi = zip_infos[i].as_ref().unwrap();
-                    let zip_cur = self.fresh_temp();
-                    self.emit_line(&format!("{} = load i64, ptr {}", zip_cur, zi.idx_ptr));
+                    let zip_cur = self.emit_load("i64", &zi.idx_ptr);
                     let zip_cmp = self.fresh_temp();
                     self.emit_line(&format!(
                         "{} = icmp slt i64 {}, {}",
                         zip_cmp, zip_cur, zi.len_val
                     ));
                     let zip_cont = self.fresh_label("for.zip.cont");
-                    self.emit_line(&format!(
-                        "br i1 {}, label %{}, label %{}",
-                        zip_cmp, zip_cont, end_label
-                    ));
+                    self.emit_cond_branch(&zip_cmp, &zip_cont, end_label);
                     self.emit_label(&zip_cont);
                     self.block_terminated = false;
                     let zip_gep = self.fresh_temp();
@@ -6251,11 +6158,7 @@ impl Codegen {
                         "{} = getelementptr {}, ptr {}, i64 {}",
                         zip_gep, zi.elem_ty, zi.data_ptr, zip_cur
                     ));
-                    let zip_val = self.fresh_temp();
-                    self.emit_line(&format!(
-                        "{} = load {}, ptr {}",
-                        zip_val, zi.elem_ty, zip_gep
-                    ));
+                    let zip_val = self.emit_load(&zi.elem_ty, &zip_gep);
                     let zip_next = self.fresh_temp();
                     self.emit_line(&format!("{} = add i64 {}, 1", zip_next, zip_cur));
                     self.emit_line(&format!("store i64 {}, ptr {}", zip_next, zi.idx_ptr));
@@ -6277,11 +6180,7 @@ impl Codegen {
                     );
                     self.emit_struct_field_store(&tuple_name, &tuple_ptr, 1, &zi.elem_ty, &zip_val);
                     // Load by-value so current_val is always an SSA value, not a pointer
-                    let tuple_loaded = self.fresh_temp();
-                    self.emit_line(&format!(
-                        "{} = load %{}, ptr {}",
-                        tuple_loaded, tuple_name, tuple_ptr
-                    ));
+                    let tuple_loaded = self.emit_load(&format!("%{}", tuple_name), &tuple_ptr);
                     current_val = tuple_loaded;
                     current_ty = format!("%{}", tuple_name);
                     if is_last {
@@ -6290,15 +6189,11 @@ impl Codegen {
                 }
                 IterStep::Take(_) => {
                     let remaining_ptr = take_skip_ptrs[i].as_ref().unwrap();
-                    let remaining = self.fresh_temp();
-                    self.emit_line(&format!("{} = load i64, ptr {}", remaining, remaining_ptr));
+                    let remaining = self.emit_load("i64", remaining_ptr);
                     let take_cmp = self.fresh_temp();
                     self.emit_line(&format!("{} = icmp sgt i64 {}, 0", take_cmp, remaining));
                     let take_cont = self.fresh_label("for.take.cont");
-                    self.emit_line(&format!(
-                        "br i1 {}, label %{}, label %{}",
-                        take_cmp, take_cont, end_label
-                    ));
+                    self.emit_cond_branch(&take_cmp, &take_cont, end_label);
                     self.emit_label(&take_cont);
                     self.block_terminated = false;
                     let take_dec = self.fresh_temp();
@@ -6310,16 +6205,12 @@ impl Codegen {
                 }
                 IterStep::Skip(_) => {
                     let remaining_ptr = take_skip_ptrs[i].as_ref().unwrap();
-                    let remaining = self.fresh_temp();
-                    self.emit_line(&format!("{} = load i64, ptr {}", remaining, remaining_ptr));
+                    let remaining = self.emit_load("i64", remaining_ptr);
                     let skip_cmp = self.fresh_temp();
                     self.emit_line(&format!("{} = icmp sgt i64 {}, 0", skip_cmp, remaining));
                     let skip_do = self.fresh_label("for.skip.do");
                     let skip_done = self.fresh_label("for.skip.done");
-                    self.emit_line(&format!(
-                        "br i1 {}, label %{}, label %{}",
-                        skip_cmp, skip_do, skip_done
-                    ));
+                    self.emit_cond_branch(&skip_cmp, &skip_do, &skip_done);
                     self.emit_label(&skip_do);
                     self.block_terminated = false;
                     let skip_dec = self.fresh_temp();
@@ -6387,9 +6278,7 @@ impl Codegen {
             "{} = call ptr @malloc(i64 {})",
             out_data, out_bytes
         ));
-        let out_idx_ptr = self.fresh_temp();
-        self.emit_line(&format!("{} = alloca i64", out_idx_ptr));
-        self.emit_line(&format!("store i64 0, ptr {}", out_idx_ptr));
+        let out_idx_ptr = self.emit_alloca_store("i64", "0");
 
         let cond_label = self.fresh_label("col.cond");
         let step_label = self.fresh_label("col.step");
@@ -6431,8 +6320,7 @@ impl Codegen {
         // Body: store element to output array (guard against exceeding safe_len)
         self.emit_label(&body_label);
         self.block_terminated = false;
-        let out_idx = self.fresh_temp();
-        self.emit_line(&format!("{} = load i64, ptr {}", out_idx, out_idx_ptr));
+        let out_idx = self.emit_load("i64", &out_idx_ptr);
         // If output index has reached the allocated capacity, stop collecting.
         // This keeps the loop bound in sync with safe_len when the pipeline
         // source can produce more elements than the byte-safe allocation cap.
@@ -6442,10 +6330,7 @@ impl Codegen {
             cap_ok, out_idx, safe_len
         ));
         let store_label = self.fresh_label("col.store");
-        self.emit_line(&format!(
-            "br i1 {}, label %{}, label %{}",
-            cap_ok, store_label, end_label
-        ));
+        self.emit_cond_branch(&cap_ok, &store_label, &end_label);
         self.emit_label(&store_label);
         self.block_terminated = false;
         let out_gep = self.fresh_temp();
@@ -6466,8 +6351,7 @@ impl Codegen {
         // End: build fat pointer
         self.emit_label(&end_label);
         self.block_terminated = false;
-        let final_len = self.fresh_temp();
-        self.emit_line(&format!("{} = load i64, ptr {}", final_len, out_idx_ptr));
+        let final_len = self.emit_load("i64", &out_idx_ptr);
         let fat = self.fresh_temp();
         self.emit_line(&format!("{} = alloca {{ ptr, i64, i64 }}", fat));
         self.emit_fat_ptr_init(&fat, &out_data, &final_len, &safe_len);
@@ -6497,9 +6381,7 @@ impl Codegen {
         range_end: &Option<(String, bool)>,
     ) -> Result<String, CodegenError> {
         // Alloca for accumulator
-        let acc_ptr = self.fresh_temp();
-        self.emit_line(&format!("{} = alloca {}", acc_ptr, acc_ty));
-        self.emit_line(&format!("store {} {}, ptr {}", acc_ty, init_val, acc_ptr));
+        let acc_ptr = self.emit_alloca_store(acc_ty, init_val);
 
         let cond_label = self.fresh_label("fold.cond");
         let step_label = self.fresh_label("fold.step");
@@ -6539,8 +6421,7 @@ impl Codegen {
 
         self.emit_label(&body_label);
         self.block_terminated = false;
-        let acc_val = self.fresh_temp();
-        self.emit_line(&format!("{} = load {}, ptr {}", acc_val, acc_ty, acc_ptr));
+        let acc_val = self.emit_load(acc_ty, &acc_ptr);
         let new_acc = self.fresh_temp();
         self.emit_line(&format!(
             "{} = call {} {}(ptr {}, {} {}, {} {})",
@@ -6551,8 +6432,7 @@ impl Codegen {
 
         self.emit_label(&end_label);
         self.block_terminated = false;
-        let result = self.fresh_temp();
-        self.emit_line(&format!("{} = load {}, ptr {}", result, acc_ty, acc_ptr));
+        let result = self.emit_load(acc_ty, &acc_ptr);
         Ok(result)
     }
 
@@ -6581,9 +6461,7 @@ impl Codegen {
         let init_val = if is_any { "false" } else { "true" };
         let short_circuit_val = if is_any { "true" } else { "false" };
 
-        let result_ptr = self.fresh_temp();
-        self.emit_line(&format!("{} = alloca i1", result_ptr));
-        self.emit_line(&format!("store i1 {}, ptr {}", init_val, result_ptr));
+        let result_ptr = self.emit_alloca_store("i1", init_val);
 
         let cond_label = self.fresh_label(&format!("{}.cond", prefix));
         let step_label = self.fresh_label(&format!("{}.step", prefix));
@@ -6635,10 +6513,7 @@ impl Codegen {
         } else {
             (cond_label.as_str(), short_label.as_str())
         };
-        self.emit_line(&format!(
-            "br i1 {}, label %{}, label %{}",
-            pred, true_target, false_target
-        ));
+        self.emit_cond_branch(&pred, true_target, false_target);
 
         self.emit_label(&short_label);
         self.block_terminated = false;
@@ -6650,8 +6525,7 @@ impl Codegen {
 
         self.emit_label(&end_label);
         self.block_terminated = false;
-        let result = self.fresh_temp();
-        self.emit_line(&format!("{} = load i1, ptr {}", result, result_ptr));
+        let result = self.emit_load("i1", &result_ptr);
         Ok(result)
     }
 
@@ -6733,10 +6607,7 @@ impl Codegen {
             pred, term_fn_ptr, term_env_ptr, final_elem_ty, current_val
         ));
         let found_label = self.fresh_label("find.found");
-        self.emit_line(&format!(
-            "br i1 {}, label %{}, label %{}",
-            pred, found_label, cond_label
-        ));
+        self.emit_cond_branch(&pred, &found_label, &cond_label);
 
         self.emit_label(&found_label);
         self.block_terminated = false;
@@ -6801,9 +6672,7 @@ impl Codegen {
         // Alloca accumulator and has_value flag
         let acc_ptr = self.fresh_temp();
         self.emit_line(&format!("{} = alloca {}", acc_ptr, ret_ty));
-        let has_value_ptr = self.fresh_temp();
-        self.emit_line(&format!("{} = alloca i1", has_value_ptr));
-        self.emit_line(&format!("store i1 false, ptr {}", has_value_ptr));
+        let has_value_ptr = self.emit_alloca_store("i1", "false");
 
         let cond_label = self.fresh_label("red.cond");
         let step_label = self.fresh_label("red.step");
@@ -6843,15 +6712,11 @@ impl Codegen {
 
         self.emit_label(&body_label);
         self.block_terminated = false;
-        let hv = self.fresh_temp();
-        self.emit_line(&format!("{} = load i1, ptr {}", hv, has_value_ptr));
+        let hv = self.emit_load("i1", &has_value_ptr);
         let first_label = self.fresh_label("red.first");
         let accum_label = self.fresh_label("red.accum");
         let cont_label = self.fresh_label("red.cont");
-        self.emit_line(&format!(
-            "br i1 {}, label %{}, label %{}",
-            hv, accum_label, first_label
-        ));
+        self.emit_cond_branch(&hv, &accum_label, &first_label);
 
         // First element: store as initial accumulator
         self.emit_label(&first_label);
@@ -6866,8 +6731,7 @@ impl Codegen {
         // Accumulate: call closure(env, acc, val) → new acc
         self.emit_label(&accum_label);
         self.block_terminated = false;
-        let acc_val = self.fresh_temp();
-        self.emit_line(&format!("{} = load {}, ptr {}", acc_val, ret_ty, acc_ptr));
+        let acc_val = self.emit_load(ret_ty, &acc_ptr);
         let new_acc = self.fresh_temp();
         self.emit_line(&format!(
             "{} = call {} {}(ptr {}, {} {}, {} {})",
@@ -6883,14 +6747,10 @@ impl Codegen {
         // End: if has_value, store Some(acc) to result
         self.emit_label(&end_label);
         self.block_terminated = false;
-        let final_hv = self.fresh_temp();
-        self.emit_line(&format!("{} = load i1, ptr {}", final_hv, has_value_ptr));
+        let final_hv = self.emit_load("i1", &has_value_ptr);
         let some_label = self.fresh_label("red.some");
         let done_label = self.fresh_label("red.done");
-        self.emit_line(&format!(
-            "br i1 {}, label %{}, label %{}",
-            final_hv, some_label, done_label
-        ));
+        self.emit_cond_branch(&final_hv, &some_label, &done_label);
 
         self.emit_label(&some_label);
         self.block_terminated = false;
@@ -6905,8 +6765,7 @@ impl Codegen {
             "{} = getelementptr {}, ptr {}, i32 0, i32 1",
             payload_gep, option_llvm, result_ptr
         ));
-        let final_acc = self.fresh_temp();
-        self.emit_line(&format!("{} = load {}, ptr {}", final_acc, ret_ty, acc_ptr));
+        let final_acc = self.emit_load(ret_ty, &acc_ptr);
         self.emit_line(&format!(
             "store {} {}, ptr {}",
             ret_ty, final_acc, payload_gep
@@ -6951,9 +6810,7 @@ impl Codegen {
         // Alloca for the loop counter (also the loop variable)
         // Use fresh_temp() to avoid duplicate names when the same variable
         // name is used in multiple for-range loops in one function.
-        let var_ptr = self.fresh_temp();
-        self.emit_line(&format!("{} = alloca i64", var_ptr));
-        self.emit_line(&format!("store i64 {}, ptr {}", start_val, var_ptr));
+        let var_ptr = self.emit_alloca_store("i64", &start_val);
 
         let cond_label = self.fresh_label("for.cond");
         let body_label = self.fresh_label("for.body");
@@ -6965,18 +6822,14 @@ impl Codegen {
         // Condition: counter < end (exclusive) or counter <= end (inclusive)
         self.emit_label(&cond_label);
         self.block_terminated = false;
-        let cur_val = self.fresh_temp();
-        self.emit_line(&format!("{} = load i64, ptr {}", cur_val, var_ptr));
+        let cur_val = self.emit_load("i64", &var_ptr);
         let cmp = self.fresh_temp();
         let cmp_op = if inclusive { "sle" } else { "slt" };
         self.emit_line(&format!(
             "{} = icmp {} i64 {}, {}",
             cmp, cmp_op, cur_val, end_val
         ));
-        self.emit_line(&format!(
-            "br i1 {}, label %{}, label %{}",
-            cmp, body_label, end_label
-        ));
+        self.emit_cond_branch(&cmp, &body_label, &end_label);
 
         // Body
         self.emit_label(&body_label);
@@ -6999,8 +6852,7 @@ impl Codegen {
         // Increment block
         self.emit_label(&inc_label);
         self.block_terminated = false;
-        let cur_val2 = self.fresh_temp();
-        self.emit_line(&format!("{} = load i64, ptr {}", cur_val2, var_ptr));
+        let cur_val2 = self.emit_load("i64", &var_ptr);
         if inclusive {
             // Guard against overflow: if counter == end, this was the last
             // iteration — exit instead of incrementing (which would wrap
@@ -7011,10 +6863,7 @@ impl Codegen {
                 at_end, cur_val2, end_val
             ));
             let inc_do_label = self.fresh_label("for.inc.do");
-            self.emit_line(&format!(
-                "br i1 {}, label %{}, label %{}",
-                at_end, end_label, inc_do_label
-            ));
+            self.emit_cond_branch(&at_end, &end_label, &inc_do_label);
             self.emit_label(&inc_do_label);
             self.block_terminated = false;
         }
@@ -7075,10 +6924,7 @@ impl Codegen {
                 Pattern::Literal(Literal::Int(n), _) => {
                     let cmp = self.fresh_temp();
                     self.emit_line(&format!("{} = icmp eq i64 {}, {}", cmp, compare_val, n));
-                    self.emit_line(&format!(
-                        "br i1 {}, label %{}, label %{}",
-                        cmp, arm_labels[i], next
-                    ));
+                    self.emit_cond_branch(&cmp, &arm_labels[i], &next);
                     if i + 1 < s.arms.len() {
                         self.emit_label(&next);
                         self.block_terminated = false;
@@ -7090,10 +6936,7 @@ impl Codegen {
                         "{} = icmp eq i8 {}, {}",
                         cmp, compare_val, *c as u8
                     ));
-                    self.emit_line(&format!(
-                        "br i1 {}, label %{}, label %{}",
-                        cmp, arm_labels[i], next
-                    ));
+                    self.emit_cond_branch(&cmp, &arm_labels[i], &next);
                     if i + 1 < s.arms.len() {
                         self.emit_label(&next);
                         self.block_terminated = false;
@@ -7111,10 +6954,7 @@ impl Codegen {
                                 "{} = icmp eq i32 {}, {}",
                                 cmp, compare_val, tag
                             ));
-                            self.emit_line(&format!(
-                                "br i1 {}, label %{}, label %{}",
-                                cmp, arm_labels[i], next
-                            ));
+                            self.emit_cond_branch(&cmp, &arm_labels[i], &next);
                             if i + 1 < s.arms.len() {
                                 self.emit_label(&next);
                                 self.block_terminated = false;
@@ -7130,10 +6970,7 @@ impl Codegen {
                     let tag = self.variant_tag(vname)?;
                     let cmp = self.fresh_temp();
                     self.emit_line(&format!("{} = icmp eq i32 {}, {}", cmp, compare_val, tag));
-                    self.emit_line(&format!(
-                        "br i1 {}, label %{}, label %{}",
-                        cmp, arm_labels[i], next
-                    ));
+                    self.emit_cond_branch(&cmp, &arm_labels[i], &next);
                     if i + 1 < s.arms.len() {
                         self.emit_label(&next);
                         self.block_terminated = false;
@@ -7202,20 +7039,10 @@ impl Codegen {
                                                 "{} = getelementptr [0 x i8], ptr {}, i64 0, i64 {}",
                                                 field_ptr, payload_gep, byte_offset
                                             ));
-                                            let field_val = self.fresh_temp();
-                                            self.emit_line(&format!(
-                                                "{} = load {}, ptr {}",
-                                                field_val, field_llvm_ty, field_ptr
-                                            ));
-                                            let bind_ptr = self.fresh_temp();
-                                            self.emit_line(&format!(
-                                                "{} = alloca {}",
-                                                bind_ptr, field_llvm_ty
-                                            ));
-                                            self.emit_line(&format!(
-                                                "store {} {}, ptr {}",
-                                                field_llvm_ty, field_val, bind_ptr
-                                            ));
+                                            let field_val =
+                                                self.emit_load(&field_llvm_ty, &field_ptr);
+                                            let bind_ptr =
+                                                self.emit_alloca_store(&field_llvm_ty, &field_val);
                                             self.define_var(bname, &bind_ptr, &field_llvm_ty);
                                         }
                                     }
@@ -7382,11 +7209,7 @@ impl Codegen {
                     if slot.llvm_ty == "{ ptr, i64, i64 }" {
                         return Ok(slot.ptr.clone());
                     }
-                    let tmp = self.fresh_temp();
-                    self.emit_line(&format!(
-                        "{} = load {}, ptr {}",
-                        tmp, slot.llvm_ty, slot.ptr
-                    ));
+                    let tmp = self.emit_load(&slot.llvm_ty, &slot.ptr);
                     Ok(tmp)
                 } else if let Some(enum_name) = self.find_enum_for_variant(name) {
                     // Data-less enum variant (e.g., None)
@@ -7405,10 +7228,7 @@ impl Codegen {
                     let rhs_label = self.fresh_label("and_rhs");
                     let merge_label = self.fresh_label("and_merge");
                     let lhs_block = self.current_block_label();
-                    self.emit_line(&format!(
-                        "br i1 {}, label %{}, label %{}",
-                        l, rhs_label, merge_label
-                    ));
+                    self.emit_cond_branch(&l, &rhs_label, &merge_label);
                     self.emit_label(&rhs_label);
                     self.block_terminated = false;
                     let r = self.emit_expr(rhs)?;
@@ -7428,10 +7248,7 @@ impl Codegen {
                     let rhs_label = self.fresh_label("or_rhs");
                     let merge_label = self.fresh_label("or_merge");
                     let lhs_block = self.current_block_label();
-                    self.emit_line(&format!(
-                        "br i1 {}, label %{}, label %{}",
-                        l, merge_label, rhs_label
-                    ));
+                    self.emit_cond_branch(&l, &merge_label, &rhs_label);
                     self.emit_label(&rhs_label);
                     self.block_terminated = false;
                     let r = self.emit_expr(rhs)?;
@@ -7554,10 +7371,7 @@ impl Codegen {
                         ));
                         let grow_label = self.fresh_label("push.grow");
                         let store_label = self.fresh_label("push.store");
-                        self.emit_line(&format!(
-                            "br i1 {}, label %{}, label %{}",
-                            need_grow, grow_label, store_label
-                        ));
+                        self.emit_cond_branch(&need_grow, &grow_label, &store_label);
 
                         // Grow block: realloc with doubled capacity (min 4)
                         self.emit_label(&grow_label);
@@ -7601,10 +7415,7 @@ impl Codegen {
                             elem_gep, elem_ty, cur_data, len_val
                         ));
                         if Self::is_aggregate_type(&elem_ty) {
-                            self.emit_line(&format!(
-                                "call ptr @memcpy(ptr {}, ptr {}, i64 {})",
-                                elem_gep, val, elem_size
-                            ));
+                            self.emit_memcpy(&elem_gep, &val, &elem_size.to_string());
                         } else {
                             self.emit_line(&format!("store {} {}, ptr {}", elem_ty, val, elem_gep));
                         }
@@ -7634,10 +7445,7 @@ impl Codegen {
                         self.emit_line(&format!("{} = icmp eq i64 {}, 0", is_empty, len_val));
                         let fail_label = self.fresh_label("pop.fail");
                         let ok_label = self.fresh_label("pop.ok");
-                        self.emit_line(&format!(
-                            "br i1 {}, label %{}, label %{}",
-                            is_empty, fail_label, ok_label
-                        ));
+                        self.emit_cond_branch(&is_empty, &fail_label, &ok_label);
 
                         // Fail block: print error and abort
                         self.emit_label(&fail_label);
@@ -7664,17 +7472,10 @@ impl Codegen {
                             let tmp_alloca = self.fresh_temp();
                             self.emit_line(&format!("{} = alloca {}", tmp_alloca, elem_ty));
                             let sz = self.llvm_type_size(&elem_ty);
-                            self.emit_line(&format!(
-                                "call ptr @memcpy(ptr {}, ptr {}, i64 {})",
-                                tmp_alloca, elem_gep, sz
-                            ));
+                            self.emit_memcpy(&tmp_alloca, &elem_gep, &sz.to_string());
                             return Ok(tmp_alloca);
                         } else {
-                            let val = self.fresh_temp();
-                            self.emit_line(&format!(
-                                "{} = load {}, ptr {}",
-                                val, elem_ty, elem_gep
-                            ));
+                            let val = self.emit_load(&elem_ty, &elem_gep);
                             return Ok(val);
                         }
                     }
@@ -7692,21 +7493,16 @@ impl Codegen {
 
                     // Built-in args() — build [string] from stored argc/argv
                     if name == "args" && args.is_empty() {
-                        let argc32 = self.fresh_temp();
-                        self.emit_line(&format!("{} = load i32, ptr @__yorum_argc", argc32));
+                        let argc32 = self.emit_load("i32", "@__yorum_argc");
                         let argc = self.fresh_temp();
                         self.emit_line(&format!("{} = zext i32 {} to i64", argc, argc32));
-                        let argv = self.fresh_temp();
-                        self.emit_line(&format!("{} = load ptr, ptr @__yorum_argv", argv));
+                        let argv = self.emit_load("ptr", "@__yorum_argv");
                         // Allocate data array and copy argv pointers
                         let bytes = self.fresh_temp();
                         self.emit_line(&format!("{} = mul i64 {}, 8", bytes, argc));
                         let data = self.fresh_temp();
                         self.emit_line(&format!("{} = call ptr @malloc(i64 {})", data, bytes));
-                        self.emit_line(&format!(
-                            "call ptr @memcpy(ptr {}, ptr {}, i64 {})",
-                            data, argv, bytes
-                        ));
+                        self.emit_memcpy(&data, &argv, &bytes);
                         // Build { ptr, i64, i64 } fat pointer
                         let fat = self.fresh_temp();
                         self.emit_line(&format!("{} = alloca {{ ptr, i64, i64 }}", fat));
@@ -7750,10 +7546,7 @@ impl Codegen {
                             "{} = getelementptr {}, ptr {}, i64 {}",
                             src, elem_ty, data_ptr, start
                         ));
-                        self.emit_line(&format!(
-                            "call ptr @memcpy(ptr {}, ptr {}, i64 {})",
-                            new_data, src, new_bytes
-                        ));
+                        self.emit_memcpy(&new_data, &src, &new_bytes);
                         // build fat pointer
                         let fat = self.fresh_temp();
                         self.emit_line(&format!("{} = alloca {{ ptr, i64, i64 }}", fat));
@@ -7795,10 +7588,7 @@ impl Codegen {
                         let data_a = self.emit_fat_ptr_field_load(&arr_a, 0, "ptr");
                         let bytes_a = self.fresh_temp();
                         self.emit_line(&format!("{} = mul i64 {}, {}", bytes_a, len_a, elem_size));
-                        self.emit_line(&format!(
-                            "call ptr @memcpy(ptr {}, ptr {}, i64 {})",
-                            new_data, data_a, bytes_a
-                        ));
+                        self.emit_memcpy(&new_data, &data_a, &bytes_a);
                         // copy b's data after a
                         let data_b = self.emit_fat_ptr_field_load(&arr_b, 0, "ptr");
                         let bytes_b = self.fresh_temp();
@@ -7808,10 +7598,7 @@ impl Codegen {
                             "{} = getelementptr {}, ptr {}, i64 {}",
                             dst, elem_ty, new_data, len_a
                         ));
-                        self.emit_line(&format!(
-                            "call ptr @memcpy(ptr {}, ptr {}, i64 {})",
-                            dst, data_b, bytes_b
-                        ));
+                        self.emit_memcpy(&dst, &data_b, &bytes_b);
                         // build fat pointer
                         let fat = self.fresh_temp();
                         self.emit_line(&format!("{} = alloca {{ ptr, i64, i64 }}", fat));
@@ -7848,23 +7635,17 @@ impl Codegen {
                             new_data, total_bytes
                         ));
                         // Use alloca-based loop counter (avoids phi nodes)
-                        let counter = self.fresh_temp();
-                        self.emit_line(&format!("{} = alloca i64", counter));
-                        self.emit_line(&format!("store i64 0, ptr {}", counter));
+                        let counter = self.emit_alloca_store("i64", "0");
                         let loop_label = self.fresh_label("rev.loop");
                         let body_label = self.fresh_label("rev.body");
                         let done_label = self.fresh_label("rev.done");
                         self.emit_line(&format!("br label %{}", loop_label));
                         self.emit_label(&loop_label);
                         self.block_terminated = false;
-                        let i = self.fresh_temp();
-                        self.emit_line(&format!("{} = load i64, ptr {}", i, counter));
+                        let i = self.emit_load("i64", &counter);
                         let cmp = self.fresh_temp();
                         self.emit_line(&format!("{} = icmp slt i64 {}, {}", cmp, i, len_val));
-                        self.emit_line(&format!(
-                            "br i1 {}, label %{}, label %{}",
-                            cmp, body_label, done_label
-                        ));
+                        self.emit_cond_branch(&cmp, &body_label, &done_label);
                         self.emit_label(&body_label);
                         self.block_terminated = false;
                         // dst_idx = len - 1 - i
@@ -7883,13 +7664,9 @@ impl Codegen {
                             dst_gep, elem_ty, new_data, dst_idx
                         ));
                         if is_agg {
-                            self.emit_line(&format!(
-                                "call ptr @memcpy(ptr {}, ptr {}, i64 {})",
-                                dst_gep, src_gep, elem_size
-                            ));
+                            self.emit_memcpy(&dst_gep, &src_gep, &elem_size.to_string());
                         } else {
-                            let val = self.fresh_temp();
-                            self.emit_line(&format!("{} = load {}, ptr {}", val, elem_ty, src_gep));
+                            let val = self.emit_load(&elem_ty, &src_gep);
                             self.emit_line(&format!("store {} {}, ptr {}", elem_ty, val, dst_gep));
                         }
                         let i_next = self.fresh_temp();
@@ -8197,10 +7974,7 @@ impl Codegen {
                         gep, elem_ty, data_ptr, i
                     ));
                     if is_aggregate {
-                        self.emit_line(&format!(
-                            "call ptr @memcpy(ptr {}, ptr {}, i64 {})",
-                            gep, val, elem_size
-                        ));
+                        self.emit_memcpy(&gep, &val, &elem_size.to_string());
                     } else {
                         self.emit_line(&format!("store {} {}, ptr {}", elem_ty, val, gep));
                     }
@@ -8250,14 +8024,10 @@ impl Codegen {
                     let tmp_alloca = self.fresh_temp();
                     self.emit_line(&format!("{} = alloca {}", tmp_alloca, elem_ty));
                     let sz = self.llvm_type_size(&elem_ty);
-                    self.emit_line(&format!(
-                        "call ptr @memcpy(ptr {}, ptr {}, i64 {})",
-                        tmp_alloca, elem_gep, sz
-                    ));
+                    self.emit_memcpy(&tmp_alloca, &elem_gep, &sz.to_string());
                     Ok(tmp_alloca)
                 } else {
-                    let val = self.fresh_temp();
-                    self.emit_line(&format!("{} = load {}, ptr {}", val, elem_ty, elem_gep));
+                    let val = self.emit_load(&elem_ty, &elem_gep);
                     Ok(val)
                 }
             }
@@ -8297,9 +8067,7 @@ impl Codegen {
                 let val = self.emit_expr(expr)?;
                 let llvm_ty = self.expr_llvm_type(expr);
                 if Self::is_aggregate_type(&llvm_ty) {
-                    let tmp = self.fresh_temp();
-                    self.emit_line(&format!("{} = alloca {}", tmp, llvm_ty));
-                    self.emit_line(&format!("store {} {}, ptr {}", llvm_ty, val, tmp));
+                    let tmp = self.emit_alloca_store(&llvm_ty, &val);
                     Ok(tmp)
                 } else {
                     Ok(val)
@@ -8346,10 +8114,7 @@ impl Codegen {
                 let val = self.emit_expr(expr)?;
                 let ok_label = self.fresh_label("req_ok");
                 let fail_label = self.fresh_label("req_fail");
-                self.emit_line(&format!(
-                    "br i1 {}, label %{}, label %{}",
-                    val, ok_label, fail_label
-                ));
+                self.emit_cond_branch(&val, &ok_label, &fail_label);
                 self.emit_label(&fail_label);
                 let msg = self.emit_contract_string(&format!("requires clause in '{}'", fn_name));
                 self.emit_line(&format!("call void @__yorum_contract_fail(ptr {})", msg));
@@ -8371,10 +8136,7 @@ impl Codegen {
                 let val = self.emit_expr(expr)?;
                 let ok_label = self.fresh_label("ens_ok");
                 let fail_label = self.fresh_label("ens_fail");
-                self.emit_line(&format!(
-                    "br i1 {}, label %{}, label %{}",
-                    val, ok_label, fail_label
-                ));
+                self.emit_cond_branch(&val, &ok_label, &fail_label);
                 self.emit_label(&fail_label);
                 let msg = self.emit_contract_string(&format!("ensures clause in '{}'", fn_name));
                 self.emit_line(&format!("call void @__yorum_contract_fail(ptr {})", msg));
@@ -8577,10 +8339,7 @@ impl Codegen {
         let error_label = self.fresh_label("try.err");
         let cmp = self.fresh_temp();
         self.emit_line(&format!("{} = icmp eq i32 {}, 0", cmp, tag_val));
-        self.emit_line(&format!(
-            "br i1 {}, label %{}, label %{}",
-            cmp, success_label, error_label
-        ));
+        self.emit_cond_branch(&cmp, &success_label, &error_label);
 
         // 5. Error path: early return None or Err(e)
         self.emit_label(&error_label);
@@ -8597,8 +8356,7 @@ impl Codegen {
             let none_ptr = self.fresh_temp();
             self.emit_line(&format!("{} = alloca %{}", none_ptr, ret_enum_name));
             self.emit_struct_field_store(&ret_enum_name, &none_ptr, 0, "i32", "1");
-            let none_val = self.fresh_temp();
-            self.emit_line(&format!("{} = load {}, ptr {}", none_val, ret_ty, none_ptr));
+            let none_val = self.emit_load(&ret_ty, &none_ptr);
             self.emit_line(&format!("ret {} {}", ret_ty, none_val));
         } else {
             // Extract Err payload from inner Result, construct Err(e) for return type
@@ -8620,11 +8378,7 @@ impl Codegen {
                     "{} = getelementptr [0 x i8], ptr {}, i64 0, i64 0",
                     err_field_ptr, inner_payload_gep
                 ));
-                let err_val = self.fresh_temp();
-                self.emit_line(&format!(
-                    "{} = load {}, ptr {}",
-                    err_val, err_llvm_ty, err_field_ptr
-                ));
+                let err_val = self.emit_load(&err_llvm_ty, &err_field_ptr);
 
                 // Construct Err(e) for the return type
                 let ret_err_ptr = self.fresh_temp();
@@ -8640,22 +8394,14 @@ impl Codegen {
                     "store {} {}, ptr {}",
                     err_llvm_ty, err_val, ret_err_field_ptr
                 ));
-                let ret_val = self.fresh_temp();
-                self.emit_line(&format!(
-                    "{} = load {}, ptr {}",
-                    ret_val, ret_ty, ret_err_ptr
-                ));
+                let ret_val = self.emit_load(&ret_ty, &ret_err_ptr);
                 self.emit_line(&format!("ret {} {}", ret_ty, ret_val));
             } else {
                 // Err variant with no payload (unusual but handle gracefully)
                 let ret_err_ptr = self.fresh_temp();
                 self.emit_line(&format!("{} = alloca %{}", ret_err_ptr, ret_enum_name));
                 self.emit_struct_field_store(&ret_enum_name, &ret_err_ptr, 0, "i32", "1");
-                let ret_val = self.fresh_temp();
-                self.emit_line(&format!(
-                    "{} = load {}, ptr {}",
-                    ret_val, ret_ty, ret_err_ptr
-                ));
+                let ret_val = self.emit_load(&ret_ty, &ret_err_ptr);
                 self.emit_line(&format!("ret {} {}", ret_ty, ret_val));
             }
         }
@@ -8682,11 +8428,7 @@ impl Codegen {
 
         if !ok_variant_fields.is_empty() {
             let t_llvm_ty = self.llvm_type(&ok_variant_fields[0]);
-            let t_val = self.fresh_temp();
-            self.emit_line(&format!(
-                "{} = load {}, ptr {}",
-                t_val, t_llvm_ty, ok_field_ptr
-            ));
+            let t_val = self.emit_load(&t_llvm_ty, &ok_field_ptr);
             Ok(t_val)
         } else {
             Ok("0".to_string())
@@ -8768,11 +8510,7 @@ impl Codegen {
         self.emit_line(&format!("{} = alloca %{}", env_ptr, env_type_name));
 
         for (i, (cap_name, cap_slot)) in captures.iter().enumerate() {
-            let val = self.fresh_temp();
-            self.emit_line(&format!(
-                "{} = load {}, ptr {}",
-                val, cap_slot.llvm_ty, cap_slot.ptr
-            ));
+            let val = self.emit_load(&cap_slot.llvm_ty, &cap_slot.ptr);
             self.emit_struct_field_store(&env_type_name, &env_ptr, i, &cap_slot.llvm_ty, &val);
             let _ = cap_name; // used above via cap_slot
         }
@@ -8850,9 +8588,7 @@ impl Codegen {
         // Alloca for explicit params
         for param in &closure.params {
             let ty = self.llvm_type(&param.ty);
-            let ptr = self.fresh_temp();
-            self.emit_line(&format!("{} = alloca {}", ptr, ty));
-            self.emit_line(&format!("store {} %{}, ptr {}", ty, param.name, ptr));
+            let ptr = self.emit_alloca_store(&ty, &format!("%{}", param.name));
             self.define_var(&param.name, &ptr, &ty);
         }
 
@@ -8932,11 +8668,7 @@ impl Codegen {
         self.emit_line(&format!("{} = call ptr @malloc(i64 {})", env_ptr, size_val));
 
         for (i, (_cap_name, cap_slot)) in captures.iter().enumerate() {
-            let val = self.fresh_temp();
-            self.emit_line(&format!(
-                "{} = load {}, ptr {}",
-                val, cap_slot.llvm_ty, cap_slot.ptr
-            ));
+            let val = self.emit_load(&cap_slot.llvm_ty, &cap_slot.ptr);
             self.emit_struct_field_store(&env_type_name, &env_ptr, i, &cap_slot.llvm_ty, &val);
         }
 
@@ -9052,8 +8784,7 @@ impl Codegen {
             "{} = getelementptr {{ i64, ptr }}, ptr {}, i32 0, i32 0",
             thread_gep, tcb
         ));
-        let thread = self.fresh_temp();
-        self.emit_line(&format!("{} = load i64, ptr {}", thread, thread_gep));
+        let thread = self.emit_load("i64", &thread_gep);
 
         // Call pthread_join
         self.emit_line(&format!("call i32 @pthread_join(i64 {}, ptr null)", thread));
@@ -9064,8 +8795,7 @@ impl Codegen {
             "{} = getelementptr {{ i64, ptr }}, ptr {}, i32 0, i32 1",
             env_gep, tcb
         ));
-        let env_ptr = self.fresh_temp();
-        self.emit_line(&format!("{} = load ptr, ptr {}", env_ptr, env_gep));
+        let env_ptr = self.emit_load("ptr", &env_gep);
 
         // Load the result from the env struct's result slot.
         // The receiver variable name maps to (env_type_name, result_field_idx)
@@ -9102,10 +8832,7 @@ impl Codegen {
         self.emit_line(&format!("{} = icmp eq i32 {}, 0", cmp, tag));
         let ok_label = self.fresh_label("unwrap_ok");
         let fail_label = self.fresh_label("unwrap_fail");
-        self.emit_line(&format!(
-            "br i1 {}, label %{}, label %{}",
-            cmp, ok_label, fail_label
-        ));
+        self.emit_cond_branch(&cmp, &ok_label, &fail_label);
 
         // Fail: abort
         self.emit_label(&fail_label);
@@ -9144,10 +8871,7 @@ impl Codegen {
         self.emit_line(&format!("{} = icmp eq i32 {}, 1", cmp, tag));
         let ok_label = self.fresh_label("unwrap_err_ok");
         let fail_label = self.fresh_label("unwrap_err_fail");
-        self.emit_line(&format!(
-            "br i1 {}, label %{}, label %{}",
-            cmp, ok_label, fail_label
-        ));
+        self.emit_cond_branch(&cmp, &ok_label, &fail_label);
 
         // Fail: abort
         self.emit_label(&fail_label);
@@ -9219,8 +8943,7 @@ impl Codegen {
             "{} = getelementptr {{ ptr, ptr }}, ptr {}, i32 0, i32 0",
             fn_gep, closure_ptr
         ));
-        let fn_ptr = self.fresh_temp();
-        self.emit_line(&format!("{} = load ptr, ptr {}", fn_ptr, fn_gep));
+        let fn_ptr = self.emit_load("ptr", &fn_gep);
 
         // Extract env_ptr
         let env_gep = self.fresh_temp();
@@ -9228,8 +8951,7 @@ impl Codegen {
             "{} = getelementptr {{ ptr, ptr }}, ptr {}, i32 0, i32 1",
             env_gep, closure_ptr
         ));
-        let env_ptr = self.fresh_temp();
-        self.emit_line(&format!("{} = load ptr, ptr {}", env_ptr, env_gep));
+        let env_ptr = self.emit_load("ptr", &env_gep);
 
         // Emit arguments
         let mut arg_strs = vec![format!("ptr {}", env_ptr)];
@@ -10118,6 +9840,37 @@ impl Codegen {
         self.emit_fat_ptr_field_store(fat_ptr, 0, "ptr", data);
         self.emit_fat_ptr_field_store(fat_ptr, 1, "i64", len);
         self.emit_fat_ptr_field_store(fat_ptr, 2, "i64", cap);
+    }
+
+    /// `load TY, ptr PTR` — returns the loaded SSA value.
+    fn emit_load(&mut self, ty: &str, ptr: &str) -> String {
+        let val = self.fresh_temp();
+        self.emit_line(&format!("{} = load {}, ptr {}", val, ty, ptr));
+        val
+    }
+
+    /// `alloca TY` + `store TY VAL, ptr ALLOCA` — returns the alloca pointer.
+    fn emit_alloca_store(&mut self, ty: &str, val: &str) -> String {
+        let ptr = self.fresh_temp();
+        self.emit_line(&format!("{} = alloca {}", ptr, ty));
+        self.emit_line(&format!("store {} {}, ptr {}", ty, val, ptr));
+        ptr
+    }
+
+    /// `call ptr @memcpy(ptr DST, ptr SRC, i64 SIZE)`
+    fn emit_memcpy(&mut self, dst: &str, src: &str, size: &str) {
+        self.emit_line(&format!(
+            "call ptr @memcpy(ptr {}, ptr {}, i64 {})",
+            dst, src, size
+        ));
+    }
+
+    /// `br i1 COND, label %TRUE_LBL, label %FALSE_LBL`
+    fn emit_cond_branch(&mut self, cond: &str, true_lbl: &str, false_lbl: &str) {
+        self.emit_line(&format!(
+            "br i1 {}, label %{}, label %{}",
+            cond, true_lbl, false_lbl
+        ));
     }
 
     fn escape_llvm_string(&self, s: &str) -> String {

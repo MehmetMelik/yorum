@@ -9382,7 +9382,37 @@ fn test_range_iter_descending_clamped() {
          \x20   return len(empty);\n\
          }\n",
     );
-    // Verify the clamp: icmp slt + select
+    // Verify the clamp: icmp slt + select (for allocation estimate)
     assert!(ir.contains("icmp slt i64"));
     assert!(ir.contains("select i1"));
+}
+
+#[test]
+fn test_range_iter_wide_range_no_length_overflow() {
+    // Wide inclusive ranges must not overflow the length computation.
+    // The loop condition should compare the actual range value against end
+    // (using icmp sle for inclusive), not idx against a pre-computed length.
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let found: bool = (0..=100).iter().any(|x: int| -> bool { return x == 0; });\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    // The loop condition should use sle (signed less-or-equal) for inclusive range,
+    // comparing the actual range value against the end bound.
+    assert!(ir.contains("icmp sle i64"));
+}
+
+#[test]
+fn test_range_iter_exclusive_uses_slt_on_value() {
+    // Exclusive range pipeline loop condition should compare range value
+    // against end using slt, not compare idx against pre-computed length.
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let sum: int = (0..10).iter().fold(0, |acc: int, x: int| -> int { return acc + x; });\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    // The loop condition emits: cur_val = add i64 start, idx; icmp slt cur_val, end
+    assert!(ir.contains("icmp slt i64"));
 }

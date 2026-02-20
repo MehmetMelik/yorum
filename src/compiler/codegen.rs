@@ -5549,18 +5549,21 @@ impl Codegen {
     ) -> Result<
         (
             String, // data_ptr (or range_start for range sources)
-            String, // len_val
+            String, // len_val (used for collect allocation; for ranges, a best-effort estimate)
             String, // src_elem_ty
             Vec<Option<ClosureInfo>>,
             Vec<Option<ZipInfo>>,
             Vec<Option<String>>,
             Vec<Option<String>>,
-            bool, // is_range_source (passed through for callers)
+            bool,                   // is_range_source
+            Option<(String, bool)>, // range_end: Some((end_val, inclusive)) for ranges, None for arrays
         ),
         CodegenError,
     > {
-        let (data_ptr, len_val, src_elem_ty) = if is_range_source {
-            // Range source: emit start and end, compute length
+        let (data_ptr, len_val, src_elem_ty, range_end) = if is_range_source {
+            // Range source: emit start and end, compute length estimate for allocation.
+            // The loop condition uses direct value comparison (start + idx vs end)
+            // instead of this length, avoiding overflow for wide ranges.
             let (start_expr, end_expr, inclusive) = match &source.kind {
                 ExprKind::Range(s, e) => (s, e, false),
                 ExprKind::RangeInclusive(s, e) => (s, e, true),
@@ -5568,6 +5571,11 @@ impl Codegen {
             };
             let start_val = self.emit_expr(start_expr)?;
             let end_val = self.emit_expr(end_expr)?;
+
+            // Compute a best-effort allocation length for collect.  This can
+            // overflow for spans > i64::MAX, but that only affects collect's
+            // initial malloc (which would need impossibly much memory anyway).
+            // Clamped to zero so descending ranges don't cause negative mallocs.
             let raw_len = self.fresh_temp();
             self.emit_line(&format!("{} = sub i64 {}, {}", raw_len, end_val, start_val));
             let unclamped = if inclusive {
@@ -5577,18 +5585,20 @@ impl Codegen {
             } else {
                 raw_len
             };
-            // Clamp to zero: descending ranges (e.g. 10..5) must not produce
-            // negative lengths — that would cause huge mallocs in collect and
-            // store invalid capacities in array metadata.
             let is_neg = self.fresh_temp();
             self.emit_line(&format!("{} = icmp slt i64 {}, 0", is_neg, unclamped));
-            let final_len = self.fresh_temp();
+            let alloc_len = self.fresh_temp();
             self.emit_line(&format!(
                 "{} = select i1 {}, i64 0, i64 {}",
-                final_len, is_neg, unclamped
+                alloc_len, is_neg, unclamped
             ));
-            // For ranges, data_ptr holds the start value (used as offset base in emit_pipeline_steps)
-            (start_val, final_len, "i64".to_string())
+
+            (
+                start_val,
+                alloc_len,
+                "i64".to_string(),
+                Some((end_val, inclusive)),
+            )
         } else {
             // Emit the source array expression → fat pointer
             let arr_val = self.emit_expr(source)?;
@@ -5611,7 +5621,7 @@ impl Codegen {
             let len_val = self.fresh_temp();
             self.emit_line(&format!("{} = load i64, ptr {}", len_val, len_gep));
 
-            (data_ptr, len_val, src_elem_ty)
+            (data_ptr, len_val, src_elem_ty, None)
         };
 
         // Pre-emit closures and prepare step data.
@@ -5733,7 +5743,44 @@ impl Codegen {
             take_skip_ptrs,
             enumerate_ptrs,
             is_range_source,
+            range_end,
         ))
+    }
+
+    /// Emit the loop condition for a pipeline.
+    /// For arrays: `idx < len`.  For ranges: `(start + idx) < end` or `<= end`,
+    /// avoiding overflow from pre-computing the total length.
+    fn emit_pipeline_loop_cond(
+        &mut self,
+        idx_ptr: &str,
+        data_ptr: &str,
+        len_val: &str,
+        range_end: &Option<(String, bool)>,
+        step_label: &str,
+        end_label: &str,
+    ) -> String {
+        let cur_idx = self.fresh_temp();
+        self.emit_line(&format!("{} = load i64, ptr {}", cur_idx, idx_ptr));
+        let cmp = self.fresh_temp();
+        if let Some((ref end_val, inclusive)) = *range_end {
+            // Range source: compare actual range value against end bound.
+            // This avoids computing a total length that can overflow for wide ranges.
+            let cur_val = self.fresh_temp();
+            self.emit_line(&format!("{} = add i64 {}, {}", cur_val, data_ptr, cur_idx));
+            let cmp_op = if inclusive { "sle" } else { "slt" };
+            self.emit_line(&format!(
+                "{} = icmp {} i64 {}, {}",
+                cmp, cmp_op, cur_val, end_val
+            ));
+        } else {
+            // Array source: compare index against length.
+            self.emit_line(&format!("{} = icmp slt i64 {}, {}", cmp, cur_idx, len_val));
+        }
+        self.emit_line(&format!(
+            "br i1 {}, label %{}, label %{}",
+            cmp, step_label, end_label
+        ));
+        cur_idx
     }
 
     fn emit_for_pipeline(
@@ -5752,6 +5799,7 @@ impl Codegen {
             take_skip_ptrs,
             enumerate_ptrs,
             is_range,
+            range_end,
         ) = self.emit_pipeline_preamble(
             pipeline.source,
             &pipeline.steps,
@@ -5776,17 +5824,17 @@ impl Codegen {
 
         self.emit_line(&format!("br label %{}", cond_label));
 
-        // 4. Condition: idx < len
+        // 4. Condition
         self.emit_label(&cond_label);
         self.block_terminated = false;
-        let cur_idx = self.fresh_temp();
-        self.emit_line(&format!("{} = load i64, ptr {}", cur_idx, idx_ptr));
-        let cmp = self.fresh_temp();
-        self.emit_line(&format!("{} = icmp slt i64 {}, {}", cmp, cur_idx, len_val));
-        self.emit_line(&format!(
-            "br i1 {}, label %{}, label %{}",
-            cmp, step_label, end_label
-        ));
+        let cur_idx = self.emit_pipeline_loop_cond(
+            &idx_ptr,
+            &data_ptr,
+            &len_val,
+            &range_end,
+            &step_label,
+            &end_label,
+        );
 
         // 5. Step block: load element, increment index, apply pipeline steps
         self.emit_label(&step_label);
@@ -5856,6 +5904,7 @@ impl Codegen {
             take_skip_ptrs,
             enumerate_ptrs,
             is_range,
+            range_end,
         ) = self.emit_pipeline_preamble(
             pipeline.source,
             &pipeline.steps,
@@ -5918,6 +5967,7 @@ impl Codegen {
                 &take_skip_ptrs,
                 &enumerate_ptrs,
                 is_range,
+                &range_end,
             ),
             PipelineTerminator::Fold(init_expr, _) => {
                 let init_val = self.emit_expr(init_expr)?;
@@ -5938,6 +5988,7 @@ impl Codegen {
                     &tci.env_ptr,
                     &tci.ret_ty,
                     is_range,
+                    &range_end,
                 )
             }
             PipelineTerminator::Any(_) => {
@@ -5956,6 +6007,7 @@ impl Codegen {
                     &tci.fn_ptr,
                     &tci.env_ptr,
                     is_range,
+                    &range_end,
                 )
             }
             PipelineTerminator::All(_) => {
@@ -5974,6 +6026,7 @@ impl Codegen {
                     &tci.fn_ptr,
                     &tci.env_ptr,
                     is_range,
+                    &range_end,
                 )
             }
             PipelineTerminator::Find(_) => {
@@ -5992,6 +6045,7 @@ impl Codegen {
                     &tci.fn_ptr,
                     &tci.env_ptr,
                     is_range,
+                    &range_end,
                 )
             }
             PipelineTerminator::Reduce(_) => {
@@ -6011,6 +6065,7 @@ impl Codegen {
                     &tci.env_ptr,
                     &tci.ret_ty,
                     is_range,
+                    &range_end,
                 )
             }
         }
@@ -6290,6 +6345,7 @@ impl Codegen {
         take_skip_ptrs: &[Option<String>],
         enumerate_ptrs: &[Option<String>],
         is_range_source: bool,
+        range_end: &Option<(String, bool)>,
     ) -> Result<String, CodegenError> {
         let elem_size = self.llvm_type_size(final_elem_ty);
 
@@ -6315,17 +6371,16 @@ impl Codegen {
 
         self.emit_line(&format!("br label %{}", cond_label));
 
-        // Condition: idx < len
         self.emit_label(&cond_label);
         self.block_terminated = false;
-        let cur_idx = self.fresh_temp();
-        self.emit_line(&format!("{} = load i64, ptr {}", cur_idx, idx_ptr));
-        let cmp = self.fresh_temp();
-        self.emit_line(&format!("{} = icmp slt i64 {}, {}", cmp, cur_idx, len_val));
-        self.emit_line(&format!(
-            "br i1 {}, label %{}, label %{}",
-            cmp, step_label, end_label
-        ));
+        let cur_idx = self.emit_pipeline_loop_cond(
+            idx_ptr,
+            data_ptr,
+            len_val,
+            range_end,
+            &step_label,
+            &end_label,
+        );
 
         // Step block: apply pipeline
         self.emit_label(&step_label);
@@ -6414,6 +6469,7 @@ impl Codegen {
         term_env_ptr: &str,
         acc_ty: &str,
         is_range_source: bool,
+        range_end: &Option<(String, bool)>,
     ) -> Result<String, CodegenError> {
         // Alloca for accumulator
         let acc_ptr = self.fresh_temp();
@@ -6429,14 +6485,14 @@ impl Codegen {
 
         self.emit_label(&cond_label);
         self.block_terminated = false;
-        let cur_idx = self.fresh_temp();
-        self.emit_line(&format!("{} = load i64, ptr {}", cur_idx, idx_ptr));
-        let cmp = self.fresh_temp();
-        self.emit_line(&format!("{} = icmp slt i64 {}, {}", cmp, cur_idx, len_val));
-        self.emit_line(&format!(
-            "br i1 {}, label %{}, label %{}",
-            cmp, step_label, end_label
-        ));
+        let cur_idx = self.emit_pipeline_loop_cond(
+            idx_ptr,
+            data_ptr,
+            len_val,
+            range_end,
+            &step_label,
+            &end_label,
+        );
 
         self.emit_label(&step_label);
         self.block_terminated = false;
@@ -6493,6 +6549,7 @@ impl Codegen {
         term_fn_ptr: &str,
         term_env_ptr: &str,
         is_range_source: bool,
+        range_end: &Option<(String, bool)>,
     ) -> Result<String, CodegenError> {
         let result_ptr = self.fresh_temp();
         self.emit_line(&format!("{} = alloca i1", result_ptr));
@@ -6507,14 +6564,14 @@ impl Codegen {
 
         self.emit_label(&cond_label);
         self.block_terminated = false;
-        let cur_idx = self.fresh_temp();
-        self.emit_line(&format!("{} = load i64, ptr {}", cur_idx, idx_ptr));
-        let cmp = self.fresh_temp();
-        self.emit_line(&format!("{} = icmp slt i64 {}, {}", cmp, cur_idx, len_val));
-        self.emit_line(&format!(
-            "br i1 {}, label %{}, label %{}",
-            cmp, step_label, end_label
-        ));
+        let cur_idx = self.emit_pipeline_loop_cond(
+            idx_ptr,
+            data_ptr,
+            len_val,
+            range_end,
+            &step_label,
+            &end_label,
+        );
 
         self.emit_label(&step_label);
         self.block_terminated = false;
@@ -6577,6 +6634,7 @@ impl Codegen {
         term_fn_ptr: &str,
         term_env_ptr: &str,
         is_range_source: bool,
+        range_end: &Option<(String, bool)>,
     ) -> Result<String, CodegenError> {
         let result_ptr = self.fresh_temp();
         self.emit_line(&format!("{} = alloca i1", result_ptr));
@@ -6591,14 +6649,14 @@ impl Codegen {
 
         self.emit_label(&cond_label);
         self.block_terminated = false;
-        let cur_idx = self.fresh_temp();
-        self.emit_line(&format!("{} = load i64, ptr {}", cur_idx, idx_ptr));
-        let cmp = self.fresh_temp();
-        self.emit_line(&format!("{} = icmp slt i64 {}, {}", cmp, cur_idx, len_val));
-        self.emit_line(&format!(
-            "br i1 {}, label %{}, label %{}",
-            cmp, step_label, end_label
-        ));
+        let cur_idx = self.emit_pipeline_loop_cond(
+            idx_ptr,
+            data_ptr,
+            len_val,
+            range_end,
+            &step_label,
+            &end_label,
+        );
 
         self.emit_label(&step_label);
         self.block_terminated = false;
@@ -6661,6 +6719,7 @@ impl Codegen {
         term_fn_ptr: &str,
         term_env_ptr: &str,
         is_range_source: bool,
+        range_end: &Option<(String, bool)>,
     ) -> Result<String, CodegenError> {
         // Determine Option type name
         let option_name = self.yorum_type_to_option_name(final_elem_ty);
@@ -6685,14 +6744,14 @@ impl Codegen {
 
         self.emit_label(&cond_label);
         self.block_terminated = false;
-        let cur_idx = self.fresh_temp();
-        self.emit_line(&format!("{} = load i64, ptr {}", cur_idx, idx_ptr));
-        let cmp = self.fresh_temp();
-        self.emit_line(&format!("{} = icmp slt i64 {}, {}", cmp, cur_idx, len_val));
-        self.emit_line(&format!(
-            "br i1 {}, label %{}, label %{}",
-            cmp, step_label, end_label
-        ));
+        let cur_idx = self.emit_pipeline_loop_cond(
+            idx_ptr,
+            data_ptr,
+            len_val,
+            range_end,
+            &step_label,
+            &end_label,
+        );
 
         self.emit_label(&step_label);
         self.block_terminated = false;
@@ -6770,6 +6829,7 @@ impl Codegen {
         term_env_ptr: &str,
         ret_ty: &str,
         is_range_source: bool,
+        range_end: &Option<(String, bool)>,
     ) -> Result<String, CodegenError> {
         let option_name = self.yorum_type_to_option_name(final_elem_ty);
         let option_llvm = format!("%{}", option_name);
@@ -6800,14 +6860,14 @@ impl Codegen {
 
         self.emit_label(&cond_label);
         self.block_terminated = false;
-        let cur_idx = self.fresh_temp();
-        self.emit_line(&format!("{} = load i64, ptr {}", cur_idx, idx_ptr));
-        let cmp = self.fresh_temp();
-        self.emit_line(&format!("{} = icmp slt i64 {}, {}", cmp, cur_idx, len_val));
-        self.emit_line(&format!(
-            "br i1 {}, label %{}, label %{}",
-            cmp, step_label, end_label
-        ));
+        let cur_idx = self.emit_pipeline_loop_cond(
+            idx_ptr,
+            data_ptr,
+            len_val,
+            range_end,
+            &step_label,
+            &end_label,
+        );
 
         self.emit_label(&step_label);
         self.block_terminated = false;

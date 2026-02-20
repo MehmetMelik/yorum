@@ -9478,6 +9478,36 @@ fn test_range_iter_collect_zip_caps_allocation() {
 }
 
 #[test]
+fn test_range_iter_collect_byte_safe_cap_with_tuples() {
+    // Collecting multi-byte elements from a range must cap the allocation
+    // length so that len * elem_size cannot overflow i64.
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let xs: [(int, int)] = (0..3).iter().map(|x: int| -> (int, int) { return (x, x); }).collect();\n\
+         \x20   return len(xs);\n\
+         }\n",
+    );
+    // Collect should emit an icmp sgt guard for byte-safe cap
+    assert!(ir.contains("icmp sgt i64"));
+    // And a col.store label guarding the actual write
+    assert!(ir.contains("col.store"));
+}
+
+#[test]
+fn test_range_iter_collect_body_guards_safe_len() {
+    // The collect body must guard stores with out_idx < safe_len
+    // to prevent writes past the byte-safe allocation cap.
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let xs: [(int, int)] = (0..10).iter().map(|x: int| -> (int, int) { return (x, x); }).collect();\n\
+         \x20   return len(xs);\n\
+         }\n",
+    );
+    // The collect body should emit a bounds check before the store
+    assert!(ir.contains("col.store"));
+}
+
+#[test]
 fn test_range_iter_exclusive_uses_slt_on_value() {
     // Exclusive range pipeline loop condition should compare range value
     // against end using slt, not compare idx against pre-computed length.

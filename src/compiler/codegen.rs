@@ -6450,17 +6450,23 @@ impl Codegen {
         let elem_size = self.llvm_type_size(final_elem_ty);
 
         // Cap len_val so that len_val * elem_size cannot overflow i64.
-        let max_safe_elems = i64::MAX as usize / elem_size;
-        let safe_len = self.fresh_temp();
-        let len_over = self.fresh_temp();
-        self.emit_line(&format!(
-            "{} = icmp sgt i64 {}, {}",
-            len_over, len_val, max_safe_elems
-        ));
-        self.emit_line(&format!(
-            "{} = select i1 {}, i64 {}, i64 {}",
-            safe_len, len_over, max_safe_elems, len_val
-        ));
+        // Zero-sized elements (e.g. unit structs) can never overflow, so skip the cap.
+        let safe_len = if elem_size == 0 {
+            len_val.to_string()
+        } else {
+            let max_safe_elems = i64::MAX as usize / elem_size;
+            let len_over = self.fresh_temp();
+            self.emit_line(&format!(
+                "{} = icmp sgt i64 {}, {}",
+                len_over, len_val, max_safe_elems
+            ));
+            let sl = self.fresh_temp();
+            self.emit_line(&format!(
+                "{} = select i1 {}, i64 {}, i64 {}",
+                sl, len_over, max_safe_elems, len_val
+            ));
+            sl
+        };
 
         // Allocate output array with capacity = safe_len
         let out_bytes = self.fresh_temp();
@@ -6514,11 +6520,26 @@ impl Codegen {
             is_range_source,
         )?;
 
-        // Body: store element to output array
+        // Body: store element to output array (guard against exceeding safe_len)
         self.emit_label(&body_label);
         self.block_terminated = false;
         let out_idx = self.fresh_temp();
         self.emit_line(&format!("{} = load i64, ptr {}", out_idx, out_idx_ptr));
+        // If output index has reached the allocated capacity, stop collecting.
+        // This keeps the loop bound in sync with safe_len when the pipeline
+        // source can produce more elements than the byte-safe allocation cap.
+        let cap_ok = self.fresh_temp();
+        self.emit_line(&format!(
+            "{} = icmp slt i64 {}, {}",
+            cap_ok, out_idx, safe_len
+        ));
+        let store_label = self.fresh_label("col.store");
+        self.emit_line(&format!(
+            "br i1 {}, label %{}, label %{}",
+            cap_ok, store_label, end_label
+        ));
+        self.emit_label(&store_label);
+        self.block_terminated = false;
         let out_gep = self.fresh_temp();
         self.emit_line(&format!(
             "{} = getelementptr {}, ptr {}, i64 {}",

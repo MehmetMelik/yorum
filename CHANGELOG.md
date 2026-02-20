@@ -35,7 +35,7 @@ All notable changes to the Yorum programming language compiler.
 - `.fold()` supports type-changing accumulation (init type can differ from element type)
 - Empty arrays: `.any()` returns false, `.all()` returns true (vacuous truth), `.reduce()` returns None, `.fold()` returns init
 
-**Stats:** 6 files changed, +2,582 -210 | Tests: 655 (68 unit + 587 integration)
+**Stats:** 6 files changed, +2,582 -210 | Tests: 661 (68 unit + 593 integration)
 
 ---
 

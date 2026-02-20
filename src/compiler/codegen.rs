@@ -5552,16 +5552,22 @@ impl Codegen {
         let len_val = self.fresh_temp();
         self.emit_line(&format!("{} = load i64, ptr {}", len_val, len_gep));
 
-        // Pre-emit closures and prepare step data
+        // Pre-emit closures and prepare step data.
+        // Track current_elem_ty so Enumerate/Zip can register tuple types
+        // before downstream closures that reference those types are emitted.
         let mut closure_infos: Vec<Option<ClosureInfo>> = Vec::new();
         let mut zip_infos: Vec<Option<ZipInfo>> = Vec::new();
         let mut take_skip_ptrs: Vec<Option<String>> = Vec::new();
         let mut enumerate_ptrs: Vec<Option<String>> = Vec::new();
+        let mut current_elem_ty = src_elem_ty.clone();
 
         for step in steps {
             match step {
                 IterStep::Map(c) | IterStep::Filter(c) => {
                     let (fn_ptr, env_ptr, param_ty, ret_ty) = self.emit_pipeline_closure(c)?;
+                    if matches!(step, IterStep::Map(_)) {
+                        current_elem_ty = ret_ty.clone();
+                    }
                     closure_infos.push(Some(ClosureInfo {
                         fn_ptr,
                         env_ptr,
@@ -5573,6 +5579,20 @@ impl Codegen {
                     enumerate_ptrs.push(None);
                 }
                 IterStep::Enumerate => {
+                    // Register tuple type so downstream closures can reference it
+                    let inner_semantic = llvm_to_semantic_name(&current_elem_ty);
+                    let tuple_name = format!("tuple.int.{}", inner_semantic);
+                    let type_def =
+                        format!("%{} = type {{ i64, {} }}\n", tuple_name, current_elem_ty);
+                    if !self.type_defs.contains(&format!("%{} = type", tuple_name)) {
+                        self.type_defs.push_str(&type_def);
+                    }
+                    self.tuple_elem_types.insert(
+                        tuple_name.clone(),
+                        vec!["i64".to_string(), current_elem_ty.clone()],
+                    );
+                    current_elem_ty = format!("%{}", tuple_name);
+
                     let counter_ptr = self.fresh_temp();
                     self.emit_line(&format!("{} = alloca i64", counter_ptr));
                     self.emit_line(&format!("store i64 0, ptr {}", counter_ptr));
@@ -5584,6 +5604,24 @@ impl Codegen {
                 IterStep::Zip(zip_expr) => {
                     let zip_arr = self.emit_expr(zip_expr)?;
                     let zip_elem_ty = self.infer_array_elem_type(zip_expr);
+
+                    // Register tuple type so downstream closures can reference it
+                    let left_semantic = llvm_to_semantic_name(&current_elem_ty);
+                    let right_semantic = llvm_to_semantic_name(&zip_elem_ty);
+                    let tuple_name = format!("tuple.{}.{}", left_semantic, right_semantic);
+                    let type_def = format!(
+                        "%{} = type {{ {}, {} }}\n",
+                        tuple_name, current_elem_ty, zip_elem_ty
+                    );
+                    if !self.type_defs.contains(&format!("%{} = type", tuple_name)) {
+                        self.type_defs.push_str(&type_def);
+                    }
+                    self.tuple_elem_types.insert(
+                        tuple_name.clone(),
+                        vec![current_elem_ty.clone(), zip_elem_ty.clone()],
+                    );
+                    current_elem_ty = format!("%{}", tuple_name);
+
                     let zd_gep = self.fresh_temp();
                     self.emit_line(&format!(
                         "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 0",
@@ -5706,20 +5744,11 @@ impl Codegen {
 
         self.push_scope();
 
-        // Store final value into loop variable — for tuple types use memcpy-style
-        if final_elem_ty.starts_with('%') {
-            // Aggregate type: use memcpy
-            let size = self.llvm_type_size(&final_elem_ty);
-            self.emit_line(&format!(
-                "call void @llvm.memcpy.p0.p0.i64(ptr {}, ptr {}, i64 {}, i1 false)",
-                var_ptr, current_val, size
-            ));
-        } else {
-            self.emit_line(&format!(
-                "store {} {}, ptr {}",
-                final_elem_ty, current_val, var_ptr
-            ));
-        }
+        // Store final value into loop variable (current_val is always by-value SSA)
+        self.emit_line(&format!(
+            "store {} {}, ptr {}",
+            final_elem_ty, current_val, var_ptr
+        ));
         self.define_var(var_name, &var_ptr, &final_elem_ty);
 
         // continue → cond (index already incremented in step block)
@@ -6020,7 +6049,13 @@ impl Codegen {
                     let next_counter = self.fresh_temp();
                     self.emit_line(&format!("{} = add i64 {}, 1", next_counter, counter_val));
                     self.emit_line(&format!("store i64 {}, ptr {}", next_counter, counter_ptr));
-                    current_val = tuple_ptr;
+                    // Load by-value so current_val is always an SSA value, not a pointer
+                    let tuple_loaded = self.fresh_temp();
+                    self.emit_line(&format!(
+                        "{} = load %{}, ptr {}",
+                        tuple_loaded, tuple_name, tuple_ptr
+                    ));
+                    current_val = tuple_loaded;
                     current_ty = format!("%{}", tuple_name);
                     if is_last {
                         self.emit_line(&format!("br label %{}", body_label));
@@ -6086,7 +6121,13 @@ impl Codegen {
                         gep1, tuple_name, tuple_ptr
                     ));
                     self.emit_line(&format!("store {} {}, ptr {}", zi.elem_ty, zip_val, gep1));
-                    current_val = tuple_ptr;
+                    // Load by-value so current_val is always an SSA value, not a pointer
+                    let tuple_loaded = self.fresh_temp();
+                    self.emit_line(&format!(
+                        "{} = load %{}, ptr {}",
+                        tuple_loaded, tuple_name, tuple_ptr
+                    ));
+                    current_val = tuple_loaded;
                     current_ty = format!("%{}", tuple_name);
                     if is_last {
                         self.emit_line(&format!("br label %{}", body_label));
@@ -6227,18 +6268,11 @@ impl Codegen {
             "{} = getelementptr {}, ptr {}, i64 {}",
             out_gep, final_elem_ty, out_data, out_idx
         ));
-        if final_elem_ty.starts_with('%') {
-            let size = self.llvm_type_size(final_elem_ty);
-            self.emit_line(&format!(
-                "call void @llvm.memcpy.p0.p0.i64(ptr {}, ptr {}, i64 {}, i1 false)",
-                out_gep, current_val, size
-            ));
-        } else {
-            self.emit_line(&format!(
-                "store {} {}, ptr {}",
-                final_elem_ty, current_val, out_gep
-            ));
-        }
+        // current_val is always by-value SSA after emit_pipeline_steps
+        self.emit_line(&format!(
+            "store {} {}, ptr {}",
+            final_elem_ty, current_val, out_gep
+        ));
         let next_out = self.fresh_temp();
         self.emit_line(&format!("{} = add i64 {}, 1", next_out, out_idx));
         self.emit_line(&format!("store i64 {}, ptr {}", next_out, out_idx_ptr));
@@ -6609,18 +6643,11 @@ impl Codegen {
             "{} = getelementptr {}, ptr {}, i32 0, i32 1",
             payload_gep, option_llvm, result_ptr
         ));
-        if final_elem_ty.starts_with('%') {
-            let size = self.llvm_type_size(final_elem_ty);
-            self.emit_line(&format!(
-                "call void @llvm.memcpy.p0.p0.i64(ptr {}, ptr {}, i64 {}, i1 false)",
-                payload_gep, current_val, size
-            ));
-        } else {
-            self.emit_line(&format!(
-                "store {} {}, ptr {}",
-                final_elem_ty, current_val, payload_gep
-            ));
-        }
+        // current_val is always by-value SSA after emit_pipeline_steps
+        self.emit_line(&format!(
+            "store {} {}, ptr {}",
+            final_elem_ty, current_val, payload_gep
+        ));
         self.emit_line(&format!("br label %{}", end_label));
 
         self.emit_label(&end_label);

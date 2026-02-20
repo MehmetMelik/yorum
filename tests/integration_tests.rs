@@ -9052,3 +9052,102 @@ fn test_iter_terminator_wrong_closure() {
     let msg = result.unwrap_err().to_string();
     assert!(msg.contains("does not match element type"));
 }
+
+// ── Pipeline aggregate representation regression tests ─────────
+
+#[test]
+fn test_iter_enumerate_filter_tuple_type() {
+    // Bug 1: enumerate().filter() — downstream closure needs tuple type registered
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3, 4, 5];\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for pair in arr.iter().enumerate().filter(|p: (int, int)| -> bool { return p.0 > 1; }) {\n\
+         \x20       sum += pair.1;\n\
+         \x20   }\n\
+         \x20   print_int(sum);\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("define i64 @main("));
+    assert!(ir.contains("%tuple.int.int = type { i64, i64 }"));
+}
+
+#[test]
+fn test_iter_enumerate_any_by_value() {
+    // Bug 2: enumerate().any() — tuple must be passed by value to predicate
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [10, 20, 30];\n\
+         \x20   let has: bool = arr.iter().enumerate().any(|p: (int, int)| -> bool { return p.1 > 25; });\n\
+         \x20   print_bool(has);\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("define i64 @main("));
+}
+
+#[test]
+fn test_iter_zip_enumerate_by_value() {
+    // Bug 2: zip().enumerate() — nested tuple must be by-value after both steps
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let a: [int] = [1, 2, 3];\n\
+         \x20   let b: [int] = [10, 20, 30];\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for p in a.iter().zip(b).enumerate() {\n\
+         \x20       sum += p.0;\n\
+         \x20   }\n\
+         \x20   print_int(sum);\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("define i64 @main("));
+}
+
+#[test]
+fn test_iter_map_returns_tuple_for_loop() {
+    // Bug 3: map returning tuple — by-value store in for-loop body, not memcpy
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for pair in arr.iter().map(|x: int| -> (int, int) { return (x, x * 10); }) {\n\
+         \x20       sum += pair.0 + pair.1;\n\
+         \x20   }\n\
+         \x20   print_int(sum);\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("define i64 @main("));
+    // Should NOT contain memcpy for storing pipeline output into loop variable
+    assert!(!ir.contains("llvm.memcpy"));
+}
+
+#[test]
+fn test_iter_enumerate_filter_collect() {
+    // Combined: enumerate + filter + collect — tuple type for downstream closure + collect store
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3, 4, 5];\n\
+         \x20   let result: [(int, int)] = arr.iter().enumerate().filter(|p: (int, int)| -> bool { return p.1 > 2; }).collect();\n\
+         \x20   print_int(len(result));\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("define i64 @main("));
+}
+
+#[test]
+fn test_iter_enumerate_fold_by_value() {
+    // enumerate + fold — tuple passed by-value to fold closure
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3, 4, 5];\n\
+         \x20   let sum: int = arr.iter().enumerate().fold(0, |acc: int, p: (int, int)| -> int { return acc + p.0; });\n\
+         \x20   print_int(sum);\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("define i64 @main("));
+}

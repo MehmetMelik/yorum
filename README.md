@@ -284,16 +284,21 @@ fn main() -> int {
     let total: int = nums.iter().fold(0, |acc: int, x: int| -> int { return acc + x; });
     let has_big: bool = nums.iter().any(|v: int| -> bool { return v > 8; });
     let first: Option<int> = nums.iter().find(|v: int| -> bool { return v > 5; });
+
+    // Range pipelines: ranges work as pipeline sources
+    let squares: [int] = (0..10).iter().map(|x: int| -> int { return x * x; }).collect();
+    let even_sum: int = (1..=100).iter().filter(|x: int| -> bool { return x % 2 == 0; }).fold(0, |acc: int, x: int| -> int { return acc + x; });
     return 0;
 }
 ```
 
-`.iter()` on an array starts an iterator pipeline. **Combinators** transform the stream inside for-loops:
-`.map(f)` transforms elements, `.filter(f)` keeps matching elements, `.enumerate()` adds indices,
-`.zip(arr2)` pairs elements, `.take(n)` limits count, `.skip(n)` skips elements.
+`.iter()` on an array or range starts an iterator pipeline. **Combinators** transform the stream inside
+for-loops: `.map(f)` transforms elements, `.filter(f)` keeps matching elements, `.enumerate()` adds
+indices, `.zip(arr2)` pairs elements, `.take(n)` limits count, `.skip(n)` skips elements.
 **Terminators** consume the pipeline as standalone expressions: `.collect()` materializes to an array,
 `.fold(init, f)` accumulates a value, `.any(f)`/`.all(f)` test predicates, `.find(f)` returns
-`Option<T>`, `.reduce(f)` accumulates without an initial value. All pipelines are fused into a single
+`Option<T>`, `.reduce(f)` accumulates without an initial value. **Range sources** (`(0..n).iter()` and
+`(0..=n).iter()`) work with all combinators and terminators. All pipelines are fused into a single
 loop — no intermediate allocations (except `.collect()`), no iterator structs. Closures must be inline.
 
 ### Char Type and String Operations
@@ -792,7 +797,7 @@ source.yrm
 | Module Resolver | `src/compiler/module_resolver.rs` | Discovers `.yrm` files, maps filesystem paths to module names |
 | Project Builder | `src/compiler/project.rs` | Reads `yorum.toml`, merges modules, runs compilation pipeline |
 
-The Rust compiler is ~23,000 lines of Rust with `serde`, `serde_json`, and `toml`
+The Rust compiler is ~26,000 lines of Rust with `serde`, `serde_json`, and `toml`
 as dependencies.
 
 ## Self-Hosting
@@ -822,7 +827,7 @@ diff gen1.ll gen2.ll    # identical — fixed-point achieved
 ## Testing
 
 ```bash
-cargo test                    # 661 tests (68 unit + 593 integration)
+cargo test                    # 695 tests (68 unit + 627 integration)
 cargo test compiler::lexer    # tests in one module
 cargo test test_fibonacci     # single test by name
 ```
@@ -865,6 +870,7 @@ cargo test test_fibonacci     # single test by name
 | **v1.9-alpha** | Inclusive range (`..=`), `.iter()` on arrays, struct iter dispatch, overflow guard | Done |
 | **v1.9-beta** | Iterator pipelines: `.map()`, `.filter()` with fused for-loop codegen | Done |
 | **v1.9** | Iterator combinators (`.enumerate()`, `.zip()`, `.take()`, `.skip()`) and terminators (`.collect()`, `.fold()`, `.any()`, `.all()`, `.find()`, `.reduce()`) | Done |
+| **v1.9.1** | Range pipeline sources, aggregate codegen fixes, overflow hardening, tuple mangle bug fix, codegen cleanup | Done |
 
 ## License
 

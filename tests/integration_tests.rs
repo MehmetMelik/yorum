@@ -9371,3 +9371,18 @@ fn test_range_iter_empty() {
     );
     assert!(ir.contains("col.cond"));
 }
+
+#[test]
+fn test_range_iter_descending_clamped() {
+    // Descending range (10..5) must not produce negative length.
+    // Length is clamped to 0, so collect produces an empty array safely.
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let empty: [int] = (10..5).iter().collect();\n\
+         \x20   return len(empty);\n\
+         }\n",
+    );
+    // Verify the clamp: icmp slt + select
+    assert!(ir.contains("icmp slt i64"));
+    assert!(ir.contains("select i1"));
+}

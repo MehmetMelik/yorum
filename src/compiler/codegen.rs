@@ -5568,15 +5568,25 @@ impl Codegen {
             };
             let start_val = self.emit_expr(start_expr)?;
             let end_val = self.emit_expr(end_expr)?;
-            let len = self.fresh_temp();
-            self.emit_line(&format!("{} = sub i64 {}, {}", len, end_val, start_val));
-            let final_len = if inclusive {
+            let raw_len = self.fresh_temp();
+            self.emit_line(&format!("{} = sub i64 {}, {}", raw_len, end_val, start_val));
+            let unclamped = if inclusive {
                 let len_inc = self.fresh_temp();
-                self.emit_line(&format!("{} = add i64 {}, 1", len_inc, len));
+                self.emit_line(&format!("{} = add i64 {}, 1", len_inc, raw_len));
                 len_inc
             } else {
-                len
+                raw_len
             };
+            // Clamp to zero: descending ranges (e.g. 10..5) must not produce
+            // negative lengths — that would cause huge mallocs in collect and
+            // store invalid capacities in array metadata.
+            let is_neg = self.fresh_temp();
+            self.emit_line(&format!("{} = icmp slt i64 {}, 0", is_neg, unclamped));
+            let final_len = self.fresh_temp();
+            self.emit_line(&format!(
+                "{} = select i1 {}, i64 0, i64 {}",
+                final_len, is_neg, unclamped
+            ));
             // For ranges, data_ptr holds the start value (used as offset base in emit_pipeline_steps)
             (start_val, final_len, "i64".to_string())
         } else {

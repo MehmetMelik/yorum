@@ -9433,6 +9433,22 @@ fn test_range_iter_collect_len_uses_saturating_i128_math() {
 }
 
 #[test]
+fn test_range_iter_collect_take_caps_allocation() {
+    // When a range pipeline has .take(N), the collect allocation should
+    // be capped at min(range_len, N) so huge ranges don't cause OOM.
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let xs: [int] = (0..=9223372036854775807).iter().take(5).collect();\n\
+         \x20   return len(xs);\n\
+         }\n",
+    );
+    // The preamble should emit a select to cap alloc_len at take count
+    assert!(ir.contains("select i1"));
+    // Should still use i128 saturation for the base alloc_len
+    assert!(ir.contains("sub i128"));
+}
+
+#[test]
 fn test_range_iter_exclusive_uses_slt_on_value() {
     // Exclusive range pipeline loop condition should compare range value
     // against end using slt, not compare idx against pre-computed length.

@@ -5611,7 +5611,10 @@ impl Codegen {
                 len_sat_i128, len_non_pos, len_hi_clamped
             ));
             let alloc_len = self.fresh_temp();
-            self.emit_line(&format!("{} = trunc i128 {} to i64", alloc_len, len_sat_i128));
+            self.emit_line(&format!(
+                "{} = trunc i128 {} to i64",
+                alloc_len, len_sat_i128
+            ));
 
             (
                 start_val,
@@ -5754,6 +5757,36 @@ impl Codegen {
             }
         }
 
+        // For range sources, cap alloc_len at the first take() count so that
+        // e.g. (0..=i64::MAX).iter().take(1).collect() doesn't try to malloc
+        // i64::MAX elements.  The take_skip_ptr already holds the emitted count.
+        let len_val = if is_range_source {
+            let mut capped = len_val;
+            for (i, step) in steps.iter().enumerate() {
+                if matches!(step, IterStep::Take(_)) {
+                    if let Some(ref take_ptr) = take_skip_ptrs[i] {
+                        let take_val = self.fresh_temp();
+                        self.emit_line(&format!("{} = load i64, ptr {}", take_val, take_ptr));
+                        let take_less = self.fresh_temp();
+                        self.emit_line(&format!(
+                            "{} = icmp slt i64 {}, {}",
+                            take_less, take_val, capped
+                        ));
+                        let new_len = self.fresh_temp();
+                        self.emit_line(&format!(
+                            "{} = select i1 {}, i64 {}, i64 {}",
+                            new_len, take_less, take_val, capped
+                        ));
+                        capped = new_len;
+                    }
+                    break; // first take bounds the output
+                }
+            }
+            capped
+        } else {
+            len_val
+        };
+
         Ok((
             data_ptr,
             len_val,
@@ -5810,7 +5843,10 @@ impl Codegen {
                 in_bound, cmp_op, cur_val, end_val
             ));
             let no_add_overflow = self.fresh_temp();
-            self.emit_line(&format!("{} = xor i1 {}, true", no_add_overflow, add_overflow));
+            self.emit_line(&format!(
+                "{} = xor i1 {}, true",
+                no_add_overflow, add_overflow
+            ));
             let valid_arith = self.fresh_temp();
             self.emit_line(&format!(
                 "{} = and i1 {}, {}",

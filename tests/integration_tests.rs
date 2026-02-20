@@ -8871,7 +8871,7 @@ fn test_iter_any_true() {
          }\n",
     );
     assert!(ir.contains("any.cond"));
-    assert!(ir.contains("any.found"));
+    assert!(ir.contains("any.short"));
 }
 
 #[test]
@@ -8920,7 +8920,7 @@ fn test_iter_all_false() {
          \x20   return 0;\n\
          }\n",
     );
-    assert!(ir.contains("all.fail"));
+    assert!(ir.contains("all.short"));
 }
 
 #[test]
@@ -9150,4 +9150,501 @@ fn test_iter_enumerate_fold_by_value() {
          }\n",
     );
     assert!(ir.contains("define i64 @main("));
+}
+
+// ── Range pipeline combinators ────────────────────────────────
+
+#[test]
+fn test_for_range_iter_map() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for x in (0..5).iter().map(|x: int| -> int { return x * x; }) {\n\
+         \x20       sum += x;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    assert!(ir.contains("for.step"));
+    assert!(ir.contains("add i64")); // range element = start + idx
+}
+
+#[test]
+fn test_for_range_iter_filter() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for x in (0..10).iter().filter(|x: int| -> bool { return x % 2 == 0; }) {\n\
+         \x20       sum += x;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    assert!(ir.contains("call i1"));
+    assert!(ir.contains("for.body"));
+}
+
+#[test]
+fn test_for_range_iter_enumerate() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for pair in (1..4).iter().enumerate() {\n\
+         \x20       sum += pair.0;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    assert!(ir.contains("for.step"));
+    assert!(ir.contains("tuple.int.int"));
+}
+
+#[test]
+fn test_for_range_iter_take() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for x in (0..100).iter().take(3) {\n\
+         \x20       sum += x;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    assert!(ir.contains("for.step"));
+}
+
+#[test]
+fn test_for_range_iter_skip() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for x in (0..10).iter().skip(7) {\n\
+         \x20       sum += x;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    assert!(ir.contains("for.step"));
+}
+
+#[test]
+fn test_for_range_inclusive_iter_map() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for x in (1..=5).iter().map(|x: int| -> int { return x * 2; }) {\n\
+         \x20       sum += x;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    assert!(ir.contains("for.step"));
+    // Inclusive range: len = end - start + 1
+    assert!(ir.contains("add i64"));
+}
+
+// ── Range pipeline terminators ────────────────────────────────
+
+#[test]
+fn test_range_iter_collect() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let nums: [int] = (0..5).iter().collect();\n\
+         \x20   return len(nums);\n\
+         }\n",
+    );
+    assert!(ir.contains("col.cond"));
+    assert!(ir.contains("col.body"));
+}
+
+#[test]
+fn test_range_iter_fold() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let sum: int = (1..=100).iter().fold(0, |acc: int, x: int| -> int { return acc + x; });\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    assert!(ir.contains("fold.cond"));
+    assert!(ir.contains("fold.body"));
+}
+
+#[test]
+fn test_range_iter_any() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let found: bool = (0..10).iter().any(|x: int| -> bool { return x > 8; });\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("any.cond"));
+}
+
+#[test]
+fn test_range_iter_all() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let all_pos: bool = (1..5).iter().all(|x: int| -> bool { return x > 0; });\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("all.cond"));
+}
+
+#[test]
+fn test_range_iter_find() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let found: Option<int> = (0..10).iter().find(|x: int| -> bool { return x > 5; });\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("find.cond"));
+}
+
+#[test]
+fn test_range_iter_reduce() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let result: Option<int> = (1..=5).iter().reduce(|a: int, x: int| -> int { return a + x; });\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("red.cond"));
+}
+
+// ── Range pipeline combined chains ────────────────────────────
+
+#[test]
+fn test_range_iter_filter_map_collect() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let result: [int] = (0..20).iter().filter(|x: int| -> bool { return x % 2 == 0; }).map(|x: int| -> int { return x * x; }).collect();\n\
+         \x20   return len(result);\n\
+         }\n",
+    );
+    assert!(ir.contains("col.cond"));
+    assert!(ir.contains("__closure_"));
+}
+
+#[test]
+fn test_range_iter_skip_take_enumerate() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for pair in (0..100).iter().skip(10).take(5).enumerate() {\n\
+         \x20       sum += pair.0;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    assert!(ir.contains("for.step"));
+    assert!(ir.contains("tuple.int.int"));
+}
+
+// ── Range pipeline edge cases ─────────────────────────────────
+
+#[test]
+fn test_for_range_bare_iter() {
+    // Bare (range).iter() with no combinators should work like a regular range for-loop
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for i in (0..5).iter() {\n\
+         \x20       sum += i;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    assert!(ir.contains("for.cond"));
+    assert!(ir.contains("for.body"));
+}
+
+#[test]
+fn test_range_iter_empty() {
+    // Empty range (5..5) should produce empty array via collect
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let empty: [int] = (5..5).iter().collect();\n\
+         \x20   return len(empty);\n\
+         }\n",
+    );
+    assert!(ir.contains("col.cond"));
+}
+
+#[test]
+fn test_range_iter_descending_clamped() {
+    // Descending range (10..5) must not produce negative length.
+    // Length is clamped to 0, so collect produces an empty array safely.
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let empty: [int] = (10..5).iter().collect();\n\
+         \x20   return len(empty);\n\
+         }\n",
+    );
+    // Verify the clamp: icmp slt + select (for allocation estimate)
+    assert!(ir.contains("icmp slt i64"));
+    assert!(ir.contains("select i1"));
+}
+
+#[test]
+fn test_range_iter_wide_range_no_length_overflow() {
+    // Wide inclusive ranges must not overflow the length computation.
+    // The loop condition should compare the actual range value against end
+    // (using icmp sle for inclusive), not idx against a pre-computed length.
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let found: bool = (0..=100).iter().any(|x: int| -> bool { return x == 0; });\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    // The loop condition should use sle (signed less-or-equal) for inclusive range,
+    // comparing the actual range value against the end bound.
+    assert!(ir.contains("icmp sle i64"));
+}
+
+#[test]
+fn test_range_iter_inclusive_max_has_overflow_guard() {
+    // Inclusive range pipelines ending at i64::MAX must terminate.
+    // Codegen should guard start+idx with signed-add-overflow handling.
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let ok: bool = (9223372036854775807..=9223372036854775807).iter().any(|x: int| -> bool { return x == 9223372036854775807; });\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("@llvm.sadd.with.overflow.i64"));
+    assert!(ir.contains("extractvalue { i64, i1 }"));
+}
+
+#[test]
+fn test_range_iter_collect_len_uses_saturating_i128_math() {
+    // Wide range length estimation for collect preallocation should not wrap.
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let xs: [int] = (0..=9223372036854775807).iter().take(1).collect();\n\
+         \x20   return len(xs);\n\
+         }\n",
+    );
+    assert!(ir.contains("sext i64"));
+    assert!(ir.contains("sub i128"));
+    assert!(ir.contains("icmp sgt i128"));
+    assert!(ir.contains("trunc i128"));
+}
+
+#[test]
+fn test_range_iter_collect_take_caps_allocation() {
+    // When a range pipeline has .take(N), the collect allocation should
+    // be capped at min(range_len, N) so huge ranges don't cause OOM.
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let xs: [int] = (0..=9223372036854775807).iter().take(5).collect();\n\
+         \x20   return len(xs);\n\
+         }\n",
+    );
+    // The preamble should emit a select to cap alloc_len at take count
+    assert!(ir.contains("select i1"));
+    // Should still use i128 saturation for the base alloc_len
+    assert!(ir.contains("sub i128"));
+}
+
+#[test]
+fn test_range_iter_collect_byte_safe_cap() {
+    // Collect on a wide range with multi-byte elements must cap len_val
+    // so that len_val * elem_size doesn't overflow i64.
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let xs: [(int, int)] = (0..10).iter().map(|x: int| -> (int, int) { return (x, x); }).collect();\n\
+         \x20   return len(xs);\n\
+         }\n",
+    );
+    // Collect should emit an icmp sgt guard before the mul for byte size
+    assert!(ir.contains("icmp sgt i64"));
+}
+
+#[test]
+fn test_range_iter_collect_zip_caps_allocation() {
+    // Zip on a wide range should cap alloc_len at the zip array length.
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let ys: [int] = [10, 20, 30];\n\
+         \x20   let xs: [(int, int)] = (0..=9223372036854775807).iter().zip(ys).collect();\n\
+         \x20   return len(xs);\n\
+         }\n",
+    );
+    // The preamble should emit a min (icmp slt + select) for zip bound
+    assert!(ir.contains("select i1"));
+    assert!(ir.contains("sub i128"));
+}
+
+#[test]
+fn test_range_iter_collect_byte_safe_cap_with_tuples() {
+    // Collecting multi-byte elements from a range must cap the allocation
+    // length so that len * elem_size cannot overflow i64.
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let xs: [(int, int)] = (0..3).iter().map(|x: int| -> (int, int) { return (x, x); }).collect();\n\
+         \x20   return len(xs);\n\
+         }\n",
+    );
+    // Collect should emit an icmp sgt guard for byte-safe cap
+    assert!(ir.contains("icmp sgt i64"));
+    // And a col.store label guarding the actual write
+    assert!(ir.contains("col.store"));
+}
+
+#[test]
+fn test_range_iter_collect_body_guards_safe_len() {
+    // The collect body must guard stores with out_idx < safe_len
+    // to prevent writes past the byte-safe allocation cap.
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let xs: [(int, int)] = (0..10).iter().map(|x: int| -> (int, int) { return (x, x); }).collect();\n\
+         \x20   return len(xs);\n\
+         }\n",
+    );
+    // The collect body should emit a bounds check before the store
+    assert!(ir.contains("col.store"));
+}
+
+#[test]
+fn test_range_iter_exclusive_uses_slt_on_value() {
+    // Exclusive range pipeline loop condition should compare range value
+    // against end using slt, not compare idx against pre-computed length.
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let sum: int = (0..10).iter().fold(0, |acc: int, x: int| -> int { return acc + x; });\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    // The loop condition emits: cur_val = add i64 start, idx; icmp slt cur_val, end
+    assert!(ir.contains("icmp slt i64"));
+}
+
+// ── Pipeline tuple-type regression tests (Bug 1: mangle_name) ──
+
+#[test]
+fn test_iter_enumerate_find() {
+    // find() on enumerate() pipeline produces valid IR with tuple type
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [10, 20, 30];\n\
+         \x20   let result: Option<(int, int)> = arr.iter().enumerate().find(\n\
+         \x20       |t: (int, int)| -> bool { return t.1 == 20; }\n\
+         \x20   );\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("find.cond"));
+    assert!(ir.contains("Option__tuple.int.int"));
+}
+
+#[test]
+fn test_iter_enumerate_reduce() {
+    // reduce() on enumerate() pipeline produces valid IR with tuple type
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [10, 20, 30];\n\
+         \x20   let result: Option<(int, int)> = arr.iter().enumerate().reduce(\n\
+         \x20       |a: (int, int), b: (int, int)| -> (int, int) { return (a.0 + b.0, a.1 + b.1); }\n\
+         \x20   );\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("red.cond"));
+    assert!(ir.contains("Option__tuple.int.int"));
+}
+
+#[test]
+fn test_iter_zip_find() {
+    // find() on zip() pipeline produces valid IR with tuple type
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let a: [int] = [1, 2, 3];\n\
+         \x20   let b: [int] = [10, 20, 30];\n\
+         \x20   let result: Option<(int, int)> = a.iter().zip(b).find(\n\
+         \x20       |t: (int, int)| -> bool { return t.1 == 20; }\n\
+         \x20   );\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("find.cond"));
+    assert!(ir.contains("Option__tuple.int.int"));
+}
+
+// ── Pipeline edge case tests ──
+
+#[test]
+fn test_iter_take_zero() {
+    // take(0).collect() should produce an empty array (zero-length allocation)
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let result: [int] = arr.iter().take(0).collect();\n\
+         \x20   return len(result);\n\
+         }\n",
+    );
+    assert!(ir.contains("col.cond"));
+    assert!(ir.contains("for.take.cont"));
+}
+
+#[test]
+fn test_iter_skip_zero() {
+    // skip(0).collect() should return unchanged elements
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let result: [int] = arr.iter().skip(0).collect();\n\
+         \x20   return len(result);\n\
+         }\n",
+    );
+    assert!(ir.contains("col.cond"));
+}
+
+#[test]
+fn test_iter_skip_then_take() {
+    // skip(2).take(3).collect() — chained combinators
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3, 4, 5, 6, 7];\n\
+         \x20   let result: [int] = arr.iter().skip(2).take(3).collect();\n\
+         \x20   return len(result);\n\
+         }\n",
+    );
+    assert!(ir.contains("col.cond"));
+    // Both skip and take should be present
+    assert!(ir.contains("for.skip.done"));
+    assert!(ir.contains("for.take.cont"));
+}
+
+// ── Pipeline terminator error path tests ──
+
+#[test]
+fn test_iter_fold_wrong_closure_type() {
+    // fold() with wrong closure parameter type
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let result: int = arr.iter().fold(0, |acc: int, v: float| -> int { return acc; });\n\
+         \x20   return result;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+    let msg = result.unwrap_err().to_string();
+    assert!(msg.contains("does not match element type"));
+}
+
+#[test]
+fn test_iter_reduce_wrong_closure_type() {
+    // reduce() with wrong closure parameter type
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let result: Option<int> = arr.iter().reduce(|a: float, b: float| -> float { return a; });\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+    let msg = result.unwrap_err().to_string();
+    assert!(msg.contains("must both match element type"));
 }

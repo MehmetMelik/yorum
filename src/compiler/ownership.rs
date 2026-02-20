@@ -426,6 +426,13 @@ impl OwnershipChecker {
                     return self.infer_iterable_elem_type(receiver);
                 }
                 "iter" => {
+                    // Range expressions produce int elements
+                    if matches!(
+                        receiver.kind,
+                        ExprKind::Range(_, _) | ExprKind::RangeInclusive(_, _)
+                    ) {
+                        return Type::Int;
+                    }
                     if let ExprKind::Ident(name) = &receiver.kind {
                         if let Some(info) = self.lookup(name) {
                             if let Type::Array(elem) = &info.ty {

@@ -525,19 +525,25 @@ fn has_iter_base_static(expr: &Expr) -> bool {
     }
 }
 
+fn mangle_type_arg(t: &Type) -> String {
+    match t {
+        Type::Int => "int".to_string(),
+        Type::Float => "float".to_string(),
+        Type::Bool => "bool".to_string(),
+        Type::Char => "char".to_string(),
+        Type::Str => "string".to_string(),
+        Type::Named(n) => n.clone(),
+        Type::Tuple(inner) => {
+            let parts: Vec<String> = inner.iter().map(mangle_type_arg).collect();
+            format!("tuple.{}", parts.join("."))
+        }
+        Type::Array(inner) => format!("array.{}", mangle_type_arg(inner)),
+        _ => format!("{}", t),
+    }
+}
+
 fn mangle_name(base: &str, type_args: &[Type]) -> String {
-    let args_str: Vec<String> = type_args
-        .iter()
-        .map(|t| match t {
-            Type::Int => "int".to_string(),
-            Type::Float => "float".to_string(),
-            Type::Bool => "bool".to_string(),
-            Type::Char => "char".to_string(),
-            Type::Str => "string".to_string(),
-            Type::Named(n) => n.clone(),
-            _ => format!("{}", t),
-        })
-        .collect();
+    let args_str: Vec<String> = type_args.iter().map(mangle_type_arg).collect();
     format!("{}__{}", base, args_str.join("__"))
 }
 

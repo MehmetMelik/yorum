@@ -2,9 +2,9 @@
 
 All notable changes to the Yorum programming language compiler.
 
-## [1.9.0] - 2026-02-19
+## [1.9.1] - 2026-02-20
 
-**Iterator Combinators & Pipeline Terminators** — `.enumerate()`, `.zip()`, `.take()`, `.skip()` combinators and `.collect()`, `.fold()`, `.any()`, `.all()`, `.find()`, `.reduce()` terminators (Phase 3).
+**Iterator Combinators, Terminators & Range Pipelines** — `.enumerate()`, `.zip()`, `.take()`, `.skip()` combinators, `.collect()`, `.fold()`, `.any()`, `.all()`, `.find()`, `.reduce()` terminators, and range expressions as pipeline sources (Phase 3).
 
 ### Added
 
@@ -20,22 +20,39 @@ All notable changes to the Yorum programming language compiler.
   - `.all(|x| -> bool)` — short-circuits on first false, returns `bool`
   - `.find(|x| -> bool)` — short-circuits on first match, returns `Option<T>`
   - `.reduce(|acc, x| -> T)` — accumulates without initial value, returns `Option<T>`
+- **Range pipeline sources:** `(start..end).iter()` and `(start..=end).iter()` work with all combinators and terminators. Loop condition uses direct value comparison (not pre-computed length) to avoid overflow on wide ranges. Collect preallocation uses saturating i128 math clamped to `[0, i64::MAX]`
 - **Terminator infrastructure:** `PipelineTerminator` enum, `TerminatedPipeline` struct, `try_extract_terminated_pipeline()` in codegen, `is_pipeline_terminator()` and `infer_pipeline_terminator_type()` in typechecker. Terminators intercepted before receiver inference in both `infer_expr` and `emit_expr`
 - **Monomorphizer extension:** `find()` and `reduce()` automatically register `Option<T>` monomorphization via `has_iter_base_static()` in `collect_from_expr`
-- `examples/iterators.yrm` expanded — 22 demos total: enumerate, zip, take, skip, skip+enumerate, complex combinator chains, collect, fold, any, all, find, reduce, combined pipeline
-- 33 new integration tests (combinators: 14, terminators: 16, combined chains: 3)
+- `examples/iterators.yrm` expanded with range pipeline demos (range+map+collect, range+filter+fold, inclusive range+enumerate, range+skip+take)
+- 47 new integration tests (combinators: 14, terminators: 16, combined chains: 3, range pipelines: 6, post-review: 8)
+
+### Fixed
+
+- **Tuple mangle bug:** `mangle_name` produced invalid LLVM identifiers for tuple types (e.g., `Option__(int, int)`). Now generates `Option__tuple.int.int` via recursive `mangle_type_arg` helper
+- **Pipeline aggregate representation:** tuple types registered before downstream closures are emitted; tuple values loaded by-value after enumerate/zip; by-value `store` replaces `memcpy` for pipeline outputs in for-loop, collect, and find terminators
+- **Range overflow hardening:** descending ranges clamped to zero length; inclusive ranges ending at `i64::MAX` terminate correctly via `llvm.sadd.with.overflow` guard; negative `take()` counts clamped to zero; collect byte-size multiplication guarded against overflow; zip length included in range preallocation cap
+- **Zero-sized element panic:** removed unreachable `elem_size == 0` branch in collect (could have caused divide-by-zero if reached)
+
+### Changed
+
+- Merged `emit_terminator_any` and `emit_terminator_all` into unified `emit_terminator_any_all` parameterized by `is_any`
+- Removed dead `ClosureInfo::param_ty` field
+- Added `ensure_pipeline_tuple_type` helper replacing 4 inline tuple type registration patterns
+- Dropped redundant `is_range_source` from preamble return tuple (callers read `pipeline.is_range_source` directly)
+- Shared step emission logic between for-loop and terminators via `emit_pipeline_preamble` and `emit_pipeline_steps`
 
 ### Design decisions
 
 - Combinators compose freely with existing `.map()` and `.filter()` in any order
 - Terminators work on any pipeline chain (e.g., `.iter().filter(f).map(g).collect()`)
 - All fused — zero allocations except `.collect()` which pre-allocates capacity equal to source length
+- Range pipelines use direct value comparison in loop condition, avoiding overflow from pre-computing total length
 - `.find()` and `.reduce()` return `Option<T>`, requiring monomorphizer coordination
 - `.any()` and `.all()` short-circuit for performance (break out of loop on first decisive element)
 - `.fold()` supports type-changing accumulation (init type can differ from element type)
 - Empty arrays: `.any()` returns false, `.all()` returns true (vacuous truth), `.reduce()` returns None, `.fold()` returns init
 
-**Stats:** 6 files changed, +2,582 -210 | Tests: 661 (68 unit + 593 integration)
+**Stats:** 11 files changed, +3,480 -203 | Tests: 695 (68 unit + 627 integration)
 
 ---
 
@@ -663,6 +680,7 @@ The compiler written in Yorum itself (5,226 lines), achieving bootstrap fixed-po
 
 ---
 
+[1.9.1]: https://github.com/MehmetMelik/yorum/compare/v1.9.0...v1.9.1
 [1.9.0]: https://github.com/MehmetMelik/yorum/compare/v1.9.0-beta...v1.9.0
 [1.9.0-beta]: https://github.com/MehmetMelik/yorum/compare/v1.9.0-alpha...v1.9.0-beta
 [1.9.0-alpha]: https://github.com/MehmetMelik/yorum/compare/v1.8.2...v1.9.0-alpha

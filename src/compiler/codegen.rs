@@ -4714,23 +4714,8 @@ impl Codegen {
                     .unwrap_or_else(|| "i64".to_string());
                 let arr_ptr = self.emit_expr_ptr(arr_expr)?;
 
-                // Load data pointer from { ptr, i64, i64 }
-                let data_gep = self.fresh_temp();
-                self.emit_line(&format!(
-                    "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 0",
-                    data_gep, arr_ptr
-                ));
-                let data_ptr = self.fresh_temp();
-                self.emit_line(&format!("{} = load ptr, ptr {}", data_ptr, data_gep));
-
-                // Load length for bounds check
-                let len_gep = self.fresh_temp();
-                self.emit_line(&format!(
-                    "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 1",
-                    len_gep, arr_ptr
-                ));
-                let len_val = self.fresh_temp();
-                self.emit_line(&format!("{} = load i64, ptr {}", len_val, len_gep));
+                // Load data pointer and length from fat pointer
+                let (data_ptr, len_val) = self.emit_fat_ptr_load(&arr_ptr);
 
                 let idx_val = self.emit_expr(idx_expr)?;
                 self.emit_line(&format!(
@@ -5391,22 +5376,8 @@ impl Codegen {
         };
         let elem_ty = self.infer_array_elem_type(arr_expr);
 
-        // Load data ptr and length from { ptr, i64, i64 }
-        let data_gep = self.fresh_temp();
-        self.emit_line(&format!(
-            "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 0",
-            data_gep, arr_val
-        ));
-        let data_ptr = self.fresh_temp();
-        self.emit_line(&format!("{} = load ptr, ptr {}", data_ptr, data_gep));
-
-        let len_gep = self.fresh_temp();
-        self.emit_line(&format!(
-            "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 1",
-            len_gep, arr_val
-        ));
-        let len_val = self.fresh_temp();
-        self.emit_line(&format!("{} = load i64, ptr {}", len_val, len_gep));
+        // Load data ptr and length from fat pointer
+        let (data_ptr, len_val) = self.emit_fat_ptr_load(&arr_val);
 
         // Alloca for index counter
         let idx_ptr = self.fresh_temp();
@@ -5623,22 +5594,8 @@ impl Codegen {
             let arr_val = self.emit_expr(source)?;
             let src_elem_ty = self.infer_array_elem_type(source);
 
-            // Load data ptr and length from { ptr, i64, i64 }
-            let data_gep = self.fresh_temp();
-            self.emit_line(&format!(
-                "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 0",
-                data_gep, arr_val
-            ));
-            let data_ptr = self.fresh_temp();
-            self.emit_line(&format!("{} = load ptr, ptr {}", data_ptr, data_gep));
-
-            let len_gep = self.fresh_temp();
-            self.emit_line(&format!(
-                "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 1",
-                len_gep, arr_val
-            ));
-            let len_val = self.fresh_temp();
-            self.emit_line(&format!("{} = load i64, ptr {}", len_val, len_gep));
+            // Load data ptr and length from fat pointer
+            let (data_ptr, len_val) = self.emit_fat_ptr_load(&arr_val);
 
             (data_ptr, len_val, src_elem_ty, None)
         };
@@ -5700,20 +5657,7 @@ impl Codegen {
                     );
                     current_elem_ty = format!("%{}", tuple_name);
 
-                    let zd_gep = self.fresh_temp();
-                    self.emit_line(&format!(
-                        "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 0",
-                        zd_gep, zip_arr
-                    ));
-                    let zip_data = self.fresh_temp();
-                    self.emit_line(&format!("{} = load ptr, ptr {}", zip_data, zd_gep));
-                    let zl_gep = self.fresh_temp();
-                    self.emit_line(&format!(
-                        "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 1",
-                        zl_gep, zip_arr
-                    ));
-                    let zip_len = self.fresh_temp();
-                    self.emit_line(&format!("{} = load i64, ptr {}", zip_len, zl_gep));
+                    let (zip_data, zip_len) = self.emit_fat_ptr_load(&zip_arr);
                     let zip_idx = self.fresh_temp();
                     self.emit_line(&format!("{} = alloca i64", zip_idx));
                     self.emit_line(&format!("store i64 0, ptr {}", zip_idx));
@@ -6526,24 +6470,7 @@ impl Codegen {
         self.emit_line(&format!("{} = load i64, ptr {}", final_len, out_idx_ptr));
         let fat = self.fresh_temp();
         self.emit_line(&format!("{} = alloca {{ ptr, i64, i64 }}", fat));
-        let d_gep = self.fresh_temp();
-        self.emit_line(&format!(
-            "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 0",
-            d_gep, fat
-        ));
-        self.emit_line(&format!("store ptr {}, ptr {}", out_data, d_gep));
-        let l_gep = self.fresh_temp();
-        self.emit_line(&format!(
-            "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 1",
-            l_gep, fat
-        ));
-        self.emit_line(&format!("store i64 {}, ptr {}", final_len, l_gep));
-        let c_gep = self.fresh_temp();
-        self.emit_line(&format!(
-            "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 2",
-            c_gep, fat
-        ));
-        self.emit_line(&format!("store i64 {}, ptr {}", safe_len, c_gep));
+        self.emit_fat_ptr_init(&fat, &out_data, &final_len, &safe_len);
         Ok(fat)
     }
 
@@ -7597,13 +7524,7 @@ impl Codegen {
                     // Built-in len() for arrays
                     if name == "len" && args.len() == 1 {
                         let arr_ptr = self.emit_expr_ptr(&args[0])?;
-                        let len_gep = self.fresh_temp();
-                        self.emit_line(&format!(
-                            "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 1",
-                            len_gep, arr_ptr
-                        ));
-                        let len_val = self.fresh_temp();
-                        self.emit_line(&format!("{} = load i64, ptr {}", len_val, len_gep));
+                        let len_val = self.emit_fat_ptr_field_load(&arr_ptr, 1, "i64");
                         return Ok(len_val);
                     }
                     // Built-in concurrency functions
@@ -7631,29 +7552,9 @@ impl Codegen {
                         let elem_size = self.llvm_type_size(&elem_ty);
 
                         // Load data, length, capacity
-                        let data_gep = self.fresh_temp();
-                        self.emit_line(&format!(
-                            "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 0",
-                            data_gep, arr_ptr
-                        ));
-                        let data_ptr = self.fresh_temp();
-                        self.emit_line(&format!("{} = load ptr, ptr {}", data_ptr, data_gep));
-
-                        let len_gep = self.fresh_temp();
-                        self.emit_line(&format!(
-                            "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 1",
-                            len_gep, arr_ptr
-                        ));
-                        let len_val = self.fresh_temp();
-                        self.emit_line(&format!("{} = load i64, ptr {}", len_val, len_gep));
-
-                        let cap_gep = self.fresh_temp();
-                        self.emit_line(&format!(
-                            "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 2",
-                            cap_gep, arr_ptr
-                        ));
-                        let cap_val = self.fresh_temp();
-                        self.emit_line(&format!("{} = load i64, ptr {}", cap_val, cap_gep));
+                        let data_ptr = self.emit_fat_ptr_field_load(&arr_ptr, 0, "ptr");
+                        let len_val = self.emit_fat_ptr_field_load(&arr_ptr, 1, "i64");
+                        let cap_val = self.emit_fat_ptr_field_load(&arr_ptr, 2, "i64");
 
                         // Check if need to grow: len == cap
                         let need_grow = self.fresh_temp();
@@ -7690,15 +7591,14 @@ impl Codegen {
                             "{} = call ptr @realloc(ptr {}, i64 {})",
                             new_data, data_ptr, new_bytes
                         ));
-                        self.emit_line(&format!("store ptr {}, ptr {}", new_data, data_gep));
-                        self.emit_line(&format!("store i64 {}, ptr {}", new_cap, cap_gep));
+                        self.emit_fat_ptr_field_store(&arr_ptr, 0, "ptr", &new_data);
+                        self.emit_fat_ptr_field_store(&arr_ptr, 2, "i64", &new_cap);
                         self.emit_line(&format!("br label %{}", store_label));
 
                         // Store block: store element at data[len], increment length
                         self.emit_label(&store_label);
                         self.block_terminated = false;
-                        let cur_data = self.fresh_temp();
-                        self.emit_line(&format!("{} = load ptr, ptr {}", cur_data, data_gep));
+                        let cur_data = self.emit_fat_ptr_field_load(&arr_ptr, 0, "ptr");
                         let is_agg = Self::is_aggregate_type(&elem_ty);
                         let val = if is_agg {
                             self.emit_expr_ptr(&args[1])?
@@ -7720,7 +7620,7 @@ impl Codegen {
                         }
                         let new_len = self.fresh_temp();
                         self.emit_line(&format!("{} = add i64 {}, 1", new_len, len_val));
-                        self.emit_line(&format!("store i64 {}, ptr {}", new_len, len_gep));
+                        self.emit_fat_ptr_field_store(&arr_ptr, 1, "i64", &new_len);
                         return Ok("void".to_string());
                     }
 
@@ -7737,13 +7637,7 @@ impl Codegen {
                         };
 
                         // Load length
-                        let len_gep = self.fresh_temp();
-                        self.emit_line(&format!(
-                            "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 1",
-                            len_gep, arr_ptr
-                        ));
-                        let len_val = self.fresh_temp();
-                        self.emit_line(&format!("{} = load i64, ptr {}", len_val, len_gep));
+                        let len_val = self.emit_fat_ptr_field_load(&arr_ptr, 1, "i64");
 
                         // Check not empty: len > 0
                         let is_empty = self.fresh_temp();
@@ -7767,15 +7661,9 @@ impl Codegen {
                         self.block_terminated = false;
                         let new_len = self.fresh_temp();
                         self.emit_line(&format!("{} = sub i64 {}, 1", new_len, len_val));
-                        self.emit_line(&format!("store i64 {}, ptr {}", new_len, len_gep));
+                        self.emit_fat_ptr_field_store(&arr_ptr, 1, "i64", &new_len);
 
-                        let data_gep = self.fresh_temp();
-                        self.emit_line(&format!(
-                            "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 0",
-                            data_gep, arr_ptr
-                        ));
-                        let data_ptr = self.fresh_temp();
-                        self.emit_line(&format!("{} = load ptr, ptr {}", data_ptr, data_gep));
+                        let data_ptr = self.emit_fat_ptr_field_load(&arr_ptr, 0, "ptr");
                         let elem_gep = self.fresh_temp();
                         self.emit_line(&format!(
                             "{} = getelementptr {}, ptr {}, i64 {}",
@@ -7832,24 +7720,7 @@ impl Codegen {
                         // Build { ptr, i64, i64 } fat pointer
                         let fat = self.fresh_temp();
                         self.emit_line(&format!("{} = alloca {{ ptr, i64, i64 }}", fat));
-                        let d_gep = self.fresh_temp();
-                        self.emit_line(&format!(
-                            "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 0",
-                            d_gep, fat
-                        ));
-                        self.emit_line(&format!("store ptr {}, ptr {}", data, d_gep));
-                        let l_gep = self.fresh_temp();
-                        self.emit_line(&format!(
-                            "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 1",
-                            l_gep, fat
-                        ));
-                        self.emit_line(&format!("store i64 {}, ptr {}", argc, l_gep));
-                        let c_gep = self.fresh_temp();
-                        self.emit_line(&format!(
-                            "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 2",
-                            c_gep, fat
-                        ));
-                        self.emit_line(&format!("store i64 {}, ptr {}", argc, c_gep));
+                        self.emit_fat_ptr_init(&fat, &data, &argc, &argc);
                         return Ok(fat);
                     }
 
@@ -7883,13 +7754,7 @@ impl Codegen {
                             new_data, new_bytes
                         ));
                         // memcpy from arr.data[start]
-                        let data_gep = self.fresh_temp();
-                        self.emit_line(&format!(
-                            "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 0",
-                            data_gep, arr_ptr
-                        ));
-                        let data_ptr = self.fresh_temp();
-                        self.emit_line(&format!("{} = load ptr, ptr {}", data_ptr, data_gep));
+                        let data_ptr = self.emit_fat_ptr_field_load(&arr_ptr, 0, "ptr");
                         let src = self.fresh_temp();
                         self.emit_line(&format!(
                             "{} = getelementptr {}, ptr {}, i64 {}",
@@ -7902,24 +7767,7 @@ impl Codegen {
                         // build fat pointer
                         let fat = self.fresh_temp();
                         self.emit_line(&format!("{} = alloca {{ ptr, i64, i64 }}", fat));
-                        let d_gep = self.fresh_temp();
-                        self.emit_line(&format!(
-                            "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 0",
-                            d_gep, fat
-                        ));
-                        self.emit_line(&format!("store ptr {}, ptr {}", new_data, d_gep));
-                        let l_gep = self.fresh_temp();
-                        self.emit_line(&format!(
-                            "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 1",
-                            l_gep, fat
-                        ));
-                        self.emit_line(&format!("store i64 {}, ptr {}", new_len, l_gep));
-                        let c_gep = self.fresh_temp();
-                        self.emit_line(&format!(
-                            "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 2",
-                            c_gep, fat
-                        ));
-                        self.emit_line(&format!("store i64 {}, ptr {}", new_len, c_gep));
+                        self.emit_fat_ptr_init(&fat, &new_data, &new_len, &new_len);
                         return Ok(fat);
                     }
 
@@ -7938,20 +7786,8 @@ impl Codegen {
                         let arr_b = self.emit_expr(&args[1])?;
 
                         // load lengths
-                        let la_gep = self.fresh_temp();
-                        self.emit_line(&format!(
-                            "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 1",
-                            la_gep, arr_a
-                        ));
-                        let len_a = self.fresh_temp();
-                        self.emit_line(&format!("{} = load i64, ptr {}", len_a, la_gep));
-                        let lb_gep = self.fresh_temp();
-                        self.emit_line(&format!(
-                            "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 1",
-                            lb_gep, arr_b
-                        ));
-                        let len_b = self.fresh_temp();
-                        self.emit_line(&format!("{} = load i64, ptr {}", len_b, lb_gep));
+                        let len_a = self.emit_fat_ptr_field_load(&arr_a, 1, "i64");
+                        let len_b = self.emit_fat_ptr_field_load(&arr_b, 1, "i64");
                         let total_len = self.fresh_temp();
                         self.emit_line(&format!("{} = add i64 {}, {}", total_len, len_a, len_b));
                         // allocate data
@@ -7966,13 +7802,7 @@ impl Codegen {
                             new_data, total_bytes
                         ));
                         // copy a's data
-                        let da_gep = self.fresh_temp();
-                        self.emit_line(&format!(
-                            "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 0",
-                            da_gep, arr_a
-                        ));
-                        let data_a = self.fresh_temp();
-                        self.emit_line(&format!("{} = load ptr, ptr {}", data_a, da_gep));
+                        let data_a = self.emit_fat_ptr_field_load(&arr_a, 0, "ptr");
                         let bytes_a = self.fresh_temp();
                         self.emit_line(&format!("{} = mul i64 {}, {}", bytes_a, len_a, elem_size));
                         self.emit_line(&format!(
@@ -7980,13 +7810,7 @@ impl Codegen {
                             new_data, data_a, bytes_a
                         ));
                         // copy b's data after a
-                        let db_gep = self.fresh_temp();
-                        self.emit_line(&format!(
-                            "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 0",
-                            db_gep, arr_b
-                        ));
-                        let data_b = self.fresh_temp();
-                        self.emit_line(&format!("{} = load ptr, ptr {}", data_b, db_gep));
+                        let data_b = self.emit_fat_ptr_field_load(&arr_b, 0, "ptr");
                         let bytes_b = self.fresh_temp();
                         self.emit_line(&format!("{} = mul i64 {}, {}", bytes_b, len_b, elem_size));
                         let dst = self.fresh_temp();
@@ -8001,24 +7825,7 @@ impl Codegen {
                         // build fat pointer
                         let fat = self.fresh_temp();
                         self.emit_line(&format!("{} = alloca {{ ptr, i64, i64 }}", fat));
-                        let d_gep = self.fresh_temp();
-                        self.emit_line(&format!(
-                            "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 0",
-                            d_gep, fat
-                        ));
-                        self.emit_line(&format!("store ptr {}, ptr {}", new_data, d_gep));
-                        let l_gep = self.fresh_temp();
-                        self.emit_line(&format!(
-                            "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 1",
-                            l_gep, fat
-                        ));
-                        self.emit_line(&format!("store i64 {}, ptr {}", total_len, l_gep));
-                        let c_gep = self.fresh_temp();
-                        self.emit_line(&format!(
-                            "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 2",
-                            c_gep, fat
-                        ));
-                        self.emit_line(&format!("store i64 {}, ptr {}", total_len, c_gep));
+                        self.emit_fat_ptr_init(&fat, &new_data, &total_len, &total_len);
                         return Ok(fat);
                     }
 
@@ -8037,20 +7844,8 @@ impl Codegen {
                         let is_agg = Self::is_aggregate_type(&elem_ty);
 
                         // load length and data
-                        let len_gep = self.fresh_temp();
-                        self.emit_line(&format!(
-                            "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 1",
-                            len_gep, arr_ptr
-                        ));
-                        let len_val = self.fresh_temp();
-                        self.emit_line(&format!("{} = load i64, ptr {}", len_val, len_gep));
-                        let data_gep = self.fresh_temp();
-                        self.emit_line(&format!(
-                            "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 0",
-                            data_gep, arr_ptr
-                        ));
-                        let data_ptr = self.fresh_temp();
-                        self.emit_line(&format!("{} = load ptr, ptr {}", data_ptr, data_gep));
+                        let len_val = self.emit_fat_ptr_field_load(&arr_ptr, 1, "i64");
+                        let data_ptr = self.emit_fat_ptr_field_load(&arr_ptr, 0, "ptr");
                         // allocate new data
                         let total_bytes = self.fresh_temp();
                         self.emit_line(&format!(
@@ -8116,24 +7911,7 @@ impl Codegen {
                         // build fat pointer
                         let fat = self.fresh_temp();
                         self.emit_line(&format!("{} = alloca {{ ptr, i64, i64 }}", fat));
-                        let d_gep = self.fresh_temp();
-                        self.emit_line(&format!(
-                            "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 0",
-                            d_gep, fat
-                        ));
-                        self.emit_line(&format!("store ptr {}, ptr {}", new_data, d_gep));
-                        let l_gep = self.fresh_temp();
-                        self.emit_line(&format!(
-                            "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 1",
-                            l_gep, fat
-                        ));
-                        self.emit_line(&format!("store i64 {}, ptr {}", len_val, l_gep));
-                        let c_gep = self.fresh_temp();
-                        self.emit_line(&format!(
-                            "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 2",
-                            c_gep, fat
-                        ));
-                        self.emit_line(&format!("store i64 {}, ptr {}", len_val, c_gep));
+                        self.emit_fat_ptr_init(&fat, &new_data, &len_val, &len_val);
                         return Ok(fat);
                     }
 
@@ -8418,24 +8196,7 @@ impl Codegen {
                     // Empty array: { null, 0 }
                     let ptr = self.fresh_temp();
                     self.emit_line(&format!("{} = alloca {{ ptr, i64, i64 }}", ptr));
-                    let d_gep = self.fresh_temp();
-                    self.emit_line(&format!(
-                        "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 0",
-                        d_gep, ptr
-                    ));
-                    self.emit_line(&format!("store ptr null, ptr {}", d_gep));
-                    let l_gep = self.fresh_temp();
-                    self.emit_line(&format!(
-                        "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 1",
-                        l_gep, ptr
-                    ));
-                    self.emit_line(&format!("store i64 0, ptr {}", l_gep));
-                    let c_gep = self.fresh_temp();
-                    self.emit_line(&format!(
-                        "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 2",
-                        c_gep, ptr
-                    ));
-                    self.emit_line(&format!("store i64 0, ptr {}", c_gep));
+                    self.emit_fat_ptr_init(&ptr, "null", "0", "0");
                     return Ok(ptr);
                 }
                 // Determine element type from first element
@@ -8476,24 +8237,8 @@ impl Codegen {
                 // Build { ptr, i64, i64 } fat pointer on stack
                 let fat_ptr = self.fresh_temp();
                 self.emit_line(&format!("{} = alloca {{ ptr, i64, i64 }}", fat_ptr));
-                let d_gep = self.fresh_temp();
-                self.emit_line(&format!(
-                    "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 0",
-                    d_gep, fat_ptr
-                ));
-                self.emit_line(&format!("store ptr {}, ptr {}", data_ptr, d_gep));
-                let l_gep = self.fresh_temp();
-                self.emit_line(&format!(
-                    "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 1",
-                    l_gep, fat_ptr
-                ));
-                self.emit_line(&format!("store i64 {}, ptr {}", count, l_gep));
-                let c_gep = self.fresh_temp();
-                self.emit_line(&format!(
-                    "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 2",
-                    c_gep, fat_ptr
-                ));
-                self.emit_line(&format!("store i64 {}, ptr {}", count, c_gep));
+                let count_str = count.to_string();
+                self.emit_fat_ptr_init(&fat_ptr, &data_ptr, &count_str, &count_str);
 
                 Ok(fat_ptr)
             }
@@ -8511,23 +8256,8 @@ impl Codegen {
 
                 let arr_ptr = self.emit_expr_ptr(arr_expr)?;
 
-                // Load data pointer from { ptr, i64, i64 }
-                let data_gep = self.fresh_temp();
-                self.emit_line(&format!(
-                    "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 0",
-                    data_gep, arr_ptr
-                ));
-                let data_ptr = self.fresh_temp();
-                self.emit_line(&format!("{} = load ptr, ptr {}", data_ptr, data_gep));
-
-                // Load length for bounds check
-                let len_gep = self.fresh_temp();
-                self.emit_line(&format!(
-                    "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 1",
-                    len_gep, arr_ptr
-                ));
-                let len_val = self.fresh_temp();
-                self.emit_line(&format!("{} = load i64, ptr {}", len_val, len_gep));
+                // Load data pointer and length from fat pointer
+                let (data_ptr, len_val) = self.emit_fat_ptr_load(&arr_ptr);
 
                 let idx_val = self.emit_expr(idx_expr)?;
 
@@ -10455,6 +10185,45 @@ impl Codegen {
         let n = self.label_counter;
         self.label_counter += 1;
         format!("{}.{}", prefix, n)
+    }
+
+    /// Load a single field from an array fat pointer `{ ptr, i64, i64 }`.
+    /// field: 0=data(ptr), 1=len(i64), 2=cap(i64). Returns the loaded SSA value.
+    fn emit_fat_ptr_field_load(&mut self, ptr: &str, field: u32, ty: &str) -> String {
+        let gep = self.fresh_temp();
+        self.emit_line(&format!(
+            "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 {}",
+            gep, ptr, field
+        ));
+        let val = self.fresh_temp();
+        self.emit_line(&format!("{} = load {}, ptr {}", val, ty, gep));
+        val
+    }
+
+    /// Store a value to a single field of an array fat pointer `{ ptr, i64, i64 }`.
+    /// Returns the GEP temp (useful if the caller needs to re-store later).
+    fn emit_fat_ptr_field_store(&mut self, ptr: &str, field: u32, ty: &str, val: &str) -> String {
+        let gep = self.fresh_temp();
+        self.emit_line(&format!(
+            "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 {}",
+            gep, ptr, field
+        ));
+        self.emit_line(&format!("store {} {}, ptr {}", ty, val, gep));
+        gep
+    }
+
+    /// Load data pointer and length from an array fat pointer. Returns (data_ptr, len_val).
+    fn emit_fat_ptr_load(&mut self, ptr: &str) -> (String, String) {
+        let data = self.emit_fat_ptr_field_load(ptr, 0, "ptr");
+        let len = self.emit_fat_ptr_field_load(ptr, 1, "i64");
+        (data, len)
+    }
+
+    /// Store data, length, and capacity into a pre-allocated fat pointer.
+    fn emit_fat_ptr_init(&mut self, fat_ptr: &str, data: &str, len: &str, cap: &str) {
+        self.emit_fat_ptr_field_store(fat_ptr, 0, "ptr", data);
+        self.emit_fat_ptr_field_store(fat_ptr, 1, "i64", len);
+        self.emit_fat_ptr_field_store(fat_ptr, 2, "i64", cap);
     }
 
     fn escape_llvm_string(&self, s: &str) -> String {

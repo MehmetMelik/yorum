@@ -102,6 +102,14 @@ struct ZipInfo {
     elem_ty: String,
 }
 
+/// Shared state returned by `emit_pipeline_loop_header`.
+/// After the call, the IR cursor is at the start of the **body** block.
+struct PipelineLoopParts {
+    cond_label: String,
+    end_label: String,
+    current_val: String,
+}
+
 /// Tracks per-variable string buffer metadata for capacity-aware str_concat.
 /// When `cap == 0`, the data pointer is not an owned heap buffer (e.g. a global
 /// literal or a fresh allocation from a function).  The first inline concat
@@ -6234,6 +6242,73 @@ impl Codegen {
         Ok((current_val, current_ty))
     }
 
+    // ── Pipeline loop shared skeleton ──────────────────────
+
+    /// Emit the cond → step → body-entry blocks common to every pipeline
+    /// terminator.  Returns labels and the pipeline-processed element value
+    /// so the caller only has to emit the body-specific and end-specific IR.
+    #[allow(clippy::too_many_arguments)]
+    fn emit_pipeline_loop_header(
+        &mut self,
+        prefix: &str,
+        data_ptr: &str,
+        len_val: &str,
+        idx_ptr: &str,
+        src_elem_ty: &str,
+        steps: &[IterStep<'_>],
+        closure_infos: &[Option<ClosureInfo>],
+        zip_infos: &[Option<ZipInfo>],
+        take_skip_ptrs: &[Option<String>],
+        enumerate_ptrs: &[Option<String>],
+        is_range_source: bool,
+        range_end: &Option<(String, bool)>,
+    ) -> Result<PipelineLoopParts, CodegenError> {
+        let cond_label = self.fresh_label(&format!("{prefix}.cond"));
+        let step_label = self.fresh_label(&format!("{prefix}.step"));
+        let body_label = self.fresh_label(&format!("{prefix}.body"));
+        let end_label = self.fresh_label(&format!("{prefix}.end"));
+
+        self.emit_line(&format!("br label %{cond_label}"));
+
+        self.emit_label(&cond_label);
+        self.block_terminated = false;
+        let cur_idx = self.emit_pipeline_loop_cond(
+            idx_ptr,
+            data_ptr,
+            len_val,
+            range_end,
+            &step_label,
+            &end_label,
+        );
+
+        self.emit_label(&step_label);
+        self.block_terminated = false;
+        let (current_val, _) = self.emit_pipeline_steps(
+            data_ptr,
+            src_elem_ty,
+            &cur_idx,
+            idx_ptr,
+            &cond_label,
+            &body_label,
+            &end_label,
+            steps,
+            closure_infos,
+            zip_infos,
+            take_skip_ptrs,
+            enumerate_ptrs,
+            is_range_source,
+        )?;
+
+        self.emit_label(&body_label);
+        self.block_terminated = false;
+
+        Ok(PipelineLoopParts {
+            cond_label,
+            end_label,
+            current_val,
+        })
+    }
+
     // ── Terminator: collect ─────────────────────────────────
 
     #[allow(clippy::too_many_arguments)]
@@ -6280,57 +6355,30 @@ impl Codegen {
         ));
         let out_idx_ptr = self.emit_alloca_store("i64", "0");
 
-        let cond_label = self.fresh_label("col.cond");
-        let step_label = self.fresh_label("col.step");
-        let body_label = self.fresh_label("col.body");
-        let end_label = self.fresh_label("col.end");
-
-        self.emit_line(&format!("br label %{}", cond_label));
-
-        self.emit_label(&cond_label);
-        self.block_terminated = false;
-        let cur_idx = self.emit_pipeline_loop_cond(
-            idx_ptr,
+        let lp = self.emit_pipeline_loop_header(
+            "col",
             data_ptr,
             len_val,
-            range_end,
-            &step_label,
-            &end_label,
-        );
-
-        // Step block: apply pipeline
-        self.emit_label(&step_label);
-        self.block_terminated = false;
-        let (current_val, _current_ty) = self.emit_pipeline_steps(
-            data_ptr,
-            src_elem_ty,
-            &cur_idx,
             idx_ptr,
-            &cond_label,
-            &body_label,
-            &end_label,
+            src_elem_ty,
             steps,
             closure_infos,
             zip_infos,
             take_skip_ptrs,
             enumerate_ptrs,
             is_range_source,
+            range_end,
         )?;
 
         // Body: store element to output array (guard against exceeding safe_len)
-        self.emit_label(&body_label);
-        self.block_terminated = false;
         let out_idx = self.emit_load("i64", &out_idx_ptr);
-        // If output index has reached the allocated capacity, stop collecting.
-        // This keeps the loop bound in sync with safe_len when the pipeline
-        // source can produce more elements than the byte-safe allocation cap.
         let cap_ok = self.fresh_temp();
         self.emit_line(&format!(
             "{} = icmp slt i64 {}, {}",
             cap_ok, out_idx, safe_len
         ));
         let store_label = self.fresh_label("col.store");
-        self.emit_cond_branch(&cap_ok, &store_label, &end_label);
+        self.emit_cond_branch(&cap_ok, &store_label, &lp.end_label);
         self.emit_label(&store_label);
         self.block_terminated = false;
         let out_gep = self.fresh_temp();
@@ -6338,18 +6386,17 @@ impl Codegen {
             "{} = getelementptr {}, ptr {}, i64 {}",
             out_gep, final_elem_ty, out_data, out_idx
         ));
-        // current_val is always by-value SSA after emit_pipeline_steps
         self.emit_line(&format!(
             "store {} {}, ptr {}",
-            final_elem_ty, current_val, out_gep
+            final_elem_ty, lp.current_val, out_gep
         ));
         let next_out = self.fresh_temp();
         self.emit_line(&format!("{} = add i64 {}, 1", next_out, out_idx));
         self.emit_line(&format!("store i64 {}, ptr {}", next_out, out_idx_ptr));
-        self.emit_line(&format!("br label %{}", cond_label));
+        self.emit_line(&format!("br label %{}", lp.cond_label));
 
         // End: build fat pointer
-        self.emit_label(&end_label);
+        self.emit_label(&lp.end_label);
         self.block_terminated = false;
         let final_len = self.emit_load("i64", &out_idx_ptr);
         let fat = self.fresh_temp();
@@ -6380,57 +6427,42 @@ impl Codegen {
         is_range_source: bool,
         range_end: &Option<(String, bool)>,
     ) -> Result<String, CodegenError> {
-        // Alloca for accumulator
         let acc_ptr = self.emit_alloca_store(acc_ty, init_val);
 
-        let cond_label = self.fresh_label("fold.cond");
-        let step_label = self.fresh_label("fold.step");
-        let body_label = self.fresh_label("fold.body");
-        let end_label = self.fresh_label("fold.end");
-
-        self.emit_line(&format!("br label %{}", cond_label));
-
-        self.emit_label(&cond_label);
-        self.block_terminated = false;
-        let cur_idx = self.emit_pipeline_loop_cond(
-            idx_ptr,
+        let lp = self.emit_pipeline_loop_header(
+            "fold",
             data_ptr,
             len_val,
-            range_end,
-            &step_label,
-            &end_label,
-        );
-
-        self.emit_label(&step_label);
-        self.block_terminated = false;
-        let (current_val, _) = self.emit_pipeline_steps(
-            data_ptr,
-            src_elem_ty,
-            &cur_idx,
             idx_ptr,
-            &cond_label,
-            &body_label,
-            &end_label,
+            src_elem_ty,
             steps,
             closure_infos,
             zip_infos,
             take_skip_ptrs,
             enumerate_ptrs,
             is_range_source,
+            range_end,
         )?;
 
-        self.emit_label(&body_label);
-        self.block_terminated = false;
+        // Body: call closure(env, acc, elem) → new acc
         let acc_val = self.emit_load(acc_ty, &acc_ptr);
         let new_acc = self.fresh_temp();
         self.emit_line(&format!(
             "{} = call {} {}(ptr {}, {} {}, {} {})",
-            new_acc, acc_ty, term_fn_ptr, term_env_ptr, acc_ty, acc_val, final_elem_ty, current_val
+            new_acc,
+            acc_ty,
+            term_fn_ptr,
+            term_env_ptr,
+            acc_ty,
+            acc_val,
+            final_elem_ty,
+            lp.current_val
         ));
         self.emit_line(&format!("store {} {}, ptr {}", acc_ty, new_acc, acc_ptr));
-        self.emit_line(&format!("br label %{}", cond_label));
+        self.emit_line(&format!("br label %{}", lp.cond_label));
 
-        self.emit_label(&end_label);
+        // End: return accumulator
+        self.emit_label(&lp.end_label);
         self.block_terminated = false;
         let result = self.emit_load(acc_ty, &acc_ptr);
         Ok(result)
@@ -6463,55 +6495,32 @@ impl Codegen {
 
         let result_ptr = self.emit_alloca_store("i1", init_val);
 
-        let cond_label = self.fresh_label(&format!("{}.cond", prefix));
-        let step_label = self.fresh_label(&format!("{}.step", prefix));
-        let body_label = self.fresh_label(&format!("{}.body", prefix));
-        let end_label = self.fresh_label(&format!("{}.end", prefix));
-
-        self.emit_line(&format!("br label %{}", cond_label));
-
-        self.emit_label(&cond_label);
-        self.block_terminated = false;
-        let cur_idx = self.emit_pipeline_loop_cond(
-            idx_ptr,
+        let lp = self.emit_pipeline_loop_header(
+            prefix,
             data_ptr,
             len_val,
-            range_end,
-            &step_label,
-            &end_label,
-        );
-
-        self.emit_label(&step_label);
-        self.block_terminated = false;
-        let (current_val, _) = self.emit_pipeline_steps(
-            data_ptr,
-            src_elem_ty,
-            &cur_idx,
             idx_ptr,
-            &cond_label,
-            &body_label,
-            &end_label,
+            src_elem_ty,
             steps,
             closure_infos,
             zip_infos,
             take_skip_ptrs,
             enumerate_ptrs,
             is_range_source,
+            range_end,
         )?;
 
-        self.emit_label(&body_label);
-        self.block_terminated = false;
+        // Body: call predicate, short-circuit on match
         let pred = self.fresh_temp();
         self.emit_line(&format!(
             "{} = call i1 {}(ptr {}, {} {})",
-            pred, term_fn_ptr, term_env_ptr, final_elem_ty, current_val
+            pred, term_fn_ptr, term_env_ptr, final_elem_ty, lp.current_val
         ));
-        // any: short-circuit on true; all: short-circuit on false
-        let short_label = self.fresh_label(&format!("{}.short", prefix));
+        let short_label = self.fresh_label(&format!("{prefix}.short"));
         let (true_target, false_target) = if is_any {
-            (short_label.as_str(), cond_label.as_str())
+            (short_label.as_str(), lp.cond_label.as_str())
         } else {
-            (cond_label.as_str(), short_label.as_str())
+            (lp.cond_label.as_str(), short_label.as_str())
         };
         self.emit_cond_branch(&pred, true_target, false_target);
 
@@ -6521,9 +6530,10 @@ impl Codegen {
             "store i1 {}, ptr {}",
             short_circuit_val, result_ptr
         ));
-        self.emit_line(&format!("br label %{}", end_label));
+        self.emit_line(&format!("br label %{}", lp.end_label));
 
-        self.emit_label(&end_label);
+        // End: return result
+        self.emit_label(&lp.end_label);
         self.block_terminated = false;
         let result = self.emit_load("i1", &result_ptr);
         Ok(result)
@@ -6549,88 +6559,47 @@ impl Codegen {
         is_range_source: bool,
         range_end: &Option<(String, bool)>,
     ) -> Result<String, CodegenError> {
-        // Determine Option type name
         let option_name = self.yorum_type_to_option_name(final_elem_ty);
         let option_llvm = format!("%{}", option_name);
 
         // Alloca result as None (tag=1)
         let result_ptr = self.fresh_temp();
         self.emit_line(&format!("{} = alloca {}", result_ptr, option_llvm));
-        let tag_gep = self.fresh_temp();
-        self.emit_line(&format!(
-            "{} = getelementptr {}, ptr {}, i32 0, i32 0",
-            tag_gep, option_llvm, result_ptr
-        ));
-        self.emit_line(&format!("store i32 1, ptr {}", tag_gep)); // None tag
+        self.emit_struct_field_store(&option_name, &result_ptr, 0, "i32", "1");
 
-        let cond_label = self.fresh_label("find.cond");
-        let step_label = self.fresh_label("find.step");
-        let body_label = self.fresh_label("find.body");
-        let end_label = self.fresh_label("find.end");
-
-        self.emit_line(&format!("br label %{}", cond_label));
-
-        self.emit_label(&cond_label);
-        self.block_terminated = false;
-        let cur_idx = self.emit_pipeline_loop_cond(
-            idx_ptr,
+        let lp = self.emit_pipeline_loop_header(
+            "find",
             data_ptr,
             len_val,
-            range_end,
-            &step_label,
-            &end_label,
-        );
-
-        self.emit_label(&step_label);
-        self.block_terminated = false;
-        let (current_val, _) = self.emit_pipeline_steps(
-            data_ptr,
-            src_elem_ty,
-            &cur_idx,
             idx_ptr,
-            &cond_label,
-            &body_label,
-            &end_label,
+            src_elem_ty,
             steps,
             closure_infos,
             zip_infos,
             take_skip_ptrs,
             enumerate_ptrs,
             is_range_source,
+            range_end,
         )?;
 
-        self.emit_label(&body_label);
-        self.block_terminated = false;
+        // Body: call predicate, branch to found on match
         let pred = self.fresh_temp();
         self.emit_line(&format!(
             "{} = call i1 {}(ptr {}, {} {})",
-            pred, term_fn_ptr, term_env_ptr, final_elem_ty, current_val
+            pred, term_fn_ptr, term_env_ptr, final_elem_ty, lp.current_val
         ));
         let found_label = self.fresh_label("find.found");
-        self.emit_cond_branch(&pred, &found_label, &cond_label);
+        self.emit_cond_branch(&pred, &found_label, &lp.cond_label);
 
+        // Found: store Some(val)
         self.emit_label(&found_label);
         self.block_terminated = false;
-        // Store Some(val): tag=0, payload=val
-        let tag_gep2 = self.fresh_temp();
-        self.emit_line(&format!(
-            "{} = getelementptr {}, ptr {}, i32 0, i32 0",
-            tag_gep2, option_llvm, result_ptr
-        ));
-        self.emit_line(&format!("store i32 0, ptr {}", tag_gep2));
-        let payload_gep = self.fresh_temp();
-        self.emit_line(&format!(
-            "{} = getelementptr {}, ptr {}, i32 0, i32 1",
-            payload_gep, option_llvm, result_ptr
-        ));
-        // current_val is always by-value SSA after emit_pipeline_steps
-        self.emit_line(&format!(
-            "store {} {}, ptr {}",
-            final_elem_ty, current_val, payload_gep
-        ));
-        self.emit_line(&format!("br label %{}", end_label));
+        self.emit_struct_field_store(&option_name, &result_ptr, 0, "i32", "0");
+        self.emit_struct_field_store(&option_name, &result_ptr, 1, final_elem_ty, &lp.current_val);
+        self.emit_line(&format!("br label %{}", lp.end_label));
 
-        self.emit_label(&end_label);
+        // End
+        self.emit_label(&lp.end_label);
         self.block_terminated = false;
         Ok(result_ptr)
     }
@@ -6662,56 +6631,29 @@ impl Codegen {
         // Alloca result as None (tag=1)
         let result_ptr = self.fresh_temp();
         self.emit_line(&format!("{} = alloca {}", result_ptr, option_llvm));
-        let tag_gep = self.fresh_temp();
-        self.emit_line(&format!(
-            "{} = getelementptr {}, ptr {}, i32 0, i32 0",
-            tag_gep, option_llvm, result_ptr
-        ));
-        self.emit_line(&format!("store i32 1, ptr {}", tag_gep)); // None
+        self.emit_struct_field_store(&option_name, &result_ptr, 0, "i32", "1");
 
         // Alloca accumulator and has_value flag
         let acc_ptr = self.fresh_temp();
         self.emit_line(&format!("{} = alloca {}", acc_ptr, ret_ty));
         let has_value_ptr = self.emit_alloca_store("i1", "false");
 
-        let cond_label = self.fresh_label("red.cond");
-        let step_label = self.fresh_label("red.step");
-        let body_label = self.fresh_label("red.body");
-        let end_label = self.fresh_label("red.end");
-
-        self.emit_line(&format!("br label %{}", cond_label));
-
-        self.emit_label(&cond_label);
-        self.block_terminated = false;
-        let cur_idx = self.emit_pipeline_loop_cond(
-            idx_ptr,
+        let lp = self.emit_pipeline_loop_header(
+            "red",
             data_ptr,
             len_val,
-            range_end,
-            &step_label,
-            &end_label,
-        );
-
-        self.emit_label(&step_label);
-        self.block_terminated = false;
-        let (current_val, _) = self.emit_pipeline_steps(
-            data_ptr,
-            src_elem_ty,
-            &cur_idx,
             idx_ptr,
-            &cond_label,
-            &body_label,
-            &end_label,
+            src_elem_ty,
             steps,
             closure_infos,
             zip_infos,
             take_skip_ptrs,
             enumerate_ptrs,
             is_range_source,
+            range_end,
         )?;
 
-        self.emit_label(&body_label);
-        self.block_terminated = false;
+        // Body: check has_value to decide first vs accumulate
         let hv = self.emit_load("i1", &has_value_ptr);
         let first_label = self.fresh_label("red.first");
         let accum_label = self.fresh_label("red.accum");
@@ -6723,7 +6665,7 @@ impl Codegen {
         self.block_terminated = false;
         self.emit_line(&format!(
             "store {} {}, ptr {}",
-            final_elem_ty, current_val, acc_ptr
+            final_elem_ty, lp.current_val, acc_ptr
         ));
         self.emit_line(&format!("store i1 true, ptr {}", has_value_ptr));
         self.emit_line(&format!("br label %{}", cont_label));
@@ -6735,17 +6677,24 @@ impl Codegen {
         let new_acc = self.fresh_temp();
         self.emit_line(&format!(
             "{} = call {} {}(ptr {}, {} {}, {} {})",
-            new_acc, ret_ty, term_fn_ptr, term_env_ptr, ret_ty, acc_val, final_elem_ty, current_val
+            new_acc,
+            ret_ty,
+            term_fn_ptr,
+            term_env_ptr,
+            ret_ty,
+            acc_val,
+            final_elem_ty,
+            lp.current_val
         ));
         self.emit_line(&format!("store {} {}, ptr {}", ret_ty, new_acc, acc_ptr));
         self.emit_line(&format!("br label %{}", cont_label));
 
         self.emit_label(&cont_label);
         self.block_terminated = false;
-        self.emit_line(&format!("br label %{}", cond_label));
+        self.emit_line(&format!("br label %{}", lp.cond_label));
 
         // End: if has_value, store Some(acc) to result
-        self.emit_label(&end_label);
+        self.emit_label(&lp.end_label);
         self.block_terminated = false;
         let final_hv = self.emit_load("i1", &has_value_ptr);
         let some_label = self.fresh_label("red.some");
@@ -6754,22 +6703,9 @@ impl Codegen {
 
         self.emit_label(&some_label);
         self.block_terminated = false;
-        let tag_gep2 = self.fresh_temp();
-        self.emit_line(&format!(
-            "{} = getelementptr {}, ptr {}, i32 0, i32 0",
-            tag_gep2, option_llvm, result_ptr
-        ));
-        self.emit_line(&format!("store i32 0, ptr {}", tag_gep2)); // Some tag
-        let payload_gep = self.fresh_temp();
-        self.emit_line(&format!(
-            "{} = getelementptr {}, ptr {}, i32 0, i32 1",
-            payload_gep, option_llvm, result_ptr
-        ));
+        self.emit_struct_field_store(&option_name, &result_ptr, 0, "i32", "0");
         let final_acc = self.emit_load(ret_ty, &acc_ptr);
-        self.emit_line(&format!(
-            "store {} {}, ptr {}",
-            ret_ty, final_acc, payload_gep
-        ));
+        self.emit_struct_field_store(&option_name, &result_ptr, 1, ret_ty, &final_acc);
         self.emit_line(&format!("br label %{}", done_label));
 
         self.emit_label(&done_label);

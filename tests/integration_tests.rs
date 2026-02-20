@@ -9404,6 +9404,35 @@ fn test_range_iter_wide_range_no_length_overflow() {
 }
 
 #[test]
+fn test_range_iter_inclusive_max_has_overflow_guard() {
+    // Inclusive range pipelines ending at i64::MAX must terminate.
+    // Codegen should guard start+idx with signed-add-overflow handling.
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let ok: bool = (9223372036854775807..=9223372036854775807).iter().any(|x: int| -> bool { return x == 9223372036854775807; });\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("@llvm.sadd.with.overflow.i64"));
+    assert!(ir.contains("extractvalue { i64, i1 }"));
+}
+
+#[test]
+fn test_range_iter_collect_len_uses_saturating_i128_math() {
+    // Wide range length estimation for collect preallocation should not wrap.
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let xs: [int] = (0..=9223372036854775807).iter().take(1).collect();\n\
+         \x20   return len(xs);\n\
+         }\n",
+    );
+    assert!(ir.contains("sext i64"));
+    assert!(ir.contains("sub i128"));
+    assert!(ir.contains("icmp sgt i128"));
+    assert!(ir.contains("trunc i128"));
+}
+
+#[test]
 fn test_range_iter_exclusive_uses_slt_on_value() {
     // Exclusive range pipeline loop condition should compare range value
     // against end using slt, not compare idx against pre-computed length.

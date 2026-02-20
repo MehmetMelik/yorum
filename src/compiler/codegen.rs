@@ -703,6 +703,8 @@ impl Codegen {
         self.globals
             .push_str("declare double @llvm.fabs.f64(double)\n");
         self.globals
+            .push_str("declare { i64, i1 } @llvm.sadd.with.overflow.i64(i64, i64)\n");
+        self.globals
             .push_str("declare double @llvm.sqrt.f64(double)\n");
         self.globals
             .push_str("declare double @llvm.pow.f64(double, double)\n");
@@ -5572,26 +5574,44 @@ impl Codegen {
             let start_val = self.emit_expr(start_expr)?;
             let end_val = self.emit_expr(end_expr)?;
 
-            // Compute a best-effort allocation length for collect.  This can
-            // overflow for spans > i64::MAX, but that only affects collect's
-            // initial malloc (which would need impossibly much memory anyway).
-            // Clamped to zero so descending ranges don't cause negative mallocs.
-            let raw_len = self.fresh_temp();
-            self.emit_line(&format!("{} = sub i64 {}, {}", raw_len, end_val, start_val));
-            let unclamped = if inclusive {
+            // Compute a saturating non-negative allocation length:
+            //   len = max(0, end-start[+1]) clamped to i64::MAX.
+            // Use i128 arithmetic so wide valid ranges don't wrap negative.
+            let start_i128 = self.fresh_temp();
+            self.emit_line(&format!("{} = sext i64 {} to i128", start_i128, start_val));
+            let end_i128 = self.fresh_temp();
+            self.emit_line(&format!("{} = sext i64 {} to i128", end_i128, end_val));
+            let span_i128 = self.fresh_temp();
+            self.emit_line(&format!(
+                "{} = sub i128 {}, {}",
+                span_i128, end_i128, start_i128
+            ));
+            let len_i128 = if inclusive {
                 let len_inc = self.fresh_temp();
-                self.emit_line(&format!("{} = add i64 {}, 1", len_inc, raw_len));
+                self.emit_line(&format!("{} = add i128 {}, 1", len_inc, span_i128));
                 len_inc
             } else {
-                raw_len
+                span_i128
             };
-            let is_neg = self.fresh_temp();
-            self.emit_line(&format!("{} = icmp slt i64 {}, 0", is_neg, unclamped));
-            let alloc_len = self.fresh_temp();
+            let len_non_pos = self.fresh_temp();
+            self.emit_line(&format!("{} = icmp sle i128 {}, 0", len_non_pos, len_i128));
+            let len_gt_i64_max = self.fresh_temp();
             self.emit_line(&format!(
-                "{} = select i1 {}, i64 0, i64 {}",
-                alloc_len, is_neg, unclamped
+                "{} = icmp sgt i128 {}, 9223372036854775807",
+                len_gt_i64_max, len_i128
             ));
+            let len_hi_clamped = self.fresh_temp();
+            self.emit_line(&format!(
+                "{} = select i1 {}, i128 9223372036854775807, i128 {}",
+                len_hi_clamped, len_gt_i64_max, len_i128
+            ));
+            let len_sat_i128 = self.fresh_temp();
+            self.emit_line(&format!(
+                "{} = select i1 {}, i128 0, i128 {}",
+                len_sat_i128, len_non_pos, len_hi_clamped
+            ));
+            let alloc_len = self.fresh_temp();
+            self.emit_line(&format!("{} = trunc i128 {} to i64", alloc_len, len_sat_i128));
 
             (
                 start_val,
@@ -5764,14 +5784,39 @@ impl Codegen {
         let cmp = self.fresh_temp();
         if let Some((ref end_val, inclusive)) = *range_end {
             // Range source: compare actual range value against end bound.
-            // This avoids computing a total length that can overflow for wide ranges.
+            // Guard against idx overflow (negative after wrap) and add overflow
+            // so inclusive ranges ending at i64::MAX still terminate.
+            let idx_non_neg = self.fresh_temp();
+            self.emit_line(&format!("{} = icmp sge i64 {}, 0", idx_non_neg, cur_idx));
+            let sum_pair = self.fresh_temp();
+            self.emit_line(&format!(
+                "{} = call {{ i64, i1 }} @llvm.sadd.with.overflow.i64(i64 {}, i64 {})",
+                sum_pair, data_ptr, cur_idx
+            ));
             let cur_val = self.fresh_temp();
-            self.emit_line(&format!("{} = add i64 {}, {}", cur_val, data_ptr, cur_idx));
+            self.emit_line(&format!(
+                "{} = extractvalue {{ i64, i1 }} {}, 0",
+                cur_val, sum_pair
+            ));
+            let add_overflow = self.fresh_temp();
+            self.emit_line(&format!(
+                "{} = extractvalue {{ i64, i1 }} {}, 1",
+                add_overflow, sum_pair
+            ));
             let cmp_op = if inclusive { "sle" } else { "slt" };
+            let in_bound = self.fresh_temp();
             self.emit_line(&format!(
                 "{} = icmp {} i64 {}, {}",
-                cmp, cmp_op, cur_val, end_val
+                in_bound, cmp_op, cur_val, end_val
             ));
+            let no_add_overflow = self.fresh_temp();
+            self.emit_line(&format!("{} = xor i1 {}, true", no_add_overflow, add_overflow));
+            let valid_arith = self.fresh_temp();
+            self.emit_line(&format!(
+                "{} = and i1 {}, {}",
+                valid_arith, idx_non_neg, no_add_overflow
+            ));
+            self.emit_line(&format!("{} = and i1 {}, {}", cmp, valid_arith, in_bound));
         } else {
             // Array source: compare index against length.
             self.emit_line(&format!("{} = icmp slt i64 {}, {}", cmp, cur_idx, len_val));

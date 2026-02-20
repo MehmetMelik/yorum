@@ -1546,7 +1546,9 @@ impl TypeChecker {
     fn is_iter_pipeline(expr: &Expr) -> bool {
         if let ExprKind::MethodCall(ref receiver, ref method, _) = expr.kind {
             match method.as_str() {
-                "map" | "filter" => Self::has_iter_base(receiver),
+                "map" | "filter" | "enumerate" | "zip" | "take" | "skip" => {
+                    Self::has_iter_base(receiver)
+                }
                 _ => false,
             }
         } else {
@@ -1559,11 +1561,263 @@ impl TypeChecker {
         if let ExprKind::MethodCall(ref receiver, ref method, _) = expr.kind {
             match method.as_str() {
                 "iter" => true,
-                "map" | "filter" => Self::has_iter_base(receiver),
+                "map" | "filter" | "enumerate" | "zip" | "take" | "skip" => {
+                    Self::has_iter_base(receiver)
+                }
                 _ => false,
             }
         } else {
             false
+        }
+    }
+
+    fn is_pipeline_terminator(method: &str) -> bool {
+        matches!(
+            method,
+            "reduce" | "fold" | "collect" | "find" | "any" | "all"
+        )
+    }
+
+    /// Infer the return type of a pipeline terminator expression.
+    /// `receiver` is the pipeline chain (e.g., `arr.iter().map(f)`), `method` is the
+    /// terminator name, `args` are the terminator arguments.
+    fn infer_pipeline_terminator_type(
+        &mut self,
+        receiver: &Expr,
+        method: &str,
+        args: &[Expr],
+        span: Span,
+    ) -> Option<Type> {
+        let elem_ty = self.infer_pipeline_elem_type(receiver)?;
+        match method {
+            "collect" => {
+                if !args.is_empty() {
+                    self.errors.push(TypeError {
+                        message: format!("collect() takes no arguments, found {}", args.len()),
+                        span,
+                    });
+                    return None;
+                }
+                Some(Type::Array(Box::new(elem_ty)))
+            }
+            "any" | "all" => {
+                if args.len() != 1 {
+                    self.errors.push(TypeError {
+                        message: format!(
+                            "{}() takes exactly 1 argument, found {}",
+                            method,
+                            args.len()
+                        ),
+                        span,
+                    });
+                    return None;
+                }
+                if !matches!(args[0].kind, ExprKind::Closure(_)) {
+                    self.errors.push(TypeError {
+                        message: format!("{}() requires an inline closure", method),
+                        span: args[0].span,
+                    });
+                    return None;
+                }
+                let closure_ty = self.infer_expr(&args[0])?;
+                if let Type::Fn(params, ret) = closure_ty {
+                    if params.len() != 1 {
+                        self.errors.push(TypeError {
+                            message: format!(
+                                "{}() closure must take exactly 1 parameter, found {}",
+                                method,
+                                params.len()
+                            ),
+                            span: args[0].span,
+                        });
+                        return None;
+                    }
+                    if params[0] != elem_ty {
+                        self.errors.push(TypeError {
+                            message: format!(
+                                "{}() closure parameter type '{}' does not match element type '{}'",
+                                method, params[0], elem_ty
+                            ),
+                            span: args[0].span,
+                        });
+                        return None;
+                    }
+                    if *ret != Type::Bool {
+                        self.errors.push(TypeError {
+                            message: format!(
+                                "{}() closure must return bool, found '{}'",
+                                method, ret
+                            ),
+                            span: args[0].span,
+                        });
+                        return None;
+                    }
+                    return Some(Type::Bool);
+                }
+                None
+            }
+            "find" => {
+                if args.len() != 1 {
+                    self.errors.push(TypeError {
+                        message: format!("find() takes exactly 1 argument, found {}", args.len()),
+                        span,
+                    });
+                    return None;
+                }
+                if !matches!(args[0].kind, ExprKind::Closure(_)) {
+                    self.errors.push(TypeError {
+                        message: "find() requires an inline closure".to_string(),
+                        span: args[0].span,
+                    });
+                    return None;
+                }
+                let closure_ty = self.infer_expr(&args[0])?;
+                if let Type::Fn(params, ret) = closure_ty {
+                    if params.len() != 1 {
+                        self.errors.push(TypeError {
+                            message: format!(
+                                "find() closure must take exactly 1 parameter, found {}",
+                                params.len()
+                            ),
+                            span: args[0].span,
+                        });
+                        return None;
+                    }
+                    if params[0] != elem_ty {
+                        self.errors.push(TypeError {
+                            message: format!(
+                                "find() closure parameter type '{}' does not match element type '{}'",
+                                params[0], elem_ty
+                            ),
+                            span: args[0].span,
+                        });
+                        return None;
+                    }
+                    if *ret != Type::Bool {
+                        self.errors.push(TypeError {
+                            message: format!("find() closure must return bool, found '{}'", ret),
+                            span: args[0].span,
+                        });
+                        return None;
+                    }
+                    return Some(Type::Generic("Option".to_string(), vec![elem_ty]));
+                }
+                None
+            }
+            "reduce" => {
+                if args.len() != 1 {
+                    self.errors.push(TypeError {
+                        message: format!("reduce() takes exactly 1 argument, found {}", args.len()),
+                        span,
+                    });
+                    return None;
+                }
+                if !matches!(args[0].kind, ExprKind::Closure(_)) {
+                    self.errors.push(TypeError {
+                        message: "reduce() requires an inline closure".to_string(),
+                        span: args[0].span,
+                    });
+                    return None;
+                }
+                let closure_ty = self.infer_expr(&args[0])?;
+                if let Type::Fn(params, ret) = closure_ty {
+                    if params.len() != 2 {
+                        self.errors.push(TypeError {
+                            message: format!(
+                                "reduce() closure must take exactly 2 parameters, found {}",
+                                params.len()
+                            ),
+                            span: args[0].span,
+                        });
+                        return None;
+                    }
+                    if params[0] != elem_ty || params[1] != elem_ty {
+                        self.errors.push(TypeError {
+                            message: format!(
+                                "reduce() closure parameters must both match element type '{}', found '({}, {})'",
+                                elem_ty, params[0], params[1]
+                            ),
+                            span: args[0].span,
+                        });
+                        return None;
+                    }
+                    if *ret != elem_ty {
+                        self.errors.push(TypeError {
+                            message: format!(
+                                "reduce() closure must return '{}', found '{}'",
+                                elem_ty, ret
+                            ),
+                            span: args[0].span,
+                        });
+                        return None;
+                    }
+                    return Some(Type::Generic("Option".to_string(), vec![elem_ty]));
+                }
+                None
+            }
+            "fold" => {
+                if args.len() != 2 {
+                    self.errors.push(TypeError {
+                        message: format!("fold() takes exactly 2 arguments, found {}", args.len()),
+                        span,
+                    });
+                    return None;
+                }
+                let init_ty = self.infer_expr(&args[0])?;
+                if !matches!(args[1].kind, ExprKind::Closure(_)) {
+                    self.errors.push(TypeError {
+                        message: "fold() requires an inline closure as second argument".to_string(),
+                        span: args[1].span,
+                    });
+                    return None;
+                }
+                let closure_ty = self.infer_expr(&args[1])?;
+                if let Type::Fn(params, ret) = closure_ty {
+                    if params.len() != 2 {
+                        self.errors.push(TypeError {
+                            message: format!(
+                                "fold() closure must take exactly 2 parameters, found {}",
+                                params.len()
+                            ),
+                            span: args[1].span,
+                        });
+                        return None;
+                    }
+                    if params[0] != init_ty {
+                        self.errors.push(TypeError {
+                            message: format!(
+                                "fold() closure first parameter type '{}' does not match init type '{}'",
+                                params[0], init_ty
+                            ),
+                            span: args[1].span,
+                        });
+                        return None;
+                    }
+                    if params[1] != elem_ty {
+                        self.errors.push(TypeError {
+                            message: format!(
+                                "fold() closure second parameter type '{}' does not match element type '{}'",
+                                params[1], elem_ty
+                            ),
+                            span: args[1].span,
+                        });
+                        return None;
+                    }
+                    if *ret != init_ty {
+                        self.errors.push(TypeError {
+                            message: format!(
+                                "fold() closure must return '{}', found '{}'",
+                                init_ty, ret
+                            ),
+                            span: args[1].span,
+                        });
+                        return None;
+                    }
+                    return Some(init_ty);
+                }
+                None
+            }
+            _ => None,
         }
     }
 
@@ -1708,6 +1962,68 @@ impl TypeChecker {
                     });
                     return None;
                 }
+                "enumerate" => {
+                    let input_ty = self.infer_pipeline_elem_type(receiver)?;
+                    if !args.is_empty() {
+                        self.errors.push(TypeError {
+                            message: format!(
+                                "enumerate() takes no arguments, found {}",
+                                args.len()
+                            ),
+                            span: expr.span,
+                        });
+                        return None;
+                    }
+                    return Some(Type::Tuple(vec![Type::Int, input_ty]));
+                }
+                "zip" => {
+                    let input_ty = self.infer_pipeline_elem_type(receiver)?;
+                    if args.len() != 1 {
+                        self.errors.push(TypeError {
+                            message: format!(
+                                "zip() takes exactly 1 argument, found {}",
+                                args.len()
+                            ),
+                            span: expr.span,
+                        });
+                        return None;
+                    }
+                    let arg_ty = self.infer_expr(&args[0])?;
+                    if let Type::Array(inner) = arg_ty {
+                        return Some(Type::Tuple(vec![input_ty, *inner]));
+                    }
+                    self.errors.push(TypeError {
+                        message: format!("zip() argument must be an array, found '{}'", arg_ty),
+                        span: args[0].span,
+                    });
+                    return None;
+                }
+                "take" | "skip" => {
+                    let input_ty = self.infer_pipeline_elem_type(receiver)?;
+                    if args.len() != 1 {
+                        self.errors.push(TypeError {
+                            message: format!(
+                                "{}() takes exactly 1 argument, found {}",
+                                method,
+                                args.len()
+                            ),
+                            span: expr.span,
+                        });
+                        return None;
+                    }
+                    let arg_ty = self.infer_expr(&args[0])?;
+                    if arg_ty != Type::Int {
+                        self.errors.push(TypeError {
+                            message: format!(
+                                "{}() argument must be int, found '{}'",
+                                method, arg_ty
+                            ),
+                            span: args[0].span,
+                        });
+                        return None;
+                    }
+                    return Some(input_ty);
+                }
                 _ => {}
             }
         }
@@ -1733,7 +2049,7 @@ impl TypeChecker {
         if Self::is_iter_pipeline(iterable) {
             if self.errors.len() == errors_before {
                 self.errors.push(TypeError {
-                    message: "map()/filter() require .iter() on an array".to_string(),
+                    message: "pipeline combinators require .iter() on an array".to_string(),
                     span: iterable.span,
                 });
             }
@@ -2976,6 +3292,17 @@ impl TypeChecker {
             }
 
             ExprKind::MethodCall(receiver, method_name, args) => {
+                // Intercept pipeline terminators BEFORE receiver inference
+                // (receiver is a pipeline chain that infer_expr would reject)
+                if Self::is_pipeline_terminator(method_name) && Self::has_iter_base(receiver) {
+                    return self.infer_pipeline_terminator_type(
+                        receiver,
+                        method_name,
+                        args,
+                        expr.span,
+                    );
+                }
+
                 let recv_ty = self.infer_expr(receiver)?;
 
                 // Handle .join() on Task<T>

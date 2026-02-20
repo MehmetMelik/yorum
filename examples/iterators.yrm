@@ -1,6 +1,7 @@
-// iterators.yrm — Iterator pipelines with map and filter.
+// iterators.yrm — Iterator pipelines, combinators, and terminators.
 //
-// Demonstrates: .iter(), .map(), .filter(), chained pipelines,
+// Demonstrates: .iter(), .map(), .filter(), .enumerate(), .zip(), .take(), .skip(),
+// .collect(), .fold(), .any(), .all(), .find(), .reduce(), chained pipelines,
 // closures with captures, type-transforming maps, break/continue.
 
 fn main() -> int {
@@ -85,6 +86,149 @@ fn main() -> int {
     }
     print_str("float map: ");
     print_float(fsum);
+
+    // --- Phase 3: Combinators ---
+
+    // enumerate: get index alongside value
+    print_str("\n--- enumerate ---");
+    for pair in data.iter().enumerate() {
+        let idx: int = pair.0;
+        let val: int = pair.1;
+        if idx < 3 {
+            print_str("  idx=");
+            print_int(idx);
+            print_str("  val=");
+            print_int(val);
+        }
+    }
+
+    // zip: pair elements from two arrays
+    print_str("\n--- zip ---");
+    let names: [string] = ["alice", "bob", "charlie"];
+    let scores: [int] = [95, 87, 92];
+    for pair in names.iter().zip(scores) {
+        let name: string = pair.0;
+        let score: int = pair.1;
+        print_str("  ");
+        print_str(name);
+        print_str(": ");
+        print_int(score);
+    }
+
+    // take: only first N elements
+    print_str("\n--- take ---");
+    sum = 0;
+    for x in data.iter().take(3) {
+        sum += x;
+    }
+    print_str("take(3) sum: ");
+    print_int(sum);
+
+    // skip: skip first N elements
+    print_str("\n--- skip ---");
+    sum = 0;
+    for x in data.iter().skip(7) {
+        sum += x;
+    }
+    print_str("skip(7) sum: ");
+    print_int(sum);
+
+    // skip + enumerate: enumerate resets at 0 after skip
+    print_str("\n--- skip + enumerate ---");
+    for pair in data.iter().skip(8).enumerate() {
+        print_str("  idx=");
+        print_int(pair.0);
+        print_str("  val=");
+        print_int(pair.1);
+    }
+
+    // Complex combinator chain: skip, filter, map, take
+    print_str("\n--- complex chain ---");
+    sum = 0;
+    for x in data.iter().skip(1).filter(|v: int| -> bool { return v % 2 == 0; }).map(|v: int| -> int { return v * 10; }).take(3) {
+        sum += x;
+        print_str("  ");
+        print_int(x);
+    }
+    print_str("chain sum: ");
+    print_int(sum);
+
+    // --- Phase 3: Terminators ---
+
+    // collect: materialize filtered/mapped pipeline into new array
+    print_str("\n--- collect ---");
+    let evens_squared: [int] = data.iter()
+        .filter(|v: int| -> bool { return v % 2 == 0; })
+        .map(|v: int| -> int { return v * v; })
+        .collect();
+    print_str("evens squared (len): ");
+    print_int(len(evens_squared));
+    sum = 0;
+    for x in evens_squared.iter() {
+        sum += x;
+    }
+    print_str("evens squared (sum): ");
+    print_int(sum);
+
+    // fold: accumulate with initial value
+    print_str("\n--- fold ---");
+    let total: int = data.iter().fold(0, |acc: int, x: int| -> int { return acc + x; });
+    print_str("fold sum 1..10: ");
+    print_int(total);
+
+    let product: int = nums.iter().fold(1, |acc: int, x: int| -> int { return acc * x; });
+    print_str("fold product 1..5: ");
+    print_int(product);
+
+    // any: check if any element satisfies predicate
+    print_str("\n--- any ---");
+    let has_big: bool = data.iter().any(|v: int| -> bool { return v > 8; });
+    print_str("any > 8: ");
+    print_bool(has_big);
+
+    let has_negative: bool = data.iter().any(|v: int| -> bool { return v < 0; });
+    print_str("any < 0: ");
+    print_bool(has_negative);
+
+    // all: check if all elements satisfy predicate
+    print_str("\n--- all ---");
+    let all_positive: bool = data.iter().all(|v: int| -> bool { return v > 0; });
+    print_str("all > 0: ");
+    print_bool(all_positive);
+
+    let all_even: bool = data.iter().all(|v: int| -> bool { return v % 2 == 0; });
+    print_str("all even: ");
+    print_bool(all_even);
+
+    // find: first element matching predicate (returns Option<int>)
+    print_str("\n--- find ---");
+    let first_gt_5: Option<int> = data.iter().find(|v: int| -> bool { return v > 5; });
+    if first_gt_5.is_some() {
+        print_str("find > 5: ");
+        print_int(first_gt_5.unwrap());
+    }
+
+    let first_gt_100: Option<int> = data.iter().find(|v: int| -> bool { return v > 100; });
+    if first_gt_100.is_none() {
+        print_str("find > 100: none");
+    }
+
+    // reduce: accumulate without initial value (returns Option<int>)
+    print_str("\n--- reduce ---");
+    let reduced: Option<int> = data.iter().reduce(|acc: int, x: int| -> int { return acc + x; });
+    if reduced.is_some() {
+        print_str("reduce sum: ");
+        print_int(reduced.unwrap());
+    }
+
+    // Combined: filter + collect + fold
+    print_str("\n--- combined pipeline ---");
+    let odds: [int] = data.iter()
+        .filter(|v: int| -> bool { return v % 2 == 1; })
+        .collect();
+    let odds_sum: int = odds.iter().fold(0, |acc: int, x: int| -> int { return acc + x; });
+    print_str("odd numbers sum: ");
+    print_int(odds_sum);
 
     return 0;
 }

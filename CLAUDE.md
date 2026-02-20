@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 cargo build                          # dev build
 cargo build --release                # release build
-cargo test                           # all tests (622: 68 unit + 554 integration)
+cargo test                           # all tests (661: 68 unit + 593 integration)
 cargo test compiler::lexer           # tests in one module
 cargo test test_fibonacci_compiles   # single test by name
 cargo test -- --nocapture            # see stdout from tests
@@ -103,7 +103,8 @@ Multi-file projects (`yorum build`) add a front-end step: `ModuleResolver` disco
 - Unit-typed let bindings and assignments skip alloca/store — `alloca void` and `store void` are invalid LLVM IR. The RHS is still evaluated for side effects
 - Map struct is 48 bytes `{keys, vals, flags, cap, size, tombstones}`, Set is 40 bytes `{keys, flags, cap, size, tombstones}`
 - Tuples compile to LLVM named structs (`%tuple.int.string = type { i64, ptr }`). `ensure_tuple_type()` lazily emits type defs
-- Iterator pipelines (`.iter().map().filter()` chains) are fused into a single loop by `emit_for_pipeline()`. `try_extract_pipeline()` walks the AST chain right-to-left, extracting `IterStep::Map`/`IterStep::Filter` steps. Closures are emitted as `{ ptr, ptr }` pairs; fn_ptr and env_ptr are loaded pre-loop. Index is incremented in the step block (before filter branches), so `continue` targets `for.cond` and filtered-out elements correctly advance
+- Iterator pipelines (`.iter().map().filter().enumerate().zip().take().skip()` chains) are fused into a single loop by `emit_for_pipeline()`. `try_extract_pipeline()` walks the AST chain right-to-left, extracting `IterStep` variants (Map, Filter, Enumerate, Zip, Take, Skip). Closures are emitted as `{ ptr, ptr }` pairs; fn_ptr and env_ptr are loaded pre-loop. Index is incremented in the step block (before filter branches), so `continue` targets `for.cond` and filtered-out elements correctly advance
+- Pipeline terminators (`.collect()`, `.fold()`, `.any()`, `.all()`, `.find()`, `.reduce()`) are standalone expressions intercepted before receiver inference in both `infer_expr` and `emit_expr`. `try_extract_terminated_pipeline()` extracts pipeline steps + terminator. Each terminator emits its own loop with shared step logic via `emit_pipeline_steps()`. `.find()` and `.reduce()` return `Option<T>` (monomorphizer registers instantiation via `has_iter_base_static()`)
 - Math builtins inline LLVM intrinsic calls at call sites (no wrapper functions — wrappers would shadow C library symbols)
 
 ### Yorum language design choices
@@ -119,7 +120,7 @@ Multi-file projects (`yorum build`) add a front-end step: `ModuleResolver` disco
 - Bitwise operators: `&`, `|`, `^`, `<<`, `>>` (int only). `>>` is parsed as two `Gt` tokens (avoids conflict with generic closing `>>`)
 - `break` and `continue` for while/for loops
 - Range syntax: `for i in 0..n` (counter-based for loop)
-- Iterator pipelines: `for x in arr.iter().map(|v: int| -> int { ... }).filter(|v: int| -> bool { ... }) { ... }` — fused into a single loop with zero allocation. `.map()` and `.filter()` only valid on chains starting with `.iter()` on an array, only inside for-loops, only with inline closures
+- Iterator pipelines: combinators (`.map()`, `.filter()`, `.enumerate()`, `.zip()`, `.take()`, `.skip()`) work in for-loops, terminators (`.collect()`, `.fold()`, `.any()`, `.all()`, `.find()`, `.reduce()`) work as standalone expressions. All chains start with `.iter()` on an array. All fused into single loops with zero allocation (except `.collect()`). Only inline closures supported
 - String interpolation: `"hello {expr}"` with `{{`/`}}` escapes
 - Tuple types: `(int, string)`, destructuring: `let (a, b) = t;`
 - `Option<T>` and `Result<T, E>` are prelude types (always available)
@@ -138,7 +139,7 @@ Multi-file projects (`yorum build`) add a front-end step: `ModuleResolver` disco
 
 ### Example programs
 
-`examples/*.yrm` — 31 examples covering all major language features. All compile to native binaries and run correctly. Use these as references for valid Yorum syntax.
+`examples/*.yrm` — 32 examples covering all major language features. All compile to native binaries and run correctly. Use these as references for valid Yorum syntax.
 
 **Iteration rule:** Every version that adds new language features MUST also add or expand example programs exercising those features. After adding examples, verify the full cycle: compile with `cargo run -- compile`, link with `clang`, and run the binary. Do not use workarounds in examples — if a codegen bug prevents clean usage, fix the bug first.
 

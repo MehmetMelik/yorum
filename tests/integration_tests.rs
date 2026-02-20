@@ -8871,7 +8871,7 @@ fn test_iter_any_true() {
          }\n",
     );
     assert!(ir.contains("any.cond"));
-    assert!(ir.contains("any.found"));
+    assert!(ir.contains("any.short"));
 }
 
 #[test]
@@ -8920,7 +8920,7 @@ fn test_iter_all_false() {
          \x20   return 0;\n\
          }\n",
     );
-    assert!(ir.contains("all.fail"));
+    assert!(ir.contains("all.short"));
 }
 
 #[test]
@@ -9519,4 +9519,132 @@ fn test_range_iter_exclusive_uses_slt_on_value() {
     );
     // The loop condition emits: cur_val = add i64 start, idx; icmp slt cur_val, end
     assert!(ir.contains("icmp slt i64"));
+}
+
+// ── Pipeline tuple-type regression tests (Bug 1: mangle_name) ──
+
+#[test]
+fn test_iter_enumerate_find() {
+    // find() on enumerate() pipeline produces valid IR with tuple type
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [10, 20, 30];\n\
+         \x20   let result: Option<(int, int)> = arr.iter().enumerate().find(\n\
+         \x20       |t: (int, int)| -> bool { return t.1 == 20; }\n\
+         \x20   );\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("find.cond"));
+    assert!(ir.contains("Option__tuple.int.int"));
+}
+
+#[test]
+fn test_iter_enumerate_reduce() {
+    // reduce() on enumerate() pipeline produces valid IR with tuple type
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [10, 20, 30];\n\
+         \x20   let result: Option<(int, int)> = arr.iter().enumerate().reduce(\n\
+         \x20       |a: (int, int), b: (int, int)| -> (int, int) { return (a.0 + b.0, a.1 + b.1); }\n\
+         \x20   );\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("red.cond"));
+    assert!(ir.contains("Option__tuple.int.int"));
+}
+
+#[test]
+fn test_iter_zip_find() {
+    // find() on zip() pipeline produces valid IR with tuple type
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let a: [int] = [1, 2, 3];\n\
+         \x20   let b: [int] = [10, 20, 30];\n\
+         \x20   let result: Option<(int, int)> = a.iter().zip(b).find(\n\
+         \x20       |t: (int, int)| -> bool { return t.1 == 20; }\n\
+         \x20   );\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("find.cond"));
+    assert!(ir.contains("Option__tuple.int.int"));
+}
+
+// ── Pipeline edge case tests ──
+
+#[test]
+fn test_iter_take_zero() {
+    // take(0).collect() should produce an empty array (zero-length allocation)
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let result: [int] = arr.iter().take(0).collect();\n\
+         \x20   return len(result);\n\
+         }\n",
+    );
+    assert!(ir.contains("col.cond"));
+    assert!(ir.contains("for.take.cont"));
+}
+
+#[test]
+fn test_iter_skip_zero() {
+    // skip(0).collect() should return unchanged elements
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let result: [int] = arr.iter().skip(0).collect();\n\
+         \x20   return len(result);\n\
+         }\n",
+    );
+    assert!(ir.contains("col.cond"));
+}
+
+#[test]
+fn test_iter_skip_then_take() {
+    // skip(2).take(3).collect() — chained combinators
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3, 4, 5, 6, 7];\n\
+         \x20   let result: [int] = arr.iter().skip(2).take(3).collect();\n\
+         \x20   return len(result);\n\
+         }\n",
+    );
+    assert!(ir.contains("col.cond"));
+    // Both skip and take should be present
+    assert!(ir.contains("for.skip.done"));
+    assert!(ir.contains("for.take.cont"));
+}
+
+// ── Pipeline terminator error path tests ──
+
+#[test]
+fn test_iter_fold_wrong_closure_type() {
+    // fold() with wrong closure parameter type
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let result: int = arr.iter().fold(0, |acc: int, v: float| -> int { return acc; });\n\
+         \x20   return result;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+    let msg = result.unwrap_err().to_string();
+    assert!(msg.contains("does not match element type"));
+}
+
+#[test]
+fn test_iter_reduce_wrong_closure_type() {
+    // reduce() with wrong closure parameter type
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let result: Option<int> = arr.iter().reduce(|a: float, b: float| -> float { return a; });\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+    let msg = result.unwrap_err().to_string();
+    assert!(msg.contains("must both match element type"));
 }

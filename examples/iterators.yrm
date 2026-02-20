@@ -230,5 +230,46 @@ fn main() -> int {
     print_str("odd numbers sum: ");
     print_int(odds_sum);
 
+    // --- Range Pipelines ---
+
+    // Range + map + collect: squares of 0..5
+    print_str("\n--- range pipelines ---");
+    let squares: [int] = (0..5).iter().map(|x: int| -> int { return x * x; }).collect();
+    print_str("range map collect (len): ");
+    print_int(len(squares));
+    sum = 0;
+    for x in squares.iter() {
+        sum += x;
+    }
+    print_str("range squares sum: ");
+    print_int(sum);
+
+    // Range + filter + fold: sum of evens in 0..20
+    let even_sum: int = (0..20).iter()
+        .filter(|x: int| -> bool { return x % 2 == 0; })
+        .fold(0, |acc: int, x: int| -> int { return acc + x; });
+    print_str("range filter fold (even sum 0..20): ");
+    print_int(even_sum);
+
+    // Inclusive range + enumerate
+    print_str("\n--- inclusive range enumerate ---");
+    for pair in (1..=3).iter().enumerate() {
+        print_str("  idx=");
+        print_int(pair.0);
+        print_str("  val=");
+        print_int(pair.1);
+    }
+
+    // Range + skip + take in for-loop
+    print_str("\n--- range skip take ---");
+    sum = 0;
+    for x in (0..100).iter().skip(10).take(5) {
+        sum += x;
+        print_str("  ");
+        print_int(x);
+    }
+    print_str("range skip+take sum: ");
+    print_int(sum);
+
     return 0;
 }

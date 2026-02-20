@@ -9151,3 +9151,223 @@ fn test_iter_enumerate_fold_by_value() {
     );
     assert!(ir.contains("define i64 @main("));
 }
+
+// ── Range pipeline combinators ────────────────────────────────
+
+#[test]
+fn test_for_range_iter_map() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for x in (0..5).iter().map(|x: int| -> int { return x * x; }) {\n\
+         \x20       sum += x;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    assert!(ir.contains("for.step"));
+    assert!(ir.contains("add i64")); // range element = start + idx
+}
+
+#[test]
+fn test_for_range_iter_filter() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for x in (0..10).iter().filter(|x: int| -> bool { return x % 2 == 0; }) {\n\
+         \x20       sum += x;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    assert!(ir.contains("call i1"));
+    assert!(ir.contains("for.body"));
+}
+
+#[test]
+fn test_for_range_iter_enumerate() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for pair in (1..4).iter().enumerate() {\n\
+         \x20       sum += pair.0;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    assert!(ir.contains("for.step"));
+    assert!(ir.contains("tuple.int.int"));
+}
+
+#[test]
+fn test_for_range_iter_take() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for x in (0..100).iter().take(3) {\n\
+         \x20       sum += x;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    assert!(ir.contains("for.step"));
+}
+
+#[test]
+fn test_for_range_iter_skip() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for x in (0..10).iter().skip(7) {\n\
+         \x20       sum += x;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    assert!(ir.contains("for.step"));
+}
+
+#[test]
+fn test_for_range_inclusive_iter_map() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for x in (1..=5).iter().map(|x: int| -> int { return x * 2; }) {\n\
+         \x20       sum += x;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    assert!(ir.contains("for.step"));
+    // Inclusive range: len = end - start + 1
+    assert!(ir.contains("add i64"));
+}
+
+// ── Range pipeline terminators ────────────────────────────────
+
+#[test]
+fn test_range_iter_collect() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let nums: [int] = (0..5).iter().collect();\n\
+         \x20   return len(nums);\n\
+         }\n",
+    );
+    assert!(ir.contains("col.cond"));
+    assert!(ir.contains("col.body"));
+}
+
+#[test]
+fn test_range_iter_fold() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let sum: int = (1..=100).iter().fold(0, |acc: int, x: int| -> int { return acc + x; });\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    assert!(ir.contains("fold.cond"));
+    assert!(ir.contains("fold.body"));
+}
+
+#[test]
+fn test_range_iter_any() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let found: bool = (0..10).iter().any(|x: int| -> bool { return x > 8; });\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("any.cond"));
+}
+
+#[test]
+fn test_range_iter_all() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let all_pos: bool = (1..5).iter().all(|x: int| -> bool { return x > 0; });\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("all.cond"));
+}
+
+#[test]
+fn test_range_iter_find() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let found: Option<int> = (0..10).iter().find(|x: int| -> bool { return x > 5; });\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("find.cond"));
+}
+
+#[test]
+fn test_range_iter_reduce() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let result: Option<int> = (1..=5).iter().reduce(|a: int, x: int| -> int { return a + x; });\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("red.cond"));
+}
+
+// ── Range pipeline combined chains ────────────────────────────
+
+#[test]
+fn test_range_iter_filter_map_collect() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let result: [int] = (0..20).iter().filter(|x: int| -> bool { return x % 2 == 0; }).map(|x: int| -> int { return x * x; }).collect();\n\
+         \x20   return len(result);\n\
+         }\n",
+    );
+    assert!(ir.contains("col.cond"));
+    assert!(ir.contains("__closure_"));
+}
+
+#[test]
+fn test_range_iter_skip_take_enumerate() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for pair in (0..100).iter().skip(10).take(5).enumerate() {\n\
+         \x20       sum += pair.0;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    assert!(ir.contains("for.step"));
+    assert!(ir.contains("tuple.int.int"));
+}
+
+// ── Range pipeline edge cases ─────────────────────────────────
+
+#[test]
+fn test_for_range_bare_iter() {
+    // Bare (range).iter() with no combinators should work like a regular range for-loop
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for i in (0..5).iter() {\n\
+         \x20       sum += i;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    assert!(ir.contains("for.cond"));
+    assert!(ir.contains("for.body"));
+}
+
+#[test]
+fn test_range_iter_empty() {
+    // Empty range (5..5) should produce empty array via collect
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let empty: [int] = (5..5).iter().collect();\n\
+         \x20   return len(empty);\n\
+         }\n",
+    );
+    assert!(ir.contains("col.cond"));
+}

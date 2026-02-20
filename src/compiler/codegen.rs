@@ -62,10 +62,11 @@ enum IterStep<'a> {
     Skip(&'a Expr),
 }
 
-/// A fully extracted iterator pipeline: array source + ordered steps.
+/// A fully extracted iterator pipeline: array/range source + ordered steps.
 struct IterPipeline<'a> {
-    source: &'a Expr,         // array expression (receiver of .iter())
+    source: &'a Expr,         // source expression (receiver of .iter())
     steps: Vec<IterStep<'a>>, // ordered pipeline steps
+    is_range_source: bool,    // true if source is Range/RangeInclusive
 }
 
 /// A terminator at the end of a pipeline (standalone expression, not for-loop).
@@ -78,11 +79,12 @@ enum PipelineTerminator<'a> {
     All(&'a ClosureExpr),
 }
 
-/// A fully extracted terminated pipeline: array source + steps + terminator.
+/// A fully extracted terminated pipeline: array/range source + steps + terminator.
 struct TerminatedPipeline<'a> {
     source: &'a Expr,
     steps: Vec<IterStep<'a>>,
     terminator: PipelineTerminator<'a>,
+    is_range_source: bool, // true if source is Range/RangeInclusive
 }
 
 /// Pre-emitted closure info for a pipeline step.
@@ -5197,15 +5199,22 @@ impl Codegen {
                         return None;
                     }
                     "iter" => {
-                        if args.is_empty() && self.expr_struct_name(receiver).is_err() {
-                            if steps.is_empty() {
-                                return None; // Just .iter() with no combinators
+                        if args.is_empty() {
+                            let is_range = matches!(
+                                receiver.kind,
+                                ExprKind::Range(_, _) | ExprKind::RangeInclusive(_, _)
+                            );
+                            if is_range || self.expr_struct_name(receiver).is_err() {
+                                if steps.is_empty() {
+                                    return None; // Just .iter() with no combinators
+                                }
+                                steps.reverse(); // We walked right-to-left
+                                return Some(IterPipeline {
+                                    source: receiver,
+                                    steps,
+                                    is_range_source: is_range,
+                                });
                             }
-                            steps.reverse(); // We walked right-to-left
-                            return Some(IterPipeline {
-                                source: receiver,
-                                steps,
-                            });
                         }
                         return None; // Struct .iter() or .iter() with args
                     }
@@ -5303,6 +5312,7 @@ impl Codegen {
                     source: pipeline.source,
                     steps: pipeline.steps,
                     terminator,
+                    is_range_source: pipeline.is_range_source,
                 });
             }
 
@@ -5310,15 +5320,19 @@ impl Codegen {
             if let ExprKind::MethodCall(ref inner_recv, ref inner_method, ref inner_args) =
                 receiver.kind
             {
-                if inner_method == "iter"
-                    && inner_args.is_empty()
-                    && self.expr_struct_name(inner_recv).is_err()
-                {
-                    return Some(TerminatedPipeline {
-                        source: inner_recv,
-                        steps: Vec::new(),
-                        terminator,
-                    });
+                if inner_method == "iter" && inner_args.is_empty() {
+                    let is_range = matches!(
+                        inner_recv.kind,
+                        ExprKind::Range(_, _) | ExprKind::RangeInclusive(_, _)
+                    );
+                    if is_range || self.expr_struct_name(inner_recv).is_err() {
+                        return Some(TerminatedPipeline {
+                            source: inner_recv,
+                            steps: Vec::new(),
+                            terminator,
+                            is_range_source: is_range,
+                        });
+                    }
                 }
             }
         }
@@ -5333,6 +5347,18 @@ impl Codegen {
         // Inclusive range: for i in start..=end
         if let ExprKind::RangeInclusive(ref start, ref end) = s.iterable.kind {
             return self.emit_for_range(&s.var_name, start, end, true, &s.body);
+        }
+
+        // Bare (range).iter() → same as range for-loop
+        if let ExprKind::MethodCall(ref receiver, ref method, ref args) = s.iterable.kind {
+            if method == "iter" && args.is_empty() {
+                if let ExprKind::Range(ref start, ref end) = receiver.kind {
+                    return self.emit_for_range(&s.var_name, start, end, false, &s.body);
+                }
+                if let ExprKind::RangeInclusive(ref start, ref end) = receiver.kind {
+                    return self.emit_for_range(&s.var_name, start, end, true, &s.body);
+                }
+            }
         }
 
         // Fused iterator pipeline (.iter().map().filter() chains)
@@ -5519,38 +5545,64 @@ impl Codegen {
         &mut self,
         source: &Expr,
         steps: &[IterStep<'_>],
+        is_range_source: bool,
     ) -> Result<
         (
-            String,
-            String,
-            String,
+            String, // data_ptr (or range_start for range sources)
+            String, // len_val
+            String, // src_elem_ty
             Vec<Option<ClosureInfo>>,
             Vec<Option<ZipInfo>>,
             Vec<Option<String>>,
             Vec<Option<String>>,
+            bool, // is_range_source (passed through for callers)
         ),
         CodegenError,
     > {
-        // Emit the source array expression → fat pointer
-        let arr_val = self.emit_expr(source)?;
-        let src_elem_ty = self.infer_array_elem_type(source);
+        let (data_ptr, len_val, src_elem_ty) = if is_range_source {
+            // Range source: emit start and end, compute length
+            let (start_expr, end_expr, inclusive) = match &source.kind {
+                ExprKind::Range(s, e) => (s, e, false),
+                ExprKind::RangeInclusive(s, e) => (s, e, true),
+                _ => unreachable!(),
+            };
+            let start_val = self.emit_expr(start_expr)?;
+            let end_val = self.emit_expr(end_expr)?;
+            let len = self.fresh_temp();
+            self.emit_line(&format!("{} = sub i64 {}, {}", len, end_val, start_val));
+            let final_len = if inclusive {
+                let len_inc = self.fresh_temp();
+                self.emit_line(&format!("{} = add i64 {}, 1", len_inc, len));
+                len_inc
+            } else {
+                len
+            };
+            // For ranges, data_ptr holds the start value (used as offset base in emit_pipeline_steps)
+            (start_val, final_len, "i64".to_string())
+        } else {
+            // Emit the source array expression → fat pointer
+            let arr_val = self.emit_expr(source)?;
+            let src_elem_ty = self.infer_array_elem_type(source);
 
-        // Load data ptr and length from { ptr, i64, i64 }
-        let data_gep = self.fresh_temp();
-        self.emit_line(&format!(
-            "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 0",
-            data_gep, arr_val
-        ));
-        let data_ptr = self.fresh_temp();
-        self.emit_line(&format!("{} = load ptr, ptr {}", data_ptr, data_gep));
+            // Load data ptr and length from { ptr, i64, i64 }
+            let data_gep = self.fresh_temp();
+            self.emit_line(&format!(
+                "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 0",
+                data_gep, arr_val
+            ));
+            let data_ptr = self.fresh_temp();
+            self.emit_line(&format!("{} = load ptr, ptr {}", data_ptr, data_gep));
 
-        let len_gep = self.fresh_temp();
-        self.emit_line(&format!(
-            "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 1",
-            len_gep, arr_val
-        ));
-        let len_val = self.fresh_temp();
-        self.emit_line(&format!("{} = load i64, ptr {}", len_val, len_gep));
+            let len_gep = self.fresh_temp();
+            self.emit_line(&format!(
+                "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 1",
+                len_gep, arr_val
+            ));
+            let len_val = self.fresh_temp();
+            self.emit_line(&format!("{} = load i64, ptr {}", len_val, len_gep));
+
+            (data_ptr, len_val, src_elem_ty)
+        };
 
         // Pre-emit closures and prepare step data.
         // Track current_elem_ty so Enumerate/Zip can register tuple types
@@ -5670,6 +5722,7 @@ impl Codegen {
             zip_infos,
             take_skip_ptrs,
             enumerate_ptrs,
+            is_range_source,
         ))
     }
 
@@ -5679,7 +5732,7 @@ impl Codegen {
         pipeline: &IterPipeline<'_>,
         body: &Block,
     ) -> Result<(), CodegenError> {
-        // 1. Shared preamble: emit source array, load data/len, pre-emit step closures
+        // 1. Shared preamble: emit source, load data/len, pre-emit step closures
         let (
             data_ptr,
             len_val,
@@ -5688,7 +5741,12 @@ impl Codegen {
             zip_infos,
             take_skip_ptrs,
             enumerate_ptrs,
-        ) = self.emit_pipeline_preamble(pipeline.source, &pipeline.steps)?;
+            is_range,
+        ) = self.emit_pipeline_preamble(
+            pipeline.source,
+            &pipeline.steps,
+            pipeline.is_range_source,
+        )?;
 
         // 2. Determine final output type
         let final_elem_ty = self.pipeline_final_elem_type(&src_elem_ty, &pipeline.steps);
@@ -5736,6 +5794,7 @@ impl Codegen {
             &zip_infos,
             &take_skip_ptrs,
             &enumerate_ptrs,
+            is_range,
         )?;
 
         // 6. Body block
@@ -5777,7 +5836,7 @@ impl Codegen {
         &mut self,
         pipeline: &TerminatedPipeline<'_>,
     ) -> Result<String, CodegenError> {
-        // 1. Shared preamble: emit source array, load data/len, pre-emit step closures
+        // 1. Shared preamble: emit source, load data/len, pre-emit step closures
         let (
             data_ptr,
             len_val,
@@ -5786,7 +5845,12 @@ impl Codegen {
             zip_infos,
             take_skip_ptrs,
             enumerate_ptrs,
-        ) = self.emit_pipeline_preamble(pipeline.source, &pipeline.steps)?;
+            is_range,
+        ) = self.emit_pipeline_preamble(
+            pipeline.source,
+            &pipeline.steps,
+            pipeline.is_range_source,
+        )?;
 
         // Emit terminator closure if any
         let term_closure_info = match &pipeline.terminator {
@@ -5843,6 +5907,7 @@ impl Codegen {
                 &zip_infos,
                 &take_skip_ptrs,
                 &enumerate_ptrs,
+                is_range,
             ),
             PipelineTerminator::Fold(init_expr, _) => {
                 let init_val = self.emit_expr(init_expr)?;
@@ -5862,6 +5927,7 @@ impl Codegen {
                     &tci.fn_ptr,
                     &tci.env_ptr,
                     &tci.ret_ty,
+                    is_range,
                 )
             }
             PipelineTerminator::Any(_) => {
@@ -5879,6 +5945,7 @@ impl Codegen {
                     &enumerate_ptrs,
                     &tci.fn_ptr,
                     &tci.env_ptr,
+                    is_range,
                 )
             }
             PipelineTerminator::All(_) => {
@@ -5896,6 +5963,7 @@ impl Codegen {
                     &enumerate_ptrs,
                     &tci.fn_ptr,
                     &tci.env_ptr,
+                    is_range,
                 )
             }
             PipelineTerminator::Find(_) => {
@@ -5913,6 +5981,7 @@ impl Codegen {
                     &enumerate_ptrs,
                     &tci.fn_ptr,
                     &tci.env_ptr,
+                    is_range,
                 )
             }
             PipelineTerminator::Reduce(_) => {
@@ -5931,6 +6000,7 @@ impl Codegen {
                     &tci.fn_ptr,
                     &tci.env_ptr,
                     &tci.ret_ty,
+                    is_range,
                 )
             }
         }
@@ -5956,18 +6026,24 @@ impl Codegen {
         zip_infos: &[Option<ZipInfo>],
         take_skip_ptrs: &[Option<String>],
         enumerate_ptrs: &[Option<String>],
+        is_range_source: bool,
     ) -> Result<(String, String), CodegenError> {
         // Load element at current index
-        let elem_gep = self.fresh_temp();
-        self.emit_line(&format!(
-            "{} = getelementptr {}, ptr {}, i64 {}",
-            elem_gep, src_elem_ty, data_ptr, cur_idx
-        ));
-        let mut current_val = self.fresh_temp();
-        self.emit_line(&format!(
-            "{} = load {}, ptr {}",
-            current_val, src_elem_ty, elem_gep
-        ));
+        let mut current_val = if is_range_source {
+            // Range source: element = start + index
+            let val = self.fresh_temp();
+            self.emit_line(&format!("{} = add i64 {}, {}", val, data_ptr, cur_idx));
+            val
+        } else {
+            let elem_gep = self.fresh_temp();
+            self.emit_line(&format!(
+                "{} = getelementptr {}, ptr {}, i64 {}",
+                elem_gep, src_elem_ty, data_ptr, cur_idx
+            ));
+            let val = self.fresh_temp();
+            self.emit_line(&format!("{} = load {}, ptr {}", val, src_elem_ty, elem_gep));
+            val
+        };
 
         // Increment index (always, even if filtered out)
         let next_idx = self.fresh_temp();
@@ -6203,6 +6279,7 @@ impl Codegen {
         zip_infos: &[Option<ZipInfo>],
         take_skip_ptrs: &[Option<String>],
         enumerate_ptrs: &[Option<String>],
+        is_range_source: bool,
     ) -> Result<String, CodegenError> {
         let elem_size = self.llvm_type_size(final_elem_ty);
 
@@ -6256,6 +6333,7 @@ impl Codegen {
             zip_infos,
             take_skip_ptrs,
             enumerate_ptrs,
+            is_range_source,
         )?;
 
         // Body: store element to output array
@@ -6325,6 +6403,7 @@ impl Codegen {
         term_fn_ptr: &str,
         term_env_ptr: &str,
         acc_ty: &str,
+        is_range_source: bool,
     ) -> Result<String, CodegenError> {
         // Alloca for accumulator
         let acc_ptr = self.fresh_temp();
@@ -6364,6 +6443,7 @@ impl Codegen {
             zip_infos,
             take_skip_ptrs,
             enumerate_ptrs,
+            is_range_source,
         )?;
 
         self.emit_label(&body_label);
@@ -6402,6 +6482,7 @@ impl Codegen {
         enumerate_ptrs: &[Option<String>],
         term_fn_ptr: &str,
         term_env_ptr: &str,
+        is_range_source: bool,
     ) -> Result<String, CodegenError> {
         let result_ptr = self.fresh_temp();
         self.emit_line(&format!("{} = alloca i1", result_ptr));
@@ -6440,6 +6521,7 @@ impl Codegen {
             zip_infos,
             take_skip_ptrs,
             enumerate_ptrs,
+            is_range_source,
         )?;
 
         self.emit_label(&body_label);
@@ -6484,6 +6566,7 @@ impl Codegen {
         enumerate_ptrs: &[Option<String>],
         term_fn_ptr: &str,
         term_env_ptr: &str,
+        is_range_source: bool,
     ) -> Result<String, CodegenError> {
         let result_ptr = self.fresh_temp();
         self.emit_line(&format!("{} = alloca i1", result_ptr));
@@ -6522,6 +6605,7 @@ impl Codegen {
             zip_infos,
             take_skip_ptrs,
             enumerate_ptrs,
+            is_range_source,
         )?;
 
         self.emit_label(&body_label);
@@ -6566,6 +6650,7 @@ impl Codegen {
         enumerate_ptrs: &[Option<String>],
         term_fn_ptr: &str,
         term_env_ptr: &str,
+        is_range_source: bool,
     ) -> Result<String, CodegenError> {
         // Determine Option type name
         let option_name = self.yorum_type_to_option_name(final_elem_ty);
@@ -6614,6 +6699,7 @@ impl Codegen {
             zip_infos,
             take_skip_ptrs,
             enumerate_ptrs,
+            is_range_source,
         )?;
 
         self.emit_label(&body_label);
@@ -6673,6 +6759,7 @@ impl Codegen {
         term_fn_ptr: &str,
         term_env_ptr: &str,
         ret_ty: &str,
+        is_range_source: bool,
     ) -> Result<String, CodegenError> {
         let option_name = self.yorum_type_to_option_name(final_elem_ty);
         let option_llvm = format!("%{}", option_name);
@@ -6727,6 +6814,7 @@ impl Codegen {
             zip_infos,
             take_skip_ptrs,
             enumerate_ptrs,
+            is_range_source,
         )?;
 
         self.emit_label(&body_label);

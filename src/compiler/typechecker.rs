@@ -1828,6 +1828,40 @@ impl TypeChecker {
         if let ExprKind::MethodCall(ref receiver, ref method, ref args) = expr.kind {
             match method.as_str() {
                 "iter" => {
+                    // Range expressions: (start..end).iter() or (start..=end).iter()
+                    if matches!(
+                        receiver.kind,
+                        ExprKind::Range(_, _) | ExprKind::RangeInclusive(_, _)
+                    ) {
+                        if !args.is_empty() {
+                            self.errors.push(TypeError {
+                                message: "iter() takes no arguments".to_string(),
+                                span: expr.span,
+                            });
+                        }
+                        // Validate range bounds are int
+                        let (start, end) = match &receiver.kind {
+                            ExprKind::Range(s, e) | ExprKind::RangeInclusive(s, e) => (s, e),
+                            _ => unreachable!(),
+                        };
+                        if let Some(t) = self.infer_expr(start) {
+                            if t != Type::Int {
+                                self.errors.push(TypeError {
+                                    message: format!("range start must be int, found '{}'", t),
+                                    span: start.span,
+                                });
+                            }
+                        }
+                        if let Some(t) = self.infer_expr(end) {
+                            if t != Type::Int {
+                                self.errors.push(TypeError {
+                                    message: format!("range end must be int, found '{}'", t),
+                                    span: end.span,
+                                });
+                            }
+                        }
+                        return Some(Type::Int);
+                    }
                     let recv_ty = self.infer_expr(receiver);
                     match recv_ty {
                         Some(Type::Array(inner)) => {

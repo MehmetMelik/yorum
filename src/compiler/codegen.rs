@@ -837,6 +837,17 @@ impl Codegen {
     }
 
     fn emit_builtin_helpers(&mut self) {
+        self.emit_builtin_io_helpers();
+        self.emit_builtin_concurrency_helpers();
+        self.emit_builtin_conversion_helpers();
+        self.emit_builtin_map_core_helpers();
+        self.emit_builtin_math_helpers();
+        self.emit_builtin_string_helpers();
+        self.emit_builtin_collection_helpers();
+    }
+
+    /// Print, bounds check, string basics (len/concat/eq), contract fail.
+    fn emit_builtin_io_helpers(&mut self) {
         // print_int
         self.body.push_str(
             "define void @print_int(i64 %x) {\n\
@@ -935,7 +946,10 @@ impl Codegen {
              \x20 unreachable\n\
              }\n\n",
         );
+    }
 
+    /// Channel creation, send, and receive.
+    fn emit_builtin_concurrency_helpers(&mut self) {
         // __yorum_chan_create — creates a channel (mutex + condvar + value slot + ready flag)
         // Channel layout: { mutex (64 bytes), condvar (64 bytes), value (8 bytes), ready (i32) }
         // Total: 144 bytes (padded)
@@ -1002,7 +1016,10 @@ impl Codegen {
              \x20 ret i64 %val\n\
              }\n\n",
         );
+    }
 
+    /// Type conversions (char/int/float/str), string indexing, char classification, file I/O.
+    fn emit_builtin_conversion_helpers(&mut self) {
         // print_char — prints a single character
         self.body.push_str(
             "define void @print_char(i8 %c) {\n\
@@ -1205,7 +1222,10 @@ impl Codegen {
              \x20 ret void\n\
              }\n\n",
         );
+    }
 
+    /// HashMap core: hash, find_slot, grow, new, set, get, has.
+    fn emit_builtin_map_core_helpers(&mut self) {
         // ── HashMap helpers ──
         // Map struct layout (40 bytes):
         //   offset 0:  ptr keys     (array of ptr to C strings)
@@ -1464,7 +1484,10 @@ impl Codegen {
              \x20 ret i1 %found\n\
              }\n\n",
         );
+    }
 
+    /// abs, min, max for int and float.
+    fn emit_builtin_math_helpers(&mut self) {
         // ── Math builtins ──
 
         // abs_int — absolute value of int
@@ -1528,7 +1551,11 @@ impl Codegen {
         // sin, cos, tan, log, log10, exp — these are just external libm
         // declarations (already in emit_builtin_decls), called directly by the
         // standard call dispatch path. No wrapper functions needed.
+    }
 
+    /// String search (contains, index_of, starts/ends_with, trim) and
+    /// transformation (replace, split, upper/lower, repeat).
+    fn emit_builtin_string_helpers(&mut self) {
         // ── String utility builtins ──
 
         // str_contains — check if substring exists
@@ -1862,7 +1889,11 @@ impl Codegen {
              \x20 ret ptr %buf\n\
              }\n\n",
         );
+    }
 
+    /// Collection utilities (contains, sort), map utilities (size, remove, keys, values),
+    /// map aliases, enhanced I/O (file_exists, file_append, read_line, etc.), and networking.
+    fn emit_builtin_collection_helpers(&mut self) {
         // ── Collection utility builtins ──
 
         // contains_int — linear scan of [int] array for a value
@@ -4564,13 +4595,7 @@ impl Codegen {
 
                 for (i, name) in names.iter().enumerate() {
                     let elem_ty = &llvm_elem_types[i];
-                    let gep = self.fresh_temp();
-                    self.emit_line(&format!(
-                        "{} = getelementptr %{}, ptr {}, i32 0, i32 {}",
-                        gep, tuple_name, val_ptr, i
-                    ));
-                    let loaded = self.fresh_temp();
-                    self.emit_line(&format!("{} = load {}, ptr {}", loaded, elem_ty, gep));
+                    let loaded = self.emit_struct_field_load(&tuple_name, &val_ptr, i, elem_ty);
                     let ptr = self.fresh_temp();
                     self.emit_line(&format!("{} = alloca {}", ptr, elem_ty));
                     self.emit_line(&format!("store {} {}, ptr {}", elem_ty, loaded, ptr));
@@ -4688,14 +4713,8 @@ impl Codegen {
                 let struct_name = self.expr_struct_name(obj)?;
                 let (idx, field_ty) = self.struct_field_index(&struct_name, field)?;
                 let fty = self.llvm_type(&field_ty);
-
-                let gep = self.fresh_temp();
-                self.emit_line(&format!(
-                    "{} = getelementptr %{}, ptr {}, i32 0, i32 {}",
-                    gep, struct_name, obj_ptr, idx
-                ));
                 let val = self.emit_expr(&s.value)?;
-                self.emit_line(&format!("store {} {}, ptr {}", fty, val, gep));
+                self.emit_struct_field_store(&struct_name, &obj_ptr, idx, &fty, &val);
                 Ok(())
             }
             ExprKind::Index(arr_expr, idx_expr) => {
@@ -4953,12 +4972,7 @@ impl Codegen {
         // wrapper ABI. The actual result is read by .join() from the env.
         if let Some((ref env_type, result_idx)) = self.spawn_return_ctx.clone() {
             let val = self.emit_expr(&s.value)?;
-            let result_gep = self.fresh_temp();
-            self.emit_line(&format!(
-                "{} = getelementptr %{}, ptr %env, i32 0, i32 {}",
-                result_gep, env_type, result_idx
-            ));
-            self.emit_line(&format!("store i64 {}, ptr {}", val, result_gep));
+            self.emit_struct_field_store(env_type, "%env", result_idx, "i64", &val);
             self.emit_line("ret ptr null");
             self.block_terminated = true;
             return Ok(());
@@ -6193,21 +6207,14 @@ impl Codegen {
                     );
                     let tuple_ptr = self.fresh_temp();
                     self.emit_line(&format!("{} = alloca %{}", tuple_ptr, tuple_name));
-                    let gep0 = self.fresh_temp();
-                    self.emit_line(&format!(
-                        "{} = getelementptr %{}, ptr {}, i32 0, i32 0",
-                        gep0, tuple_name, tuple_ptr
-                    ));
-                    self.emit_line(&format!("store i64 {}, ptr {}", counter_val, gep0));
-                    let gep1 = self.fresh_temp();
-                    self.emit_line(&format!(
-                        "{} = getelementptr %{}, ptr {}, i32 0, i32 1",
-                        gep1, tuple_name, tuple_ptr
-                    ));
-                    self.emit_line(&format!(
-                        "store {} {}, ptr {}",
-                        inner_llvm, current_val, gep1
-                    ));
+                    self.emit_struct_field_store(&tuple_name, &tuple_ptr, 0, "i64", &counter_val);
+                    self.emit_struct_field_store(
+                        &tuple_name,
+                        &tuple_ptr,
+                        1,
+                        &inner_llvm,
+                        &current_val,
+                    );
                     let next_counter = self.fresh_temp();
                     self.emit_line(&format!("{} = add i64 {}, 1", next_counter, counter_val));
                     self.emit_line(&format!("store i64 {}, ptr {}", next_counter, counter_ptr));
@@ -6261,21 +6268,14 @@ impl Codegen {
                     );
                     let tuple_ptr = self.fresh_temp();
                     self.emit_line(&format!("{} = alloca %{}", tuple_ptr, tuple_name));
-                    let gep0 = self.fresh_temp();
-                    self.emit_line(&format!(
-                        "{} = getelementptr %{}, ptr {}, i32 0, i32 0",
-                        gep0, tuple_name, tuple_ptr
-                    ));
-                    self.emit_line(&format!(
-                        "store {} {}, ptr {}",
-                        current_ty, current_val, gep0
-                    ));
-                    let gep1 = self.fresh_temp();
-                    self.emit_line(&format!(
-                        "{} = getelementptr %{}, ptr {}, i32 0, i32 1",
-                        gep1, tuple_name, tuple_ptr
-                    ));
-                    self.emit_line(&format!("store {} {}, ptr {}", zi.elem_ty, zip_val, gep1));
+                    self.emit_struct_field_store(
+                        &tuple_name,
+                        &tuple_ptr,
+                        0,
+                        &current_ty,
+                        &current_val,
+                    );
+                    self.emit_struct_field_store(&tuple_name, &tuple_ptr, 1, &zi.elem_ty, &zip_val);
                     // Load by-value so current_val is always an SSA value, not a pointer
                     let tuple_loaded = self.fresh_temp();
                     self.emit_line(&format!(
@@ -7043,14 +7043,8 @@ impl Codegen {
 
         // For enums: extract tag from alloca via GEP
         let tag_val = if is_enum {
-            let tag_gep = self.fresh_temp();
             let enum_name = subject_enum_name.as_ref().unwrap();
-            self.emit_line(&format!(
-                "{} = getelementptr %{}, ptr {}, i32 0, i32 0",
-                tag_gep, enum_name, subject_val
-            ));
-            let tag = self.fresh_temp();
-            self.emit_line(&format!("{} = load i32, ptr {}", tag, tag_gep));
+            let tag = self.emit_struct_field_load(enum_name, &subject_val, 0, "i32");
             Some(tag)
         } else {
             None
@@ -7195,11 +7189,7 @@ impl Codegen {
 
                             if !variant_fields.is_empty() {
                                 // GEP into payload bytes
-                                let payload_gep = self.fresh_temp();
-                                self.emit_line(&format!(
-                                    "{} = getelementptr %{}, ptr {}, i32 0, i32 1",
-                                    payload_gep, ename, subject_val
-                                ));
+                                let payload_gep = self.emit_struct_gep(ename, &subject_val, 1);
 
                                 // Extract each field from payload and bind to sub-patterns
                                 let mut byte_offset = 0usize;
@@ -8051,26 +8041,13 @@ impl Codegen {
                         });
                     }
                     let fty = &elem_types[idx];
-                    let gep = self.fresh_temp();
-                    self.emit_line(&format!(
-                        "{} = getelementptr %{}, ptr {}, i32 0, i32 {}",
-                        gep, struct_name, obj_ptr, idx
-                    ));
-                    let val = self.fresh_temp();
-                    self.emit_line(&format!("{} = load {}, ptr {}", val, fty, gep));
+                    let val = self.emit_struct_field_load(&struct_name, &obj_ptr, idx, fty);
                     return Ok(val);
                 }
 
                 let (idx, field_ty) = self.struct_field_index(&struct_name, field)?;
                 let fty = self.llvm_type(&field_ty);
-
-                let gep = self.fresh_temp();
-                self.emit_line(&format!(
-                    "{} = getelementptr %{}, ptr {}, i32 0, i32 {}",
-                    gep, struct_name, obj_ptr, idx
-                ));
-                let val = self.fresh_temp();
-                self.emit_line(&format!("{} = load {}, ptr {}", val, fty, gep));
+                let val = self.emit_struct_field_load(&struct_name, &obj_ptr, idx, &fty);
                 Ok(val)
             }
 
@@ -8178,12 +8155,7 @@ impl Codegen {
                     let (idx, field_ty) = self.struct_field_index(name, &fi.name)?;
                     let fty = self.llvm_type(&field_ty);
                     let val = self.emit_expr(&fi.value)?;
-                    let gep = self.fresh_temp();
-                    self.emit_line(&format!(
-                        "{} = getelementptr %{}, ptr {}, i32 0, i32 {}",
-                        gep, name, ptr, idx
-                    ));
-                    self.emit_line(&format!("store {} {}, ptr {}", fty, val, gep));
+                    self.emit_struct_field_store(name, &ptr, idx, &fty, &val);
                 }
 
                 // Return the pointer as the struct value
@@ -8463,20 +8435,11 @@ impl Codegen {
         self.emit_line(&format!("{} = alloca %{}", ptr, enum_name));
 
         // Set the tag
-        let tag_gep = self.fresh_temp();
-        self.emit_line(&format!(
-            "{} = getelementptr %{}, ptr {}, i32 0, i32 0",
-            tag_gep, enum_name, ptr
-        ));
-        self.emit_line(&format!("store i32 {}, ptr {}", tag, tag_gep));
+        self.emit_struct_field_store(enum_name, &ptr, 0, "i32", &tag.to_string());
 
         // Store arguments into payload bytes
         if !args.is_empty() {
-            let payload_gep = self.fresh_temp();
-            self.emit_line(&format!(
-                "{} = getelementptr %{}, ptr {}, i32 0, i32 1",
-                payload_gep, enum_name, ptr
-            ));
+            let payload_gep = self.emit_struct_gep(enum_name, &ptr, 1);
 
             let mut byte_offset = 0usize;
             for arg in args {
@@ -8569,12 +8532,7 @@ impl Codegen {
         // Store each element
         for (i, elem) in elements.iter().enumerate() {
             let val = self.emit_expr(elem)?;
-            let gep = self.fresh_temp();
-            self.emit_line(&format!(
-                "{} = getelementptr %{}, ptr {}, i32 0, i32 {}",
-                gep, type_name, ptr, i
-            ));
-            self.emit_line(&format!("store {} {}, ptr {}", elem_types[i], val, gep));
+            self.emit_struct_field_store(&type_name, &ptr, i, &elem_types[i], &val);
         }
 
         Ok(ptr)
@@ -8612,13 +8570,7 @@ impl Codegen {
         };
 
         // 3. Extract tag (offset 0)
-        let tag_gep = self.fresh_temp();
-        self.emit_line(&format!(
-            "{} = getelementptr %{}, ptr {}, i32 0, i32 0",
-            tag_gep, enum_name, enum_ptr
-        ));
-        let tag_val = self.fresh_temp();
-        self.emit_line(&format!("{} = load i32, ptr {}", tag_val, tag_gep));
+        let tag_val = self.emit_struct_field_load(&enum_name, &enum_ptr, 0, "i32");
 
         // 4. Branch: tag 0 = Some/Ok (success), tag != 0 = None/Err (early return)
         let success_label = self.fresh_label("try.ok");
@@ -8644,22 +8596,13 @@ impl Codegen {
             // Construct None for the function's return type and ret
             let none_ptr = self.fresh_temp();
             self.emit_line(&format!("{} = alloca %{}", none_ptr, ret_enum_name));
-            let none_tag_gep = self.fresh_temp();
-            self.emit_line(&format!(
-                "{} = getelementptr %{}, ptr {}, i32 0, i32 0",
-                none_tag_gep, ret_enum_name, none_ptr
-            ));
-            self.emit_line(&format!("store i32 1, ptr {}", none_tag_gep));
+            self.emit_struct_field_store(&ret_enum_name, &none_ptr, 0, "i32", "1");
             let none_val = self.fresh_temp();
             self.emit_line(&format!("{} = load {}, ptr {}", none_val, ret_ty, none_ptr));
             self.emit_line(&format!("ret {} {}", ret_ty, none_val));
         } else {
             // Extract Err payload from inner Result, construct Err(e) for return type
-            let inner_payload_gep = self.fresh_temp();
-            self.emit_line(&format!(
-                "{} = getelementptr %{}, ptr {}, i32 0, i32 1",
-                inner_payload_gep, enum_name, enum_ptr
-            ));
+            let inner_payload_gep = self.emit_struct_gep(&enum_name, &enum_ptr, 1);
 
             let err_variant_fields = self
                 .enum_layouts
@@ -8686,17 +8629,8 @@ impl Codegen {
                 // Construct Err(e) for the return type
                 let ret_err_ptr = self.fresh_temp();
                 self.emit_line(&format!("{} = alloca %{}", ret_err_ptr, ret_enum_name));
-                let ret_tag_gep = self.fresh_temp();
-                self.emit_line(&format!(
-                    "{} = getelementptr %{}, ptr {}, i32 0, i32 0",
-                    ret_tag_gep, ret_enum_name, ret_err_ptr
-                ));
-                self.emit_line(&format!("store i32 1, ptr {}", ret_tag_gep));
-                let ret_payload_gep = self.fresh_temp();
-                self.emit_line(&format!(
-                    "{} = getelementptr %{}, ptr {}, i32 0, i32 1",
-                    ret_payload_gep, ret_enum_name, ret_err_ptr
-                ));
+                self.emit_struct_field_store(&ret_enum_name, &ret_err_ptr, 0, "i32", "1");
+                let ret_payload_gep = self.emit_struct_gep(&ret_enum_name, &ret_err_ptr, 1);
                 let ret_err_field_ptr = self.fresh_temp();
                 self.emit_line(&format!(
                     "{} = getelementptr [0 x i8], ptr {}, i64 0, i64 0",
@@ -8716,12 +8650,7 @@ impl Codegen {
                 // Err variant with no payload (unusual but handle gracefully)
                 let ret_err_ptr = self.fresh_temp();
                 self.emit_line(&format!("{} = alloca %{}", ret_err_ptr, ret_enum_name));
-                let ret_tag_gep = self.fresh_temp();
-                self.emit_line(&format!(
-                    "{} = getelementptr %{}, ptr {}, i32 0, i32 0",
-                    ret_tag_gep, ret_enum_name, ret_err_ptr
-                ));
-                self.emit_line(&format!("store i32 1, ptr {}", ret_tag_gep));
+                self.emit_struct_field_store(&ret_enum_name, &ret_err_ptr, 0, "i32", "1");
                 let ret_val = self.fresh_temp();
                 self.emit_line(&format!(
                     "{} = load {}, ptr {}",
@@ -8736,11 +8665,7 @@ impl Codegen {
         self.emit_label(&success_label);
         self.block_terminated = false;
 
-        let ok_payload_gep = self.fresh_temp();
-        self.emit_line(&format!(
-            "{} = getelementptr %{}, ptr {}, i32 0, i32 1",
-            ok_payload_gep, enum_name, enum_ptr
-        ));
+        let ok_payload_gep = self.emit_struct_gep(&enum_name, &enum_ptr, 1);
         let ok_field_ptr = self.fresh_temp();
         self.emit_line(&format!(
             "{} = getelementptr [0 x i8], ptr {}, i64 0, i64 0",
@@ -8843,17 +8768,12 @@ impl Codegen {
         self.emit_line(&format!("{} = alloca %{}", env_ptr, env_type_name));
 
         for (i, (cap_name, cap_slot)) in captures.iter().enumerate() {
-            let gep = self.fresh_temp();
-            self.emit_line(&format!(
-                "{} = getelementptr %{}, ptr {}, i32 0, i32 {}",
-                gep, env_type_name, env_ptr, i
-            ));
             let val = self.fresh_temp();
             self.emit_line(&format!(
                 "{} = load {}, ptr {}",
                 val, cap_slot.llvm_ty, cap_slot.ptr
             ));
-            self.emit_line(&format!("store {} {}, ptr {}", cap_slot.llvm_ty, val, gep));
+            self.emit_struct_field_store(&env_type_name, &env_ptr, i, &cap_slot.llvm_ty, &val);
             let _ = cap_name; // used above via cap_slot
         }
 
@@ -8920,15 +8840,9 @@ impl Codegen {
 
         // Load captures from env struct
         for (i, (cap_name, cap_slot)) in captures.iter().enumerate() {
-            let gep = self.fresh_temp();
-            self.emit_line(&format!(
-                "{} = getelementptr %{}, ptr %env, i32 0, i32 {}",
-                gep, env_type_name, i
-            ));
+            let val = self.emit_struct_field_load(env_type_name, "%env", i, &cap_slot.llvm_ty);
             let ptr = format!("%{}.cap", cap_name);
             self.emit_line(&format!("{} = alloca {}", ptr, cap_slot.llvm_ty));
-            let val = self.fresh_temp();
-            self.emit_line(&format!("{} = load {}, ptr {}", val, cap_slot.llvm_ty, gep));
             self.emit_line(&format!("store {} {}, ptr {}", cap_slot.llvm_ty, val, ptr));
             self.define_var(cap_name, &ptr, &cap_slot.llvm_ty);
         }
@@ -9018,17 +8932,12 @@ impl Codegen {
         self.emit_line(&format!("{} = call ptr @malloc(i64 {})", env_ptr, size_val));
 
         for (i, (_cap_name, cap_slot)) in captures.iter().enumerate() {
-            let gep = self.fresh_temp();
-            self.emit_line(&format!(
-                "{} = getelementptr %{}, ptr {}, i32 0, i32 {}",
-                gep, env_type_name, env_ptr, i
-            ));
             let val = self.fresh_temp();
             self.emit_line(&format!(
                 "{} = load {}, ptr {}",
                 val, cap_slot.llvm_ty, cap_slot.ptr
             ));
-            self.emit_line(&format!("store {} {}, ptr {}", cap_slot.llvm_ty, val, gep));
+            self.emit_struct_field_store(&env_type_name, &env_ptr, i, &cap_slot.llvm_ty, &val);
         }
 
         // Malloc task control block: { i64 (pthread_t), ptr (env) }
@@ -9094,15 +9003,9 @@ impl Codegen {
 
         // Load captures from env struct
         for (i, (cap_name, cap_slot)) in captures.iter().enumerate() {
-            let gep = self.fresh_temp();
-            self.emit_line(&format!(
-                "{} = getelementptr %{}, ptr %env, i32 0, i32 {}",
-                gep, env_type_name, i
-            ));
+            let val = self.emit_struct_field_load(env_type_name, "%env", i, &cap_slot.llvm_ty);
             let ptr = format!("%{}.cap", cap_name);
             self.emit_line(&format!("{} = alloca {}", ptr, cap_slot.llvm_ty));
-            let val = self.fresh_temp();
-            self.emit_line(&format!("{} = load {}, ptr {}", val, cap_slot.llvm_ty, gep));
             self.emit_line(&format!("store {} {}, ptr {}", cap_slot.llvm_ty, val, ptr));
             self.define_var(cap_name, &ptr, &cap_slot.llvm_ty);
         }
@@ -9114,12 +9017,7 @@ impl Codegen {
 
         if !self.block_terminated {
             // Store default result 0 and return
-            let result_gep = self.fresh_temp();
-            self.emit_line(&format!(
-                "{} = getelementptr %{}, ptr %env, i32 0, i32 {}",
-                result_gep, env_type_name, result_field_idx
-            ));
-            self.emit_line(&format!("store i64 0, ptr {}", result_gep));
+            self.emit_struct_field_store(env_type_name, "%env", result_field_idx, "i64", "0");
             self.emit_line("ret ptr null");
         }
 
@@ -9174,13 +9072,7 @@ impl Codegen {
         // recorded when the task was created via emit_spawn.
         if let ExprKind::Ident(ref task_name) = receiver.kind {
             if let Some((ref env_type, result_idx)) = self.task_env_info.get(task_name).cloned() {
-                let result_gep = self.fresh_temp();
-                self.emit_line(&format!(
-                    "{} = getelementptr %{}, ptr {}, i32 0, i32 {}",
-                    result_gep, env_type, env_ptr, result_idx
-                ));
-                let result = self.fresh_temp();
-                self.emit_line(&format!("{} = load i64, ptr {}", result, result_gep));
+                let result = self.emit_struct_field_load(env_type, &env_ptr, result_idx, "i64");
                 return Ok(result);
             }
         }
@@ -9203,13 +9095,7 @@ impl Codegen {
     ) -> Result<String, CodegenError> {
         let ptr = self.emit_expr_ptr(receiver)?;
         // Load tag
-        let tag_gep = self.fresh_temp();
-        self.emit_line(&format!(
-            "{} = getelementptr %{}, ptr {}, i32 0, i32 0",
-            tag_gep, enum_name, ptr
-        ));
-        let tag = self.fresh_temp();
-        self.emit_line(&format!("{} = load i32, ptr {}", tag, tag_gep));
+        let tag = self.emit_struct_field_load(enum_name, &ptr, 0, "i32");
 
         // Check tag == 0 (Some/Ok variant)
         let cmp = self.fresh_temp();
@@ -9238,16 +9124,7 @@ impl Codegen {
         } else {
             "i64".to_string()
         };
-        let payload_gep = self.fresh_temp();
-        self.emit_line(&format!(
-            "{} = getelementptr %{}, ptr {}, i32 0, i32 1",
-            payload_gep, enum_name, ptr
-        ));
-        let val = self.fresh_temp();
-        self.emit_line(&format!(
-            "{} = load {}, ptr {}",
-            val, payload_ty, payload_gep
-        ));
+        let val = self.emit_struct_field_load(enum_name, &ptr, 1, &payload_ty);
         Ok(val)
     }
 
@@ -9260,13 +9137,7 @@ impl Codegen {
     ) -> Result<String, CodegenError> {
         let ptr = self.emit_expr_ptr(receiver)?;
         // Load tag
-        let tag_gep = self.fresh_temp();
-        self.emit_line(&format!(
-            "{} = getelementptr %{}, ptr {}, i32 0, i32 0",
-            tag_gep, enum_name, ptr
-        ));
-        let tag = self.fresh_temp();
-        self.emit_line(&format!("{} = load i32, ptr {}", tag, tag_gep));
+        let tag = self.emit_struct_field_load(enum_name, &ptr, 0, "i32");
 
         // Check tag == 1 (Err variant)
         let cmp = self.fresh_temp();
@@ -9294,16 +9165,7 @@ impl Codegen {
         } else {
             "i64".to_string()
         };
-        let payload_gep = self.fresh_temp();
-        self.emit_line(&format!(
-            "{} = getelementptr %{}, ptr {}, i32 0, i32 1",
-            payload_gep, enum_name, ptr
-        ));
-        let val = self.fresh_temp();
-        self.emit_line(&format!(
-            "{} = load {}, ptr {}",
-            val, payload_ty, payload_gep
-        ));
+        let val = self.emit_struct_field_load(enum_name, &ptr, 1, &payload_ty);
         Ok(val)
     }
 
@@ -9315,13 +9177,7 @@ impl Codegen {
         expected_tag: u32,
     ) -> Result<String, CodegenError> {
         let ptr = self.emit_expr_ptr(receiver)?;
-        let tag_gep = self.fresh_temp();
-        self.emit_line(&format!(
-            "{} = getelementptr %{}, ptr {}, i32 0, i32 0",
-            tag_gep, enum_name, ptr
-        ));
-        let tag = self.fresh_temp();
-        self.emit_line(&format!("{} = load i32, ptr {}", tag, tag_gep));
+        let tag = self.emit_struct_field_load(enum_name, &ptr, 0, "i32");
         let cmp = self.fresh_temp();
         self.emit_line(&format!("{} = icmp eq i32 {}, {}", cmp, tag, expected_tag));
         Ok(cmp)
@@ -10185,6 +10041,44 @@ impl Codegen {
         let n = self.label_counter;
         self.label_counter += 1;
         format!("{}.{}", prefix, n)
+    }
+
+    /// GEP into a named struct field `%StructName`. Returns the GEP pointer temp.
+    fn emit_struct_gep(&mut self, struct_name: &str, ptr: &str, field_idx: usize) -> String {
+        let gep = self.fresh_temp();
+        self.emit_line(&format!(
+            "{} = getelementptr %{}, ptr {}, i32 0, i32 {}",
+            gep, struct_name, ptr, field_idx
+        ));
+        gep
+    }
+
+    /// GEP + load from a named struct field. Returns the loaded SSA value.
+    fn emit_struct_field_load(
+        &mut self,
+        struct_name: &str,
+        ptr: &str,
+        field_idx: usize,
+        field_ty: &str,
+    ) -> String {
+        let gep = self.emit_struct_gep(struct_name, ptr, field_idx);
+        let val = self.fresh_temp();
+        self.emit_line(&format!("{} = load {}, ptr {}", val, field_ty, gep));
+        val
+    }
+
+    /// GEP + store into a named struct field. Returns the GEP temp.
+    fn emit_struct_field_store(
+        &mut self,
+        struct_name: &str,
+        ptr: &str,
+        field_idx: usize,
+        field_ty: &str,
+        val: &str,
+    ) -> String {
+        let gep = self.emit_struct_gep(struct_name, ptr, field_idx);
+        self.emit_line(&format!("store {} {}, ptr {}", field_ty, val, gep));
+        gep
     }
 
     /// Load a single field from an array fat pointer `{ ptr, i64, i64 }`.

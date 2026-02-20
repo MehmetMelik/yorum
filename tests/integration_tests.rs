@@ -9449,6 +9449,35 @@ fn test_range_iter_collect_take_caps_allocation() {
 }
 
 #[test]
+fn test_range_iter_collect_byte_safe_cap() {
+    // Collect on a wide range with multi-byte elements must cap len_val
+    // so that len_val * elem_size doesn't overflow i64.
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let xs: [(int, int)] = (0..10).iter().map(|x: int| -> (int, int) { return (x, x); }).collect();\n\
+         \x20   return len(xs);\n\
+         }\n",
+    );
+    // Collect should emit an icmp sgt guard before the mul for byte size
+    assert!(ir.contains("icmp sgt i64"));
+}
+
+#[test]
+fn test_range_iter_collect_zip_caps_allocation() {
+    // Zip on a wide range should cap alloc_len at the zip array length.
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let ys: [int] = [10, 20, 30];\n\
+         \x20   let xs: [(int, int)] = (0..=9223372036854775807).iter().zip(ys).collect();\n\
+         \x20   return len(xs);\n\
+         }\n",
+    );
+    // The preamble should emit a min (icmp slt + select) for zip bound
+    assert!(ir.contains("select i1"));
+    assert!(ir.contains("sub i128"));
+}
+
+#[test]
 fn test_range_iter_exclusive_uses_slt_on_value() {
     // Exclusive range pipeline loop condition should compare range value
     // against end using slt, not compare idx against pre-computed length.

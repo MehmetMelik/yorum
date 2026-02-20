@@ -5757,37 +5757,36 @@ impl Codegen {
             }
         }
 
-        // For range sources, cap alloc_len at the first take() count so that
-        // e.g. (0..=i64::MAX).iter().take(1).collect() doesn't try to malloc
-        // i64::MAX elements.  The take_skip_ptr already holds the emitted count.
+        // For range sources, cap alloc_len at known pipeline bounds (take / zip)
+        // so that e.g. (0..=i64::MAX).iter().take(1).collect() or
+        // (0..=i64::MAX).iter().zip([1]).collect() don't try to malloc
+        // i64::MAX elements.
         let len_val = if is_range_source {
             let mut capped = len_val;
             for (i, step) in steps.iter().enumerate() {
-                if matches!(step, IterStep::Take(_)) {
-                    if let Some(ref take_ptr) = take_skip_ptrs[i] {
-                        let take_raw = self.fresh_temp();
-                        self.emit_line(&format!("{} = load i64, ptr {}", take_raw, take_ptr));
-                        // Clamp negative take counts to 0
-                        let take_neg = self.fresh_temp();
-                        self.emit_line(&format!("{} = icmp slt i64 {}, 0", take_neg, take_raw));
-                        let take_val = self.fresh_temp();
-                        self.emit_line(&format!(
-                            "{} = select i1 {}, i64 0, i64 {}",
-                            take_val, take_neg, take_raw
-                        ));
-                        let take_less = self.fresh_temp();
-                        self.emit_line(&format!(
-                            "{} = icmp slt i64 {}, {}",
-                            take_less, take_val, capped
-                        ));
-                        let new_len = self.fresh_temp();
-                        self.emit_line(&format!(
-                            "{} = select i1 {}, i64 {}, i64 {}",
-                            new_len, take_less, take_val, capped
-                        ));
-                        capped = new_len;
+                match step {
+                    IterStep::Take(_) => {
+                        if let Some(ref take_ptr) = take_skip_ptrs[i] {
+                            let take_raw = self.fresh_temp();
+                            self.emit_line(&format!("{} = load i64, ptr {}", take_raw, take_ptr));
+                            // Clamp negative take counts to 0
+                            let take_neg = self.fresh_temp();
+                            self.emit_line(&format!("{} = icmp slt i64 {}, 0", take_neg, take_raw));
+                            let take_val = self.fresh_temp();
+                            self.emit_line(&format!(
+                                "{} = select i1 {}, i64 0, i64 {}",
+                                take_val, take_neg, take_raw
+                            ));
+                            capped = self.emit_min_i64(&capped, &take_val);
+                        }
+                        break; // take bounds all subsequent output
                     }
-                    break; // first take bounds the output
+                    IterStep::Zip(_) => {
+                        if let Some(ref zi) = zip_infos[i] {
+                            capped = self.emit_min_i64(&capped, &zi.len_val);
+                        }
+                    }
+                    _ => {}
                 }
             }
             capped
@@ -5806,6 +5805,18 @@ impl Codegen {
             is_range_source,
             range_end,
         ))
+    }
+
+    /// Emit `min(a, b)` for two i64 SSA values, returning the result SSA name.
+    fn emit_min_i64(&mut self, a: &str, b: &str) -> String {
+        let is_less = self.fresh_temp();
+        self.emit_line(&format!("{} = icmp slt i64 {}, {}", is_less, b, a));
+        let result = self.fresh_temp();
+        self.emit_line(&format!(
+            "{} = select i1 {}, i64 {}, i64 {}",
+            result, is_less, b, a
+        ));
+        result
     }
 
     /// Emit the loop condition for a pipeline.
@@ -6438,11 +6449,24 @@ impl Codegen {
     ) -> Result<String, CodegenError> {
         let elem_size = self.llvm_type_size(final_elem_ty);
 
-        // Allocate output array with capacity = source len
+        // Cap len_val so that len_val * elem_size cannot overflow i64.
+        let max_safe_elems = i64::MAX as usize / elem_size;
+        let safe_len = self.fresh_temp();
+        let len_over = self.fresh_temp();
+        self.emit_line(&format!(
+            "{} = icmp sgt i64 {}, {}",
+            len_over, len_val, max_safe_elems
+        ));
+        self.emit_line(&format!(
+            "{} = select i1 {}, i64 {}, i64 {}",
+            safe_len, len_over, max_safe_elems, len_val
+        ));
+
+        // Allocate output array with capacity = safe_len
         let out_bytes = self.fresh_temp();
         self.emit_line(&format!(
             "{} = mul i64 {}, {}",
-            out_bytes, len_val, elem_size
+            out_bytes, safe_len, elem_size
         ));
         let out_data = self.fresh_temp();
         self.emit_line(&format!(
@@ -6534,7 +6558,7 @@ impl Codegen {
             "{} = getelementptr {{ ptr, i64, i64 }}, ptr {}, i32 0, i32 2",
             c_gep, fat
         ));
-        self.emit_line(&format!("store i64 {}, ptr {}", len_val, c_gep));
+        self.emit_line(&format!("store i64 {}, ptr {}", safe_len, c_gep));
         Ok(fat)
     }
 

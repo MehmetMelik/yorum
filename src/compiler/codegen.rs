@@ -5765,8 +5765,16 @@ impl Codegen {
             for (i, step) in steps.iter().enumerate() {
                 if matches!(step, IterStep::Take(_)) {
                     if let Some(ref take_ptr) = take_skip_ptrs[i] {
+                        let take_raw = self.fresh_temp();
+                        self.emit_line(&format!("{} = load i64, ptr {}", take_raw, take_ptr));
+                        // Clamp negative take counts to 0
+                        let take_neg = self.fresh_temp();
+                        self.emit_line(&format!("{} = icmp slt i64 {}, 0", take_neg, take_raw));
                         let take_val = self.fresh_temp();
-                        self.emit_line(&format!("{} = load i64, ptr {}", take_val, take_ptr));
+                        self.emit_line(&format!(
+                            "{} = select i1 {}, i64 0, i64 {}",
+                            take_val, take_neg, take_raw
+                        ));
                         let take_less = self.fresh_temp();
                         self.emit_line(&format!(
                             "{} = icmp slt i64 {}, {}",

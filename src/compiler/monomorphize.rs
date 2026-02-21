@@ -518,10 +518,9 @@ impl Monomorphizer {
 fn has_iter_base_static(expr: &Expr) -> bool {
     if let ExprKind::MethodCall(ref receiver, ref method, _) = expr.kind {
         match method.as_str() {
-            "iter" => true,
-            "map" | "filter" | "enumerate" | "zip" | "take" | "skip" => {
-                has_iter_base_static(receiver)
-            }
+            "iter" | "chars" => true,
+            "map" | "filter" | "enumerate" | "zip" | "take" | "skip" | "chain" | "take_while"
+            | "rev" => has_iter_base_static(receiver),
             _ => false,
         }
     } else {

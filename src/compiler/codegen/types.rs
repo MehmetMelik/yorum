@@ -769,4 +769,22 @@ impl Codegen {
             message: format!("unknown variant '{}'", variant_name),
         })
     }
+
+    /// Convert an AST Type to its mangled suffix (matching monomorphizer conventions).
+    pub(crate) fn mangle_type_suffix(ty: &Type) -> String {
+        match ty {
+            Type::Int => "int".to_string(),
+            Type::Float => "float".to_string(),
+            Type::Bool => "bool".to_string(),
+            Type::Char => "char".to_string(),
+            Type::Str => "string".to_string(),
+            Type::Named(n) => n.clone(),
+            Type::Tuple(inner) => {
+                let parts: Vec<String> = inner.iter().map(Self::mangle_type_suffix).collect();
+                format!("tuple.{}", parts.join("."))
+            }
+            Type::Array(inner) => format!("array.{}", Self::mangle_type_suffix(inner)),
+            _ => format!("{}", ty),
+        }
+    }
 }

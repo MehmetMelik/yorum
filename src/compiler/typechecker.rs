@@ -1562,9 +1562,8 @@ impl TypeChecker {
     fn is_iter_pipeline(expr: &Expr) -> bool {
         if let ExprKind::MethodCall(ref receiver, ref method, _) = expr.kind {
             match method.as_str() {
-                "map" | "filter" | "enumerate" | "zip" | "take" | "skip" | "chain" => {
-                    Self::has_iter_base(receiver)
-                }
+                "map" | "filter" | "enumerate" | "zip" | "take" | "skip" | "chain"
+                | "take_while" | "rev" => Self::has_iter_base(receiver),
                 _ => false,
             }
         } else {
@@ -1576,10 +1575,9 @@ impl TypeChecker {
     fn has_iter_base(expr: &Expr) -> bool {
         if let ExprKind::MethodCall(ref receiver, ref method, _) = expr.kind {
             match method.as_str() {
-                "iter" => true,
-                "map" | "filter" | "enumerate" | "zip" | "take" | "skip" | "chain" => {
-                    Self::has_iter_base(receiver)
-                }
+                "iter" | "chars" => true,
+                "map" | "filter" | "enumerate" | "zip" | "take" | "skip" | "chain"
+                | "take_while" | "rev" => Self::has_iter_base(receiver),
                 _ => false,
             }
         } else {
@@ -1590,7 +1588,7 @@ impl TypeChecker {
     fn is_pipeline_terminator(method: &str) -> bool {
         matches!(
             method,
-            "reduce" | "fold" | "collect" | "find" | "any" | "all"
+            "reduce" | "fold" | "collect" | "find" | "any" | "all" | "sum" | "count" | "position"
         )
     }
 
@@ -1833,6 +1831,90 @@ impl TypeChecker {
                 }
                 None
             }
+            "sum" => {
+                if !args.is_empty() {
+                    self.errors.push(TypeError {
+                        message: format!("sum() takes no arguments, found {}", args.len()),
+                        span,
+                    });
+                    return None;
+                }
+                if elem_ty != Type::Int && elem_ty != Type::Float {
+                    self.errors.push(TypeError {
+                        message: format!(
+                            "sum() requires int or float elements, found '{}'",
+                            elem_ty
+                        ),
+                        span,
+                    });
+                    return None;
+                }
+                Some(elem_ty)
+            }
+            "count" => {
+                if !args.is_empty() {
+                    self.errors.push(TypeError {
+                        message: format!("count() takes no arguments, found {}", args.len()),
+                        span,
+                    });
+                    return None;
+                }
+                Some(Type::Int)
+            }
+            "position" => {
+                if args.len() != 1 {
+                    self.errors.push(TypeError {
+                        message: format!(
+                            "position() takes exactly 1 argument, found {}",
+                            args.len()
+                        ),
+                        span,
+                    });
+                    return None;
+                }
+                if !matches!(args[0].kind, ExprKind::Closure(_)) {
+                    self.errors.push(TypeError {
+                        message: "position() requires an inline closure".to_string(),
+                        span: args[0].span,
+                    });
+                    return None;
+                }
+                let closure_ty = self.infer_expr(&args[0])?;
+                if let Type::Fn(params, ret) = closure_ty {
+                    if params.len() != 1 {
+                        self.errors.push(TypeError {
+                            message: format!(
+                                "position() closure must take exactly 1 parameter, found {}",
+                                params.len()
+                            ),
+                            span: args[0].span,
+                        });
+                        return None;
+                    }
+                    if params[0] != elem_ty {
+                        self.errors.push(TypeError {
+                            message: format!(
+                                "position() closure parameter type '{}' does not match element type '{}'",
+                                params[0], elem_ty
+                            ),
+                            span: args[0].span,
+                        });
+                        return None;
+                    }
+                    if *ret != Type::Bool {
+                        self.errors.push(TypeError {
+                            message: format!(
+                                "position() closure must return bool, found '{}'",
+                                ret
+                            ),
+                            span: args[0].span,
+                        });
+                        return None;
+                    }
+                    return Some(Type::Generic("Option".to_string(), vec![Type::Int]));
+                }
+                None
+            }
             _ => None,
         }
     }
@@ -1889,8 +1971,30 @@ impl TypeChecker {
                             }
                             return Some(*inner);
                         }
+                        Some(Type::Generic(ref name, ref type_args))
+                            if name == "Set" && type_args.len() == 1 =>
+                        {
+                            if !args.is_empty() {
+                                self.errors.push(TypeError {
+                                    message: "iter() takes no arguments".to_string(),
+                                    span: expr.span,
+                                });
+                            }
+                            return Some(type_args[0].clone());
+                        }
+                        Some(Type::Generic(ref name, ref type_args))
+                            if name == "Map" && type_args.len() == 2 =>
+                        {
+                            if !args.is_empty() {
+                                self.errors.push(TypeError {
+                                    message: "iter() takes no arguments".to_string(),
+                                    span: expr.span,
+                                });
+                            }
+                            return Some(Type::Tuple(type_args.clone()));
+                        }
                         None => return None,
-                        _ => return None, // Not an array — not a pipeline base
+                        _ => return None, // Not an array/set/map — not a pipeline base
                     }
                 }
                 "map" => {
@@ -2038,12 +2142,43 @@ impl TypeChecker {
                         });
                         return None;
                     }
+                    // Accept both arrays and range expressions as zip arguments
+                    if matches!(
+                        args[0].kind,
+                        ExprKind::Range(_, _) | ExprKind::RangeInclusive(_, _)
+                    ) {
+                        // Validate range bounds are int
+                        let (start, end) = match &args[0].kind {
+                            ExprKind::Range(s, e) | ExprKind::RangeInclusive(s, e) => (s, e),
+                            _ => unreachable!(),
+                        };
+                        if let Some(t) = self.infer_expr(start) {
+                            if t != Type::Int {
+                                self.errors.push(TypeError {
+                                    message: format!("range start must be int, found '{}'", t),
+                                    span: start.span,
+                                });
+                            }
+                        }
+                        if let Some(t) = self.infer_expr(end) {
+                            if t != Type::Int {
+                                self.errors.push(TypeError {
+                                    message: format!("range end must be int, found '{}'", t),
+                                    span: end.span,
+                                });
+                            }
+                        }
+                        return Some(Type::Tuple(vec![input_ty, Type::Int]));
+                    }
                     let arg_ty = self.infer_expr(&args[0])?;
                     if let Type::Array(inner) = arg_ty {
                         return Some(Type::Tuple(vec![input_ty, *inner]));
                     }
                     self.errors.push(TypeError {
-                        message: format!("zip() argument must be an array, found '{}'", arg_ty),
+                        message: format!(
+                            "zip() argument must be an array or range, found '{}'",
+                            arg_ty
+                        ),
                         span: args[0].span,
                     });
                     return None;
@@ -2121,6 +2256,104 @@ impl TypeChecker {
                         span: args[0].span,
                     });
                     return None;
+                }
+                "take_while" => {
+                    let input_ty = self.infer_pipeline_elem_type(receiver)?;
+                    if args.len() != 1 {
+                        self.errors.push(TypeError {
+                            message: format!(
+                                "take_while() takes exactly 1 argument, found {}",
+                                args.len()
+                            ),
+                            span: expr.span,
+                        });
+                        return None;
+                    }
+                    if !matches!(args[0].kind, ExprKind::Closure(_)) {
+                        self.errors.push(TypeError {
+                            message: "take_while() requires an inline closure".to_string(),
+                            span: args[0].span,
+                        });
+                        return None;
+                    }
+                    let closure_ty = self.infer_expr(&args[0])?;
+                    if let Type::Fn(params, ret) = closure_ty {
+                        if params.len() != 1 {
+                            self.errors.push(TypeError {
+                                message: format!(
+                                    "take_while() closure must take exactly 1 parameter, found {}",
+                                    params.len()
+                                ),
+                                span: args[0].span,
+                            });
+                            return None;
+                        }
+                        if params[0] != input_ty {
+                            self.errors.push(TypeError {
+                                message: format!(
+                                    "take_while() closure parameter type '{}' does not match element type '{}'",
+                                    params[0], input_ty
+                                ),
+                                span: args[0].span,
+                            });
+                            return None;
+                        }
+                        if *ret != Type::Bool {
+                            self.errors.push(TypeError {
+                                message: format!(
+                                    "take_while() closure must return bool, found '{}'",
+                                    ret
+                                ),
+                                span: args[0].span,
+                            });
+                            return None;
+                        }
+                        return Some(input_ty);
+                    }
+                    self.errors.push(TypeError {
+                        message: "take_while() argument must be a closure".to_string(),
+                        span: args[0].span,
+                    });
+                    return None;
+                }
+                "rev" => {
+                    // rev() must be the first combinator after .iter()
+                    let is_iter_base = matches!(
+                        receiver.kind,
+                        ExprKind::MethodCall(_, ref m, _) if m == "iter"
+                    );
+                    if !is_iter_base {
+                        self.errors.push(TypeError {
+                            message: "rev() must be the first combinator after .iter()".to_string(),
+                            span: expr.span,
+                        });
+                        return None;
+                    }
+                    let input_ty = self.infer_pipeline_elem_type(receiver)?;
+                    if !args.is_empty() {
+                        self.errors.push(TypeError {
+                            message: format!("rev() takes no arguments, found {}", args.len()),
+                            span: expr.span,
+                        });
+                        return None;
+                    }
+                    return Some(input_ty);
+                }
+                "chars" => {
+                    let recv_ty = self.infer_expr(receiver);
+                    match recv_ty {
+                        Some(Type::Str) => {
+                            if !args.is_empty() {
+                                self.errors.push(TypeError {
+                                    message: "chars() takes no arguments".to_string(),
+                                    span: expr.span,
+                                });
+                            }
+                            return Some(Type::Char);
+                        }
+                        None => return None,
+                        _ => return None,
+                    }
                 }
                 _ => {}
             }
@@ -3402,6 +3635,22 @@ impl TypeChecker {
                 }
 
                 let recv_ty = self.infer_expr(receiver)?;
+
+                // Handle array methods: .clear()
+                if let Type::Array(_) = &recv_ty {
+                    if method_name == "clear" {
+                        if !args.is_empty() {
+                            self.errors.push(TypeError {
+                                message: format!(
+                                    "clear() takes no arguments, found {}",
+                                    args.len()
+                                ),
+                                span: expr.span,
+                            });
+                        }
+                        return Some(Type::Unit);
+                    }
+                }
 
                 // Handle .join() on Task<T>
                 if let Type::Task(inner) = &recv_ty {

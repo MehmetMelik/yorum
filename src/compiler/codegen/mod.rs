@@ -66,6 +66,8 @@ pub(crate) enum IterStep<'a> {
     Take(&'a Expr),
     Skip(&'a Expr),
     Chain(&'a Expr),
+    TakeWhile(&'a ClosureExpr),
+    Rev,
 }
 
 /// A fully extracted iterator pipeline: array/range source + ordered steps.
@@ -83,6 +85,9 @@ pub(crate) enum PipelineTerminator<'a> {
     Find(&'a ClosureExpr),
     Any(&'a ClosureExpr),
     All(&'a ClosureExpr),
+    Sum,
+    Count,
+    Position(&'a ClosureExpr),
 }
 
 /// A fully extracted terminated pipeline: array/range source + steps + terminator.
@@ -106,6 +111,8 @@ pub(crate) struct ZipInfo {
     pub(crate) len_val: String,
     pub(crate) idx_ptr: String,
     pub(crate) elem_ty: String,
+    /// For range-based zip: (start_val, end_val, inclusive)
+    pub(crate) range_zip: Option<(String, bool)>,
 }
 
 /// Pre-emitted chain data source info.
@@ -113,6 +120,14 @@ pub(crate) struct ChainInfo {
     pub(crate) data_ptr: String,  // data pointer of second array
     pub(crate) first_len: String, // length of first source (for conditional load)
     pub(crate) elem_ty: String,   // element LLVM type
+}
+
+/// Info for Map.iter() — values array for implicit zip with keys.
+pub(crate) struct MapIterInfo {
+    pub(crate) val_data_ptr: String, // data pointer of values array
+    pub(crate) val_elem_ty: String,  // LLVM type of value elements
+    pub(crate) key_elem_ty: String,  // LLVM type of key elements
+    pub(crate) tuple_name: String,   // tuple type name (e.g., "tuple.string.int")
 }
 
 /// Shared state returned by `emit_pipeline_loop_header`.
@@ -1713,6 +1728,16 @@ impl Codegen {
                     && self.expr_struct_name(receiver).is_err()
                 {
                     return self.emit_expr(receiver);
+                }
+
+                // Handle .clear() on arrays: set length to 0 without deallocating
+                if method_name == "clear"
+                    && args.is_empty()
+                    && self.expr_struct_name(receiver).is_err()
+                {
+                    let arr_ptr = self.emit_expr(receiver)?;
+                    self.emit_fat_ptr_field_store(&arr_ptr, 1, "i64", "0");
+                    return Ok("void".to_string());
                 }
 
                 let struct_name = self.expr_struct_name(receiver)?;

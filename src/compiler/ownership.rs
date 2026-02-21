@@ -426,8 +426,14 @@ impl OwnershipChecker {
                     }
                     return Type::Unit;
                 }
-                "take" | "skip" if Self::has_iter_base(receiver) => {
+                "take" | "skip" | "take_while" if Self::has_iter_base(receiver) => {
                     return self.infer_iterable_elem_type(receiver);
+                }
+                "chain" | "rev" if Self::has_iter_base(receiver) => {
+                    return self.infer_iterable_elem_type(receiver);
+                }
+                "chars" => {
+                    return Type::Char;
                 }
                 "iter" => {
                     // Range expressions produce int elements
@@ -441,6 +447,14 @@ impl OwnershipChecker {
                         if let Some(info) = self.lookup(name) {
                             if let Type::Array(elem) = &info.ty {
                                 return *elem.clone();
+                            }
+                            if let Type::Generic(ref coll, ref targs) = info.ty {
+                                if coll == "Set" && targs.len() == 1 {
+                                    return targs[0].clone();
+                                }
+                                if coll == "Map" && targs.len() == 2 {
+                                    return Type::Tuple(targs.clone());
+                                }
                             }
                         }
                     }
@@ -462,9 +476,10 @@ impl OwnershipChecker {
     fn has_iter_base(expr: &Expr) -> bool {
         if let ExprKind::MethodCall(ref receiver, ref method, _) = expr.kind {
             match method.as_str() {
-                "iter" => true,
+                "iter" | "chars" => true,
                 "map" | "filter" | "enumerate" | "zip" | "take" | "skip" | "reduce" | "fold"
-                | "collect" | "find" | "any" | "all" => Self::has_iter_base(receiver),
+                | "collect" | "find" | "any" | "all" | "chain" | "take_while" | "rev" | "sum"
+                | "count" | "position" => Self::has_iter_base(receiver),
                 _ => false,
             }
         } else {

@@ -10262,3 +10262,489 @@ fn test_bounds_check_elision_nested_loops() {
     // But both array accesses should still be present
     assert!(main_ir.contains("getelementptr i64"));
 }
+
+// ═══════════════════════════════════════════════════════════════
+//  Phase 1: clear(), sum(), count()
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn test_array_clear_basic() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let mut arr: [int] = [1, 2, 3];\n\
+         \x20   arr.clear();\n\
+         \x20   return len(arr);\n\
+         }\n",
+    );
+    // clear sets length field to 0
+    assert!(ir.contains("store i64 0"));
+}
+
+#[test]
+fn test_array_clear_then_push() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let mut arr: [int] = [1, 2, 3];\n\
+         \x20   arr.clear();\n\
+         \x20   push(arr, 42);\n\
+         \x20   return len(arr);\n\
+         }\n",
+    );
+    assert!(ir.contains("store i64 0"));
+    assert!(ir.contains("@main"));
+}
+
+#[test]
+fn test_iter_sum_int() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3, 4, 5];\n\
+         \x20   let s: int = arr.iter().sum();\n\
+         \x20   return s;\n\
+         }\n",
+    );
+    assert!(ir.contains("sum.cond"));
+    assert!(ir.contains("add i64"));
+}
+
+#[test]
+fn test_iter_sum_float() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [float] = [1.0, 2.0, 3.0];\n\
+         \x20   let s: float = arr.iter().sum();\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("sum.cond"));
+    assert!(ir.contains("fadd double"));
+}
+
+#[test]
+fn test_iter_sum_with_map() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let s: int = arr.iter().map(|x: int| -> int { return x * 2; }).sum();\n\
+         \x20   return s;\n\
+         }\n",
+    );
+    assert!(ir.contains("sum.cond"));
+}
+
+#[test]
+fn test_iter_sum_with_filter() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3, 4, 5];\n\
+         \x20   let s: int = arr.iter().filter(|x: int| -> bool { return x > 2; }).sum();\n\
+         \x20   return s;\n\
+         }\n",
+    );
+    assert!(ir.contains("sum.cond"));
+}
+
+#[test]
+fn test_iter_sum_wrong_type() {
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20   let arr: [string] = [\"a\", \"b\"];\n\
+         \x20   let s: string = arr.iter().sum();\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+    let msg = result.unwrap_err().to_string();
+    assert!(msg.contains("sum() requires int or float"));
+}
+
+#[test]
+fn test_iter_count_basic() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3, 4, 5];\n\
+         \x20   let c: int = arr.iter().count();\n\
+         \x20   return c;\n\
+         }\n",
+    );
+    assert!(ir.contains("cnt.cond"));
+}
+
+#[test]
+fn test_iter_count_with_filter() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3, 4, 5];\n\
+         \x20   let c: int = arr.iter().filter(|x: int| -> bool { return x > 3; }).count();\n\
+         \x20   return c;\n\
+         }\n",
+    );
+    assert!(ir.contains("cnt.cond"));
+}
+
+#[test]
+fn test_iter_count_with_map() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let c: int = arr.iter().map(|x: int| -> int { return x * 2; }).count();\n\
+         \x20   return c;\n\
+         }\n",
+    );
+    assert!(ir.contains("cnt.cond"));
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  Phase 2: position(), take_while(), chars(), rev()
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn test_iter_position_found() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [10, 20, 30, 40];\n\
+         \x20   let p: Option<int> = arr.iter().position(|x: int| -> bool { return x == 30; });\n\
+         \x20   return p.unwrap();\n\
+         }\n",
+    );
+    assert!(ir.contains("pos.cond"));
+    assert!(ir.contains("pos.found"));
+}
+
+#[test]
+fn test_iter_position_not_found() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [10, 20, 30];\n\
+         \x20   let p: Option<int> = arr.iter().position(|x: int| -> bool { return x == 99; });\n\
+         \x20   if p.is_none() { return 1; }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("pos.cond"));
+}
+
+#[test]
+fn test_iter_position_with_filter() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3, 4, 5];\n\
+         \x20   let p: Option<int> = arr.iter().filter(|x: int| -> bool { return x > 2; }).position(|x: int| -> bool { return x == 4; });\n\
+         \x20   return p.unwrap();\n\
+         }\n",
+    );
+    assert!(ir.contains("pos.cond"));
+}
+
+#[test]
+fn test_iter_take_while_basic() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3, 4, 5];\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for x in arr.iter().take_while(|v: int| -> bool { return v < 4; }) {\n\
+         \x20       sum += x;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    assert!(ir.contains("@main"));
+}
+
+#[test]
+fn test_iter_take_while_collect() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3, 4, 5];\n\
+         \x20   let b: [int] = arr.iter().take_while(|v: int| -> bool { return v < 4; }).collect();\n\
+         \x20   return len(b);\n\
+         }\n",
+    );
+    assert!(ir.contains("col.cond"));
+}
+
+#[test]
+fn test_iter_take_while_all_pass() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let b: [int] = arr.iter().take_while(|v: int| -> bool { return v < 100; }).collect();\n\
+         \x20   return len(b);\n\
+         }\n",
+    );
+    assert!(ir.contains("col.cond"));
+}
+
+#[test]
+fn test_for_chars_basic() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let s: string = \"hello\";\n\
+         \x20   let mut count: int = 0;\n\
+         \x20   for c in s.chars() {\n\
+         \x20       count += 1;\n\
+         \x20   }\n\
+         \x20   return count;\n\
+         }\n",
+    );
+    assert!(ir.contains("@strlen"));
+    assert!(ir.contains("sext i8"));
+}
+
+#[test]
+fn test_chars_with_filter() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let s: string = \"hello world\";\n\
+         \x20   let mut count: int = 0;\n\
+         \x20   for c in s.chars().filter(|c: char| -> bool { return c != ' '; }) {\n\
+         \x20       count += 1;\n\
+         \x20   }\n\
+         \x20   return count;\n\
+         }\n",
+    );
+    assert!(ir.contains("@strlen"));
+}
+
+#[test]
+fn test_chars_collect() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let s: string = \"abc\";\n\
+         \x20   let chars: [char] = s.chars().collect();\n\
+         \x20   return len(chars);\n\
+         }\n",
+    );
+    assert!(ir.contains("@strlen"));
+    assert!(ir.contains("col.cond"));
+}
+
+#[test]
+fn test_chars_empty_string() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let s: string = \"\";\n\
+         \x20   let mut count: int = 0;\n\
+         \x20   for c in s.chars() {\n\
+         \x20       count += 1;\n\
+         \x20   }\n\
+         \x20   return count;\n\
+         }\n",
+    );
+    assert!(ir.contains("@strlen"));
+}
+
+#[test]
+fn test_iter_rev_basic() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let mut last: int = 0;\n\
+         \x20   for x in arr.iter().rev() {\n\
+         \x20       last = x;\n\
+         \x20       break;\n\
+         \x20   }\n\
+         \x20   return last;\n\
+         }\n",
+    );
+    // Rev should compute reversed index: len-1-idx
+    assert!(ir.contains("sub i64"));
+}
+
+#[test]
+fn test_iter_rev_with_map() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let result: [int] = arr.iter().rev().map(|x: int| -> int { return x * 2; }).collect();\n\
+         \x20   return len(result);\n\
+         }\n",
+    );
+    assert!(ir.contains("col.cond"));
+}
+
+#[test]
+fn test_iter_rev_collect() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let reversed: [int] = arr.iter().rev().collect();\n\
+         \x20   return len(reversed);\n\
+         }\n",
+    );
+    assert!(ir.contains("col.cond"));
+}
+
+#[test]
+fn test_iter_rev_position_error() {
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   for x in arr.iter().map(|v: int| -> int { return v; }).rev() {\n\
+         \x20       print_int(x);\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+    let msg = result.unwrap_err().to_string();
+    assert!(msg.contains("rev() must be the first combinator"));
+}
+
+// ── zip(range) tests ──────────────────────────────────────────
+
+#[test]
+fn test_zip_with_exclusive_range() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [10, 20, 30];\n\
+         \x20   let result: [(int, int)] = arr.iter().zip(0..3).collect();\n\
+         \x20   return len(result);\n\
+         }\n",
+    );
+    assert!(ir.contains("col.cond"));
+}
+
+#[test]
+fn test_zip_with_inclusive_range() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [10, 20, 30];\n\
+         \x20   let result: [(int, int)] = arr.iter().zip(0..=2).collect();\n\
+         \x20   return len(result);\n\
+         }\n",
+    );
+    assert!(ir.contains("col.cond"));
+}
+
+#[test]
+fn test_zip_range_with_map() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [10, 20, 30];\n\
+         \x20   let result: [int] = arr.iter().zip(0..3).map(|pair: (int, int)| -> int { return pair.0 + pair.1; }).collect();\n\
+         \x20   return len(result);\n\
+         }\n",
+    );
+    assert!(ir.contains("col.cond"));
+}
+
+// ── Set.iter() tests ──────────────────────────────────────────
+
+#[test]
+fn test_set_iter_basic() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let s: Set<int> = set_new();\n\
+         \x20   set_add(s, 1);\n\
+         \x20   set_add(s, 2);\n\
+         \x20   set_add(s, 3);\n\
+         \x20   let mut total: int = 0;\n\
+         \x20   for x in s.iter() {\n\
+         \x20       total = total + x;\n\
+         \x20   }\n\
+         \x20   return total;\n\
+         }\n",
+    );
+    assert!(ir.contains("@set_values__int"));
+}
+
+#[test]
+fn test_set_iter_with_filter() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let s: Set<int> = set_new();\n\
+         \x20   set_add(s, 1);\n\
+         \x20   set_add(s, 2);\n\
+         \x20   set_add(s, 3);\n\
+         \x20   let evens: [int] = s.iter().filter(|x: int| -> bool { return x % 2 == 0; }).collect();\n\
+         \x20   return len(evens);\n\
+         }\n",
+    );
+    assert!(ir.contains("@set_values__int"));
+    assert!(ir.contains("col.cond"));
+}
+
+#[test]
+fn test_set_iter_count() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let s: Set<int> = set_new();\n\
+         \x20   set_add(s, 10);\n\
+         \x20   set_add(s, 20);\n\
+         \x20   let n: int = s.iter().count();\n\
+         \x20   return n;\n\
+         }\n",
+    );
+    assert!(ir.contains("@set_values__int"));
+    assert!(ir.contains("cnt.cond"));
+}
+
+// ── Map.iter() tests ──────────────────────────────────────────
+
+#[test]
+fn test_map_iter_basic() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let m: Map<string, int> = map_new();\n\
+         \x20   map_set(m, \"a\", 1);\n\
+         \x20   map_set(m, \"b\", 2);\n\
+         \x20   let mut total: int = 0;\n\
+         \x20   for pair in m.iter() {\n\
+         \x20       total = total + pair.1;\n\
+         \x20   }\n\
+         \x20   return total;\n\
+         }\n",
+    );
+    assert!(ir.contains("@map_keys__string__int"));
+    assert!(ir.contains("@map_values__string__int"));
+}
+
+#[test]
+fn test_map_iter_with_filter() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let m: Map<string, int> = map_new();\n\
+         \x20   map_set(m, \"a\", 1);\n\
+         \x20   map_set(m, \"b\", 2);\n\
+         \x20   let filtered: [(string, int)] = m.iter().filter(|p: (string, int)| -> bool { return p.1 > 1; }).collect();\n\
+         \x20   return len(filtered);\n\
+         }\n",
+    );
+    assert!(ir.contains("@map_keys__string__int"));
+    assert!(ir.contains("col.cond"));
+}
+
+#[test]
+fn test_map_iter_count() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let m: Map<string, int> = map_new();\n\
+         \x20   map_set(m, \"a\", 1);\n\
+         \x20   map_set(m, \"b\", 2);\n\
+         \x20   let n: int = m.iter().count();\n\
+         \x20   return n;\n\
+         }\n",
+    );
+    assert!(ir.contains("@map_keys__string__int"));
+    assert!(ir.contains("cnt.cond"));
+}
+
+#[test]
+fn test_map_iter_tuple_access() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let m: Map<string, int> = map_new();\n\
+         \x20   map_set(m, \"x\", 42);\n\
+         \x20   let mut result: int = 0;\n\
+         \x20   for pair in m.iter() {\n\
+         \x20       let k: string = pair.0;\n\
+         \x20       let v: int = pair.1;\n\
+         \x20       result = result + v;\n\
+         \x20   }\n\
+         \x20   return result;\n\
+         }\n",
+    );
+    assert!(ir.contains("@map_keys__string__int"));
+    assert!(ir.contains("@map_values__string__int"));
+}

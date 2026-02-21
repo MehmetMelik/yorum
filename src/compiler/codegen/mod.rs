@@ -922,6 +922,22 @@ impl Codegen {
                 self.var_ast_types
                     .insert(param.name.clone(), param.ty.clone());
             }
+            // Track Set/Map-typed params for collection iteration inference
+            match &param.ty {
+                Type::Named(ref name) if name.starts_with("Set__") || name.starts_with("Map__") => {
+                    self.var_ast_types
+                        .insert(param.name.clone(), param.ty.clone());
+                }
+                Type::Generic(ref gname, ref args) if gname == "Set" || gname == "Map" => {
+                    // Monomorphizer doesn't rewrite Set/Map param types to Named;
+                    // store as Named with mangled name for pipeline detection
+                    let suffixes: Vec<String> = args.iter().map(Self::mangle_type_suffix).collect();
+                    let mangled = format!("{}__{}", gname, suffixes.join("__"));
+                    self.var_ast_types
+                        .insert(param.name.clone(), Type::Named(mangled));
+                }
+                _ => {}
+            }
         }
 
         // Emit requires checks after parameter allocas
@@ -1875,11 +1891,20 @@ impl Codegen {
                 // Arrays use reference semantics (ptr to fat pointer), so when
                 // elements are arrays, use ptr as the element type.
                 let raw_elem_ty = self.expr_llvm_type(&elements[0]);
-                let elem_ty = if raw_elem_ty == "{ ptr, i64, i64 }" {
+                let is_array_of_arrays = raw_elem_ty == "{ ptr, i64, i64 }";
+                let elem_ty = if is_array_of_arrays {
                     "ptr".to_string()
                 } else {
                     raw_elem_ty
                 };
+                // Ensure tuple type is registered before size computation;
+                // expr_llvm_type infers the name but doesn't register it.
+                if let ExprKind::TupleLit(ref tuple_elems) = elements[0].kind {
+                    let tuple_llvm_types: Vec<String> =
+                        tuple_elems.iter().map(|e| self.expr_llvm_type(e)).collect();
+                    let tuple_name = elem_ty.trim_start_matches('%');
+                    self.ensure_pipeline_tuple_type(tuple_name, &tuple_llvm_types);
+                }
                 let elem_size = self.llvm_type_size(&elem_ty);
                 let total_size = elem_size * count;
 
@@ -1905,6 +1930,13 @@ impl Codegen {
                     ));
                     if is_aggregate {
                         self.emit_memcpy(&gep, &val, &elem_size.to_string());
+                    } else if is_array_of_arrays {
+                        // Inner array fat pointers are stack allocas; heap-copy so
+                        // they survive if the outer array escapes the current frame.
+                        let heap_fp = self.fresh_temp();
+                        self.emit_line(&format!("{} = call ptr @malloc(i64 24)", heap_fp));
+                        self.emit_memcpy(&heap_fp, &val, "24");
+                        self.emit_line(&format!("store ptr {}, ptr {}", heap_fp, gep));
                     } else {
                         self.emit_line(&format!("store {} {}, ptr {}", elem_ty, val, gep));
                     }

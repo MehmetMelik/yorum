@@ -11403,9 +11403,9 @@ fn test_set_iter_from_function_return() {
          \x20   return n;\n\
          }\n",
     );
-    // Should use set_values__int for the function return receiver
+    // Should use set_values__int for the function return receiver (call site, not just definition)
     assert!(
-        ir.contains("@set_values__int"),
+        ir.contains("call ptr @set_values__int"),
         "expected set_values__int call for function return receiver"
     );
 }
@@ -11423,9 +11423,9 @@ fn test_map_iter_from_function_return() {
          \x20   return n;\n\
          }\n",
     );
-    // Should use map_keys for the function return receiver
+    // Should use map_keys for the function return receiver (call site, not just definition)
     assert!(
-        ir.contains("map_keys"),
+        ir.contains("call ptr @map_keys"),
         "expected map_keys call for function return receiver"
     );
 }
@@ -11446,9 +11446,304 @@ fn test_set_for_iter_from_function_return() {
          \x20   return total;\n\
          }\n",
     );
-    // Should use set_values__int for the function return receiver in for-loop
+    // Should use set_values__int for the function return receiver in for-loop (call site, not just definition)
     assert!(
-        ir.contains("@set_values__int"),
+        ir.contains("call ptr @set_values__int"),
         "expected set_values__int call for function return receiver in for-loop"
+    );
+}
+
+// ── Additional iterator regression tests (review follow-up) ──
+
+#[test]
+fn test_run_flat_map_map_bool_collect() {
+    // Post-flat_map type should remain bool after downstream map().
+    compile_run_and_check(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let flags: [bool] = arr.iter()\n\
+         \x20       .flat_map(|x: int| -> [int] { return [x, x * 10]; })\n\
+         \x20       .map(|v: int| -> bool { return v > 5; })\n\
+         \x20       .collect();\n\
+         \x20   if flags[1] { return 11; }\n\
+         \x20   return 0;\n\
+         }\n",
+        11,
+    );
+}
+
+#[test]
+fn test_run_flatten_from_call_receiver_bool() {
+    // flatten() should infer inner type from non-identifier receiver expression.
+    compile_run_and_check(
+        "fn mk() -> [[bool]] {\n\
+         \x20   return [[true, false], [true]];\n\
+         }\n\
+         fn main() -> int {\n\
+         \x20   let flat: [bool] = mk().iter().flatten().collect();\n\
+         \x20   if len(flat) != 3 { return 0; }\n\
+         \x20   if flat[0] and (not flat[1]) and flat[2] { return 7; }\n\
+         \x20   return 0;\n\
+         }\n",
+        7,
+    );
+}
+
+#[test]
+fn test_run_flat_map_filter_then_map_collect() {
+    // Non-final filter after flat_map must emit continuation labels.
+    compile_run_and_check(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let out: [int] = arr.iter()\n\
+         \x20       .flat_map(|x: int| -> [int] { return [x, x + 1]; })\n\
+         \x20       .filter(|v: int| -> bool { return v % 2 == 0; })\n\
+         \x20       .map(|v: int| -> int { return v * 10; })\n\
+         \x20       .collect();\n\
+         \x20   return out[2];\n\
+         }\n",
+        40,
+    );
+}
+
+#[test]
+fn test_run_flat_map_take_while_then_map_sum() {
+    // Non-final take_while after flat_map must emit continuation labels.
+    compile_run_and_check(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let s: int = arr.iter()\n\
+         \x20       .flat_map(|x: int| -> [int] { return [x, x + 1]; })\n\
+         \x20       .take_while(|v: int| -> bool { return v < 3; })\n\
+         \x20       .map(|v: int| -> int { return v + 1; })\n\
+         \x20       .sum();\n\
+         \x20   return s;\n\
+         }\n",
+        8,
+    );
+}
+
+#[test]
+fn test_run_flat_map_find_unwrap() {
+    // flat_map(...).find(...) result should be a usable pointer-backed Option.
+    compile_run_and_check(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let found: Option<int> = arr.iter()\n\
+         \x20       .flat_map(|x: int| -> [int] { return [x, x * 10]; })\n\
+         \x20       .find(|v: int| -> bool { return v == 30; });\n\
+         \x20   return found.unwrap();\n\
+         }\n",
+        30,
+    );
+}
+
+#[test]
+fn test_run_flat_map_find_direct_match_again() {
+    // flat_map(...).find(...) should also work in direct match expressions.
+    compile_run_and_check(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   match arr.iter()\n\
+         \x20       .flat_map(|x: int| -> [int] { return [x, x * 10]; })\n\
+         \x20       .find(|v: int| -> bool { return v == 20; }) {\n\
+         \x20       Some(v) => { return v; }\n\
+         \x20       None => { return 0; }\n\
+         \x20   }\n\
+         }\n",
+        20,
+    );
+}
+
+#[test]
+fn test_run_for_chars_push_into_char_array() {
+    // for c in s.chars() loop var must have char/i8 storage.
+    compile_run_and_check(
+        "fn main() -> int {\n\
+         \x20   let s: string = \"hello\";\n\
+         \x20   let mut out: [char] = ['x'];\n\
+         \x20   out.clear();\n\
+         \x20   for c in s.chars() {\n\
+         \x20       push(out, c);\n\
+         \x20   }\n\
+         \x20   if out[1] == 'e' { return 9; }\n\
+         \x20   return 0;\n\
+         }\n",
+        9,
+    );
+}
+
+#[test]
+fn test_run_set_iter_count_parameter_receiver() {
+    // Set.iter() on function parameters should not fall back to array path.
+    compile_run_and_check(
+        "fn count_set(s: Set<int>) -> int {\n\
+         \x20   return s.iter().count();\n\
+         }\n\
+         fn main() -> int {\n\
+         \x20   let s: Set<int> = set_new();\n\
+         \x20   set_add(s, 10);\n\
+         \x20   set_add(s, 20);\n\
+         \x20   return count_set(s);\n\
+         }\n",
+        2,
+    );
+}
+
+#[test]
+fn test_run_map_iter_count_parameter_receiver() {
+    // Map.iter() on function parameters should not fall back to array path.
+    compile_run_and_check(
+        "fn count_map(m: Map<string, int>) -> int {\n\
+         \x20   return m.iter().count();\n\
+         }\n\
+         fn main() -> int {\n\
+         \x20   let m: Map<string, int> = map_new();\n\
+         \x20   map_set(m, \"a\", 1);\n\
+         \x20   map_set(m, \"b\", 2);\n\
+         \x20   return count_map(m);\n\
+         }\n",
+        2,
+    );
+}
+
+#[test]
+fn test_run_set_iter_for_loop_parameter_receiver() {
+    // for ... in s.iter() should work when s is a function parameter.
+    compile_run_and_check(
+        "fn sum_set(s: Set<int>) -> int {\n\
+         \x20   let mut total: int = 0;\n\
+         \x20   for x in s.iter() {\n\
+         \x20       total += x;\n\
+         \x20   }\n\
+         \x20   return total;\n\
+         }\n\
+         fn main() -> int {\n\
+         \x20   let s: Set<int> = set_new();\n\
+         \x20   set_add(s, 2);\n\
+         \x20   set_add(s, 4);\n\
+         \x20   return sum_set(s);\n\
+         }\n",
+        6,
+    );
+}
+
+#[test]
+fn test_run_map_iter_for_loop_parameter_receiver() {
+    // for ... in m.iter() should work when m is a function parameter.
+    compile_run_and_check(
+        "fn sum_values(m: Map<string, int>) -> int {\n\
+         \x20   let mut total: int = 0;\n\
+         \x20   for p in m.iter() {\n\
+         \x20       total += p.1;\n\
+         \x20   }\n\
+         \x20   return total;\n\
+         }\n\
+         fn main() -> int {\n\
+         \x20   let m: Map<string, int> = map_new();\n\
+         \x20   map_set(m, \"a\", 3);\n\
+         \x20   map_set(m, \"b\", 4);\n\
+         \x20   return sum_values(m);\n\
+         }\n",
+        7,
+    );
+}
+
+#[test]
+fn test_run_map_iter_chain_tuple_fold() {
+    // Map.iter().chain(...) should keep map-source load typing consistent.
+    compile_run_and_check(
+        "fn main() -> int {\n\
+         \x20   let m: Map<string, int> = map_new();\n\
+         \x20   map_set(m, \"a\", 1);\n\
+         \x20   map_set(m, \"b\", 2);\n\
+         \x20   let extra: [(string, int)] = [(\"c\", 5)];\n\
+         \x20   let total: int = m.iter().chain(extra).fold(0, |acc: int, p: (string, int)| -> int { return acc + p.1; });\n\
+         \x20   return total;\n\
+         }\n",
+        8,
+    );
+}
+
+// ── Fix: Set/Map return-by-value SIGBUS crash ──
+
+#[test]
+fn test_run_set_iter_from_function_return() {
+    // Set returned from function, iter pipeline — should not SIGBUS
+    compile_run_and_check(
+        "fn make_set() -> Set<int> {\n\
+         \x20   let s: Set<int> = set_new();\n\
+         \x20   set_add(s, 10);\n\
+         \x20   set_add(s, 20);\n\
+         \x20   set_add(s, 30);\n\
+         \x20   return s;\n\
+         }\n\
+         fn main() -> int {\n\
+         \x20   let n: int = make_set().iter().count();\n\
+         \x20   return n;\n\
+         }\n",
+        3,
+    );
+}
+
+#[test]
+fn test_run_set_for_iter_from_function_return() {
+    // Set returned from function, for-loop — should not SIGBUS
+    compile_run_and_check(
+        "fn make_set() -> Set<int> {\n\
+         \x20   let s: Set<int> = set_new();\n\
+         \x20   set_add(s, 10);\n\
+         \x20   set_add(s, 20);\n\
+         \x20   set_add(s, 30);\n\
+         \x20   return s;\n\
+         }\n\
+         fn main() -> int {\n\
+         \x20   let mut total: int = 0;\n\
+         \x20   for x in make_set().iter() {\n\
+         \x20       total += x;\n\
+         \x20   }\n\
+         \x20   return total;\n\
+         }\n",
+        60,
+    );
+}
+
+#[test]
+fn test_run_map_iter_from_function_return() {
+    // Map returned from function, iter pipeline — should not SIGBUS
+    compile_run_and_check(
+        "fn make_map() -> Map<string, int> {\n\
+         \x20   let m: Map<string, int> = map_new();\n\
+         \x20   map_set(m, \"a\", 1);\n\
+         \x20   map_set(m, \"b\", 2);\n\
+         \x20   return m;\n\
+         }\n\
+         fn main() -> int {\n\
+         \x20   let n: int = make_map().iter().count();\n\
+         \x20   return n;\n\
+         }\n",
+        2,
+    );
+}
+
+#[test]
+fn test_run_set_field_iter() {
+    // Field access on struct containing Set, iter pipeline — should not SIGBUS
+    compile_run_and_check(
+        "struct Container {\n\
+         \x20   data: Set<int>,\n\
+         }\n\
+         fn main() -> int {\n\
+         \x20   let s: Set<int> = set_new();\n\
+         \x20   set_add(s, 5);\n\
+         \x20   set_add(s, 10);\n\
+         \x20   let c: Container = Container { data: s };\n\
+         \x20   let mut total: int = 0;\n\
+         \x20   for x in c.data.iter() {\n\
+         \x20       total += x;\n\
+         \x20   }\n\
+         \x20   return total;\n\
+         }\n",
+        15,
     );
 }

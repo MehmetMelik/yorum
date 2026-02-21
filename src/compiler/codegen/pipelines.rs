@@ -15,9 +15,21 @@ impl Codegen {
             }
             ExprKind::Call(callee, _) => {
                 if let ExprKind::Ident(name) = &callee.kind {
-                    if let Some(Type::Named(ref mangled)) = self.fn_ret_types.get(name.as_str()) {
-                        if mangled.starts_with("Set__") || mangled.starts_with("Map__") {
-                            return Some(mangled.clone());
+                    if let Some(ret_ty) = self.fn_ret_types.get(name.as_str()) {
+                        match ret_ty {
+                            Type::Named(ref mangled)
+                                if mangled.starts_with("Set__") || mangled.starts_with("Map__") =>
+                            {
+                                return Some(mangled.clone());
+                            }
+                            Type::Generic(ref gname, ref args)
+                                if gname == "Set" || gname == "Map" =>
+                            {
+                                let suffixes: Vec<String> =
+                                    args.iter().map(Self::mangle_type_suffix).collect();
+                                return Some(format!("{}__{}", gname, suffixes.join("__")));
+                            }
+                            _ => {}
                         }
                     }
                 }
@@ -27,11 +39,22 @@ impl Codegen {
                 if let ExprKind::Ident(obj_name) = &obj.kind {
                     if let Some(slot) = self.lookup_var(obj_name) {
                         if let Some(struct_name) = slot.llvm_ty.strip_prefix('%') {
-                            if let Ok((_, Type::Named(ref mangled))) =
-                                self.struct_field_index(struct_name, field)
-                            {
-                                if mangled.starts_with("Set__") || mangled.starts_with("Map__") {
-                                    return Some(mangled.clone());
+                            if let Ok((_, ref fty)) = self.struct_field_index(struct_name, field) {
+                                match fty {
+                                    Type::Named(ref mangled)
+                                        if mangled.starts_with("Set__")
+                                            || mangled.starts_with("Map__") =>
+                                    {
+                                        return Some(mangled.clone());
+                                    }
+                                    Type::Generic(ref gname, ref args)
+                                        if gname == "Set" || gname == "Map" =>
+                                    {
+                                        let suffixes: Vec<String> =
+                                            args.iter().map(Self::mangle_type_suffix).collect();
+                                        return Some(format!("{}__{}", gname, suffixes.join("__")));
+                                    }
+                                    _ => {}
                                 }
                             }
                         }
@@ -1338,7 +1361,7 @@ impl Codegen {
                         });
                     }
                 }
-                if !is_last && !matches!(step, IterStep::Filter(_) | IterStep::TakeWhile(_)) {
+                if !is_last {
                     self.emit_label(&next_label);
                     self.block_terminated = false;
                 }
@@ -1425,6 +1448,8 @@ impl Codegen {
                 (ptr, "i64".to_string())
             }
             PipelineTerminator::Find(_) => {
+                // Ensure the Option enum layout is registered before use
+                self.ensure_option_enum_for_llvm_type(&ctx.final_elem_ty);
                 // Option: allocate and set to None (tag=1)
                 let enum_name = format!("Option__{}", llvm_to_semantic_name(&ctx.final_elem_ty));
                 let enum_ty = format!("%{}", enum_name);
@@ -1610,7 +1635,7 @@ impl Codegen {
                         });
                     }
                 }
-                if !is_last && !matches!(step, IterStep::Filter(_) | IterStep::TakeWhile(_)) {
+                if !is_last {
                     self.emit_label(&next_label);
                     self.block_terminated = false;
                 }
@@ -1811,8 +1836,9 @@ impl Codegen {
                 Ok(result)
             }
             PipelineTerminator::Find(_) => {
-                let result = self.emit_load(&result_ty, &result_ptr);
-                Ok(result)
+                // Return the alloca pointer directly (consistent with emit_terminator_find
+                // and expr_returns_ptr which expects Find to return a ptr)
+                Ok(result_ptr)
             }
             PipelineTerminator::Any(_) | PipelineTerminator::All(_) => {
                 let result = self.emit_load("i1", &result_ptr);
@@ -2041,13 +2067,44 @@ impl Codegen {
                     let val = self.fresh_temp();
                     self.emit_line(&format!("{} = add i64 {}, {}", val, ctx.data_ptr, load_idx));
                     val
+                } else if let Some(ref mii) = ctx.map_iter_info {
+                    // Map source: load key and value, construct tuple inline
+                    let key_gep = self.fresh_temp();
+                    self.emit_line(&format!(
+                        "{} = getelementptr {}, ptr {}, i64 {}",
+                        key_gep, mii.key_elem_ty, ctx.data_ptr, load_idx
+                    ));
+                    let key_val = self.emit_load(&mii.key_elem_ty, &key_gep);
+                    let val_gep = self.fresh_temp();
+                    self.emit_line(&format!(
+                        "{} = getelementptr {}, ptr {}, i64 {}",
+                        val_gep, mii.val_elem_ty, mii.val_data_ptr, load_idx
+                    ));
+                    let val_loaded = self.emit_load(&mii.val_elem_ty, &val_gep);
+                    let tuple_ptr = self.fresh_temp();
+                    self.emit_line(&format!("{} = alloca %{}", tuple_ptr, mii.tuple_name));
+                    self.emit_struct_field_store(
+                        &mii.tuple_name,
+                        &tuple_ptr,
+                        0,
+                        &mii.key_elem_ty,
+                        &key_val,
+                    );
+                    self.emit_struct_field_store(
+                        &mii.tuple_name,
+                        &tuple_ptr,
+                        1,
+                        &mii.val_elem_ty,
+                        &val_loaded,
+                    );
+                    self.emit_load(&format!("%{}", mii.tuple_name), &tuple_ptr)
                 } else {
                     let elem_gep = self.fresh_temp();
                     self.emit_line(&format!(
                         "{} = getelementptr {}, ptr {}, i64 {}",
-                        elem_gep, ctx.src_elem_ty, ctx.data_ptr, load_idx
+                        elem_gep, load_elem_ty, ctx.data_ptr, load_idx
                     ));
-                    self.emit_load(&ctx.src_elem_ty, &elem_gep)
+                    self.emit_load(load_elem_ty, &elem_gep)
                 };
                 self.emit_line(&format!("br label %{}", chain_merge_label));
 
@@ -2067,18 +2124,15 @@ impl Codegen {
                 let chain_val = self.emit_load(&ci.elem_ty, &chain_gep);
                 self.emit_line(&format!("br label %{}", chain_merge_label));
 
-                // Merge
+                // Merge — use src_elem_ty (tuple for maps, since first source
+                // now constructs the full tuple inline)
                 self.emit_label(&chain_merge_label);
                 self.block_terminated = false;
                 let merged = self.fresh_temp();
+                let merge_ty = &ctx.src_elem_ty;
                 self.emit_line(&format!(
                     "{} = phi {} [{}, %{}], [{}, %{}]",
-                    merged,
-                    ctx.src_elem_ty,
-                    first_val,
-                    chain_first_label,
-                    chain_val,
-                    chain_second_label
+                    merged, merge_ty, first_val, chain_first_label, chain_val, chain_second_label
                 ));
                 merged
             } else {
@@ -2111,31 +2165,35 @@ impl Codegen {
         };
 
         // For Map.iter(): current_val is the key; load value and construct (K, V) tuple
+        // Skip if chain at position 0 already constructed the tuple inline.
+        let chain_handled_map = !ctx.chain_infos.is_empty() && ctx.chain_infos[0].is_some();
         if let Some(ref mii) = ctx.map_iter_info {
-            let val_gep = self.fresh_temp();
-            self.emit_line(&format!(
-                "{} = getelementptr {}, ptr {}, i64 {}",
-                val_gep, mii.val_elem_ty, mii.val_data_ptr, load_idx
-            ));
-            let val_loaded = self.emit_load(&mii.val_elem_ty, &val_gep);
-            let tuple_ptr = self.fresh_temp();
-            self.emit_line(&format!("{} = alloca %{}", tuple_ptr, mii.tuple_name));
-            self.emit_struct_field_store(
-                &mii.tuple_name,
-                &tuple_ptr,
-                0,
-                &mii.key_elem_ty,
-                &current_val,
-            );
-            self.emit_struct_field_store(
-                &mii.tuple_name,
-                &tuple_ptr,
-                1,
-                &mii.val_elem_ty,
-                &val_loaded,
-            );
-            let tuple_loaded = self.emit_load(&format!("%{}", mii.tuple_name), &tuple_ptr);
-            current_val = tuple_loaded;
+            if !chain_handled_map {
+                let val_gep = self.fresh_temp();
+                self.emit_line(&format!(
+                    "{} = getelementptr {}, ptr {}, i64 {}",
+                    val_gep, mii.val_elem_ty, mii.val_data_ptr, load_idx
+                ));
+                let val_loaded = self.emit_load(&mii.val_elem_ty, &val_gep);
+                let tuple_ptr = self.fresh_temp();
+                self.emit_line(&format!("{} = alloca %{}", tuple_ptr, mii.tuple_name));
+                self.emit_struct_field_store(
+                    &mii.tuple_name,
+                    &tuple_ptr,
+                    0,
+                    &mii.key_elem_ty,
+                    &current_val,
+                );
+                self.emit_struct_field_store(
+                    &mii.tuple_name,
+                    &tuple_ptr,
+                    1,
+                    &mii.val_elem_ty,
+                    &val_loaded,
+                );
+                let tuple_loaded = self.emit_load(&format!("%{}", mii.tuple_name), &tuple_ptr);
+                current_val = tuple_loaded;
+            }
         }
 
         // Increment index (always, even if filtered out)

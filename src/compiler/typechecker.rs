@@ -1294,12 +1294,28 @@ impl TypeChecker {
                     self.loop_depth += 1;
                     self.push_scope();
                     self.define_with_span(&s.var_name, Type::Int, false, s.span);
+                    if self.collect_symbols {
+                        self.symbol_table.definitions.push(SymbolDef {
+                            name: s.var_name.clone(),
+                            kind: SymbolKind::Variable,
+                            type_desc: format!("for {}: int", s.var_name),
+                            span: s.span,
+                        });
+                    }
                     self.check_block(&s.body);
                     self.pop_scope();
                     self.loop_depth -= 1;
                 } else if let Some(elem_ty) = self.infer_for_iterable(&s.iterable) {
                     self.loop_depth += 1;
                     self.push_scope();
+                    if self.collect_symbols {
+                        self.symbol_table.definitions.push(SymbolDef {
+                            name: s.var_name.clone(),
+                            kind: SymbolKind::Variable,
+                            type_desc: format!("for {}: {}", s.var_name, elem_ty),
+                            span: s.span,
+                        });
+                    }
                     self.define_with_span(&s.var_name, elem_ty, false, s.span);
                     self.check_block(&s.body);
                     self.pop_scope();
@@ -3348,6 +3364,14 @@ impl TypeChecker {
                                 span: expr.span,
                             });
                         }
+                        if self.collect_symbols {
+                            self.symbol_table.references.push(SymbolRef {
+                                span: expr.span,
+                                resolved_type: format!("{}", inner),
+                                def_name: "join".to_string(),
+                                def_span: None,
+                            });
+                        }
                         return Some(*inner.clone());
                     } else {
                         self.errors.push(TypeError {
@@ -3372,13 +3396,33 @@ impl TypeChecker {
                                         span: expr.span,
                                     });
                                 }
-                                return type_args.first().cloned();
+                                let ret = type_args.first().cloned();
+                                if self.collect_symbols {
+                                    self.symbol_table.references.push(SymbolRef {
+                                        span: expr.span,
+                                        resolved_type: ret
+                                            .as_ref()
+                                            .map(|t| format!("{}", t))
+                                            .unwrap_or_default(),
+                                        def_name: method_name.clone(),
+                                        def_span: None,
+                                    });
+                                }
+                                return ret;
                             }
                             "is_some" | "is_none" => {
                                 if !args.is_empty() {
                                     self.errors.push(TypeError {
                                         message: format!("{}() takes no arguments", method_name),
                                         span: expr.span,
+                                    });
+                                }
+                                if self.collect_symbols {
+                                    self.symbol_table.references.push(SymbolRef {
+                                        span: expr.span,
+                                        resolved_type: "bool".to_string(),
+                                        def_name: method_name.clone(),
+                                        def_span: None,
                                     });
                                 }
                                 return Some(Type::Bool);
@@ -3404,7 +3448,19 @@ impl TypeChecker {
                                         span: expr.span,
                                     });
                                 }
-                                return type_args.first().cloned();
+                                let ret = type_args.first().cloned();
+                                if self.collect_symbols {
+                                    self.symbol_table.references.push(SymbolRef {
+                                        span: expr.span,
+                                        resolved_type: ret
+                                            .as_ref()
+                                            .map(|t| format!("{}", t))
+                                            .unwrap_or_default(),
+                                        def_name: method_name.clone(),
+                                        def_span: None,
+                                    });
+                                }
+                                return ret;
                             }
                             "unwrap_err" => {
                                 if !args.is_empty() {
@@ -3413,13 +3469,33 @@ impl TypeChecker {
                                         span: expr.span,
                                     });
                                 }
-                                return type_args.get(1).cloned();
+                                let ret = type_args.get(1).cloned();
+                                if self.collect_symbols {
+                                    self.symbol_table.references.push(SymbolRef {
+                                        span: expr.span,
+                                        resolved_type: ret
+                                            .as_ref()
+                                            .map(|t| format!("{}", t))
+                                            .unwrap_or_default(),
+                                        def_name: method_name.clone(),
+                                        def_span: None,
+                                    });
+                                }
+                                return ret;
                             }
                             "is_ok" | "is_err" => {
                                 if !args.is_empty() {
                                     self.errors.push(TypeError {
                                         message: format!("{}() takes no arguments", method_name),
                                         span: expr.span,
+                                    });
+                                }
+                                if self.collect_symbols {
+                                    self.symbol_table.references.push(SymbolRef {
+                                        span: expr.span,
+                                        resolved_type: "bool".to_string(),
+                                        def_name: method_name.clone(),
+                                        def_span: None,
                                     });
                                 }
                                 return Some(Type::Bool);
@@ -3517,6 +3593,14 @@ impl TypeChecker {
                             }
                         }
                     }
+                    if self.collect_symbols {
+                        self.symbol_table.references.push(SymbolRef {
+                            span: expr.span,
+                            resolved_type: format!("{}", sig.ret),
+                            def_name: mangled.clone(),
+                            def_span: Some(sig.span),
+                        });
+                    }
                     Some(sig.ret)
                 } else {
                     self.errors.push(TypeError {
@@ -3541,6 +3625,14 @@ impl TypeChecker {
                 if let Type::Tuple(ref types) = obj_ty {
                     if let Ok(idx) = field.parse::<usize>() {
                         if idx < types.len() {
+                            if self.collect_symbols {
+                                self.symbol_table.references.push(SymbolRef {
+                                    span: expr.span,
+                                    resolved_type: format!("{}", types[idx]),
+                                    def_name: field.clone(),
+                                    def_span: None,
+                                });
+                            }
                             return Some(types[idx].clone());
                         } else {
                             self.errors.push(TypeError {
@@ -3582,17 +3674,26 @@ impl TypeChecker {
                 if let Some(info) = self.structs.get(&struct_name).cloned() {
                     if let Some((_, fty)) = info.fields.iter().find(|(n, _)| n == field) {
                         // If we have type args, substitute type params in the field type
-                        if let Some(args) = type_args {
+                        let resolved = if let Some(args) = type_args {
                             let subst: HashMap<String, Type> = info
                                 .type_params
                                 .iter()
                                 .zip(args.iter())
                                 .map(|(p, a)| (p.clone(), a.clone()))
                                 .collect();
-                            Some(self.substitute_type_vars(fty, &subst))
+                            self.substitute_type_vars(fty, &subst)
                         } else {
-                            Some(fty.clone())
+                            fty.clone()
+                        };
+                        if self.collect_symbols {
+                            self.symbol_table.references.push(SymbolRef {
+                                span: expr.span,
+                                resolved_type: format!("{}", resolved),
+                                def_name: format!("{}.{}", struct_name, field),
+                                def_span: None,
+                            });
                         }
+                        Some(resolved)
                     } else {
                         self.errors.push(TypeError {
                             message: format!("struct '{}' has no field '{}'", struct_name, field),
@@ -3639,6 +3740,14 @@ impl TypeChecker {
                         });
                     }
                     self.define_with_span(&param.name, param.ty.clone(), false, param.span);
+                    if self.collect_symbols {
+                        self.symbol_table.definitions.push(SymbolDef {
+                            name: param.name.clone(),
+                            kind: SymbolKind::Parameter,
+                            type_desc: format!("{}: {}", param.name, param.ty),
+                            span: param.span,
+                        });
+                    }
                 }
                 let prev_ret = self.current_fn_ret.clone();
                 self.current_fn_ret = Some(closure.return_type.clone());
@@ -3807,6 +3916,20 @@ impl TypeChecker {
 
             ExprKind::StructInit(name, fields) => {
                 if let Some(info) = self.structs.get(name).cloned() {
+                    if self.collect_symbols {
+                        let def_span = self
+                            .symbol_table
+                            .definitions
+                            .iter()
+                            .find(|d| d.name == *name && matches!(d.kind, SymbolKind::Struct))
+                            .map(|d| d.span);
+                        self.symbol_table.references.push(SymbolRef {
+                            span: expr.span,
+                            resolved_type: name.clone(),
+                            def_name: name.clone(),
+                            def_span,
+                        });
+                    }
                     // Check that all fields are provided
                     for (expected_name, expected_ty) in &info.fields {
                         if let Some(fi) = fields.iter().find(|f| &f.name == expected_name) {

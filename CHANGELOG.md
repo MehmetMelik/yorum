@@ -2,6 +2,28 @@
 
 All notable changes to the Yorum programming language compiler.
 
+## [1.11.0] - 2026-02-21
+
+**Array Repeat Syntax & Bounds Check Elision** — Two codegen optimizations: bulk array allocation with `[value; count]` and automatic bounds check removal in provably safe loops.
+
+### Added
+
+- **Array repeat syntax:** `[value; count]` creates an array of `count` copies of `value` in one allocation. Zero values (`0`, `0.0`, `false`) use `memset` fast path; non-zero values (including structs) use a fill loop with `memcpy` for aggregates. Count can be a runtime expression
+- **Bounds check elision:** `for i in 0..len(arr) { arr[i] }` no longer emits `@__yorum_bounds_check` calls when the compiler can prove the index is in-bounds. Conditions: exclusive range starting at 0, end is `len(arr)`, loop body doesn't mutate the array (no `push`/`pop`/reassignment). Works for both read (`arr[i]`) and write (`arr[i] = val`) index access. Correctly handles nested loops with shadowed variables via save/restore of bindings
+- **New AST variant:** `ExprKind::ArrayRepeat(Box<Expr>, Box<Expr>)` with full pipeline support (parser, typechecker, ownership checker, monomorphizer, DCE, formatter, codegen)
+- `examples/array_repeat.yrm` — demonstrates zero-init, non-zero fill, runtime count, empty arrays
+- 17 new integration tests covering both features, including safety tests for elision edge cases (inclusive ranges, different arrays, mutation, expression indices, nested loops, struct values)
+
+### Fixed
+
+- **LSP symbol tracking:** fixed missing symbol references for variables and struct fields in the language server
+- **LSP dot completions:** type-aware completions for struct fields and methods after `.`
+- **LSP keyword fix:** corrected keyword completion list
+
+**Stats:** 14 files changed | Tests: 712 (68 unit + 644 integration)
+
+---
+
 ## [1.10.0] - 2026-02-20
 
 **Codegen Refactor** — Extract helpers, deduplicate boilerplate, and split the monolithic `codegen.rs` into a directory module.
@@ -704,6 +726,7 @@ The compiler written in Yorum itself (5,226 lines), achieving bootstrap fixed-po
 
 ---
 
+[1.11.0]: https://github.com/MehmetMelik/yorum/compare/v1.10.0...v1.11.0
 [1.10.0]: https://github.com/MehmetMelik/yorum/compare/v1.9.1...v1.10.0
 [1.9.1]: https://github.com/MehmetMelik/yorum/compare/v1.9.0...v1.9.1
 [1.9.0]: https://github.com/MehmetMelik/yorum/compare/v1.9.0-beta...v1.9.0

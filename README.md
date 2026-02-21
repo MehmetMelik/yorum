@@ -256,6 +256,11 @@ fn main() -> int {
     let last: int = pop(arr);     // 4, arr is [1, 2, 3]
     arr[0] = 100;
     print_int(arr[0]);             // 100
+
+    // Array repeat: allocate and fill in one shot
+    let zeros: [int] = [0; 100];   // 100 zero-initialized ints
+    let ones: [int] = [1; 50];     // 50 ones
+
     return 0;
 }
 ```
@@ -263,7 +268,10 @@ fn main() -> int {
 Arrays are heap-allocated fat pointers (`{ ptr, i64, i64 }` — data pointer +
 length + capacity). `len(arr)` returns the length. `push(arr, val)` appends an
 element (growing the buffer via `realloc` when needed). `pop(arr)` removes and
-returns the last element. Index access includes runtime bounds checking.
+returns the last element. `[value; count]` creates an array of `count` copies of `value` in one allocation (zero values use `memset`, non-zero values use a fill loop).
+
+Index access includes runtime bounds checking. The compiler elides bounds checks inside `for i in 0..len(arr)` loops when `i` is provably in-bounds (no array mutation in the loop body).
+
 `for x in arr { ... }` iterates over array elements. `for x in arr.iter() { ... }` is equivalent. `for i in 0..n { ... }` iterates with a counter from 0 to n-1. `for i in 0..=n { ... }` iterates inclusively from 0 to n.
 
 ### Iterator Pipelines
@@ -934,7 +942,7 @@ diff gen1.ll gen2.ll    # identical — fixed-point achieved
 ## Testing
 
 ```bash
-cargo test                    # 695 tests (68 unit + 627 integration)
+cargo test                    # 712 tests (68 unit + 644 integration)
 cargo test compiler::lexer    # tests in one module
 cargo test test_fibonacci     # single test by name
 ```
@@ -979,6 +987,7 @@ cargo test test_fibonacci     # single test by name
 | **v1.9** | Iterator combinators (`.enumerate()`, `.zip()`, `.take()`, `.skip()`) and terminators (`.collect()`, `.fold()`, `.any()`, `.all()`, `.find()`, `.reduce()`) | Done |
 | **v1.9.1** | Range pipeline sources, aggregate codegen fixes, overflow hardening, tuple mangle bug fix, codegen cleanup | Done |
 | **v1.10** | Codegen refactor: fat pointer/struct helpers, pipeline deduplication, module extraction into 5 files | Done |
+| **v1.11** | Array repeat syntax `[value; count]`, bounds check elision for `for i in 0..len(arr)` loops | Done |
 
 ## License
 

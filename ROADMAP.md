@@ -90,14 +90,28 @@ Rationale: No language ecosystem grows without a package manager. Prerequisite f
 
 ---
 
-## v1.9 — Iterators & Functional Patterns
+## v1.9 — Iterators & Functional Patterns (Done)
 
-- **Iterator trait/protocol** — `for x in expr` works with any type implementing `Iterator`
-- **Lazy iterator combinators** — `map`, `filter`, `fold`, `take`, `skip`, `zip`, `enumerate`, `chain`
-- **Range types as iterators** — `0..n`, `0..=n`
-- **`collect()`** — materialize an iterator into an array
+- ~~**Iterator trait/protocol** — `for x in expr` works with any type implementing `Iterator`~~
+- ~~**Lazy iterator combinators** — `map`, `filter`, `fold`, `take`, `skip`, `zip`, `enumerate`, `chain`~~
+- ~~**Range types as iterators** — `0..n`, `0..=n`~~
+- ~~**`collect()`** — materialize an iterator into an array~~
 
-Rationale: Natural evolution of the `for` loop and array builtins. Lazy evaluation prevents unnecessary allocations.
+---
+
+## v1.10 — Codegen Refactor (Done)
+
+- ~~**Fat pointer helpers:** extracted reusable `emit_fat_ptr_load`/`init`/`field_load`/`field_store`~~
+- ~~**Struct field helpers:** `emit_struct_gep`, `emit_struct_field_load`, `emit_struct_field_store`~~
+- ~~**Module extraction:** split monolithic `codegen.rs` (9,892 lines) into directory module with 5 files~~
+
+---
+
+## v1.11 — Array Repeat Syntax & Bounds Check Elision (Done)
+
+- ~~**Array repeat syntax:** `[value; count]` — bulk array allocation with memset fast path for zero values and fill loop for non-zero/aggregate values~~
+- ~~**Bounds check elision:** compiler skips `@__yorum_bounds_check` for `arr[i]` inside `for i in 0..len(arr)` loops when the body doesn't mutate the array~~
+- ~~**LSP improvements:** symbol tracking, type-aware dot completions, keyword fix~~
 
 ---
 
@@ -128,3 +142,6 @@ The top 3 highest-impact releases:
 6. ~~**v1.6 (Formatter)** — `yorum fmt` auto-formatter with comment preservation~~ **Done**
 7. ~~**v1.7 (Performance)** — tail call optimization, constant folding, dead code elimination, inline hints, heap sort~~ **Done**
 8. ~~**v1.8 (Package Manager)** — `yorum install`, `yorum update`, git + path dependencies, lock file, namespace isolation~~ **Done**
+9. ~~**v1.9 (Iterators)** — iterator combinators, terminators, range pipeline sources, fused codegen~~ **Done**
+10. ~~**v1.10 (Codegen Refactor)** — fat pointer/struct helpers, pipeline deduplication, module extraction~~ **Done**
+11. ~~**v1.11 (Optimizations)** — array repeat `[value; count]`, bounds check elision~~ **Done**

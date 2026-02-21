@@ -1,6 +1,6 @@
 # Yorum Language Specification
 
-**Version:** 1.1.0
+**Version:** 1.11.0
 
 ## 1. Overview
 
@@ -309,13 +309,25 @@ let nums: [int] = [10, 20, 30];
 All elements must have the same type.  The element type is inferred from the
 first element.  Empty array literals are rejected (cannot infer type).
 
+Array repeat syntax creates an array of `count` copies of `value`:
+```
+let zeros: [int] = [0; 100];       // 100 zero-initialized ints
+let n: int = 50;
+let ones: [int] = [1; n];          // runtime count supported
+```
+The count must be of type `int`.  Zero values (`0`, `0.0`, `false`) are filled
+via `memset`; non-zero and aggregate values use a fill loop.
+
 Indexing uses postfix square brackets:
 ```
 let first: int = nums[0];
 ```
 
 Every index operation is bounds-checked at runtime.  Out-of-bounds access prints
-an error message and aborts the program.
+an error message and aborts the program.  The compiler elides bounds checks
+inside `for i in 0..len(arr)` loops when `i` is provably in-bounds (exclusive
+range starting at 0, end is `len(arr)`, loop body does not mutate the array via
+`push`, `pop`, or reassignment).
 
 Mutable arrays support index assignment:
 ```
@@ -707,6 +719,7 @@ The compiler emits textual LLVM IR.  Key mappings:
 | `fn(T) -> U` | `ptr` (opaque pointer to `{ ptr, ptr }` pair) |
 | `char` | `i8` |
 | `[T]` (array) | `{ ptr, i64, i64 }` fat pointer (data pointer + length + capacity) |
+| `[value; count]` | `malloc` + `memset`/fill loop + fat pointer init |
 | `Map` | `ptr` (hash table: keys, values, flags, capacity, size) |
 | Local variables | `alloca` + `load`/`store` |
 | Function calls | `call` instruction |
@@ -736,7 +749,13 @@ points to a contiguous `malloc`'d buffer of elements; the second holds the
 length; the third holds the capacity.
 
 Every index operation emits a call to a bounds-check helper that aborts on
-out-of-range access (negative index or index >= length).
+out-of-range access (negative index or index >= length).  The compiler elides
+bounds checks for index accesses inside `for i in 0..len(arr)` loops where the
+index variable is provably in-bounds.
+
+Array repeat expressions `[value; count]` emit a single `malloc` followed by
+either `memset` (for zero values) or a fill loop (for non-zero/aggregate values).
+The fat pointer is initialized with `len = count` and `cap = count`.
 
 Array parameters are passed as `ptr` (opaque pointer to the fat pointer struct).
 `len(arr)` loads the length field directly from the fat pointer.
@@ -1078,6 +1097,22 @@ HTTP/1.0 only (no TLS/HTTPS).
 - Fixed enum/struct return from functions: load value from alloca before `ret`
 - Fixed enum/struct let from function calls: alloca + store when RHS is not a constructor
 - 23 new integration tests (385 total: 46 unit + 339 integration)
+
+### v1.3–v1.10 (Done)
+- v1.3: Generic `Map<K,V>`/`Set<T>`, match exhaustiveness, `?` operator
+- v1.4: Effect system enforcement (6 categories, inference, propagation)
+- v1.5: Tooling (`yorum run`, REPL, LSP completions/code actions, DWARF debug info)
+- v1.6: Auto-formatter (`yorum fmt`)
+- v1.7: Performance (tail calls, constant folding, DCE, inline hints, heap sort)
+- v1.8: Package manager (`yorum install`/`update`, git + path deps, lock file)
+- v1.9: Iterator pipelines (combinators, terminators, range sources, fused codegen)
+- v1.10: Codegen refactor (fat pointer/struct helpers, module extraction into 5 files)
+
+### v1.11 (Done)
+- Array repeat syntax: `[value; count]` — bulk allocation with memset fast path for zero values
+- Bounds check elision: compiler skips bounds checks in `for i in 0..len(arr)` loops
+- LSP improvements: symbol tracking, type-aware dot completions, keyword fix
+- 17 new integration tests (712 total: 68 unit + 644 integration)
 
 ## Appendix A: Application Binary Interface (ABI)
 

@@ -65,6 +65,14 @@ impl Codegen {
                         }
                         return None;
                     }
+                    "chain" => {
+                        if args.len() == 1 {
+                            steps.push(IterStep::Chain(&args[0]));
+                            current = receiver;
+                            continue;
+                        }
+                        return None;
+                    }
                     "iter" => {
                         if args.is_empty() {
                             let is_range = matches!(
@@ -100,7 +108,7 @@ impl Codegen {
     pub(crate) fn is_iter_pipeline(expr: &Expr) -> bool {
         if let ExprKind::MethodCall(ref receiver, ref method, _) = expr.kind {
             match method.as_str() {
-                "map" | "filter" | "enumerate" | "zip" | "take" | "skip" => {
+                "map" | "filter" | "enumerate" | "zip" | "take" | "skip" | "chain" => {
                     Self::has_iter_base(receiver)
                 }
                 _ => false,
@@ -114,8 +122,8 @@ impl Codegen {
         if let ExprKind::MethodCall(ref receiver, ref method, _) = expr.kind {
             match method.as_str() {
                 "iter" => true,
-                "map" | "filter" | "enumerate" | "zip" | "take" | "skip" | "reduce" | "fold"
-                | "collect" | "find" | "any" | "all" => Self::has_iter_base(receiver),
+                "map" | "filter" | "enumerate" | "zip" | "take" | "skip" | "chain" | "reduce"
+                | "fold" | "collect" | "find" | "any" | "all" => Self::has_iter_base(receiver),
                 _ => false,
             }
         } else {
@@ -251,7 +259,10 @@ impl Codegen {
                     let right_semantic = llvm_to_semantic_name(&right_llvm);
                     ty = format!("%tuple.{}.{}", left_semantic, right_semantic);
                 }
-                IterStep::Filter(_) | IterStep::Take(_) | IterStep::Skip(_) => {}
+                IterStep::Filter(_)
+                | IterStep::Take(_)
+                | IterStep::Skip(_)
+                | IterStep::Chain(_) => {}
             }
         }
         ty
@@ -278,10 +289,11 @@ impl Codegen {
             Vec<Option<String>>,
             Vec<Option<String>>,
             Option<(String, bool)>, // range_end: Some((end_val, inclusive)) for ranges, None for arrays
+            Vec<Option<ChainInfo>>,
         ),
         CodegenError,
     > {
-        let (data_ptr, len_val, src_elem_ty, range_end) = if is_range_source {
+        let (data_ptr, mut len_val, src_elem_ty, range_end) = if is_range_source {
             // Range source: emit start and end, compute length estimate for allocation.
             // The loop condition uses direct value comparison (start + idx vs end)
             // instead of this length, avoiding overflow for wide ranges.
@@ -359,6 +371,7 @@ impl Codegen {
         let mut zip_infos: Vec<Option<ZipInfo>> = Vec::new();
         let mut take_skip_ptrs: Vec<Option<String>> = Vec::new();
         let mut enumerate_ptrs: Vec<Option<String>> = Vec::new();
+        let mut chain_infos: Vec<Option<ChainInfo>> = Vec::new();
         let mut current_elem_ty = src_elem_ty.clone();
 
         for step in steps {
@@ -376,6 +389,7 @@ impl Codegen {
                     zip_infos.push(None);
                     take_skip_ptrs.push(None);
                     enumerate_ptrs.push(None);
+                    chain_infos.push(None);
                 }
                 IterStep::Enumerate => {
                     // Register tuple type so downstream closures can reference it
@@ -392,6 +406,7 @@ impl Codegen {
                     zip_infos.push(None);
                     take_skip_ptrs.push(None);
                     enumerate_ptrs.push(Some(counter_ptr));
+                    chain_infos.push(None);
                 }
                 IterStep::Zip(zip_expr) => {
                     let zip_arr = self.emit_expr(zip_expr)?;
@@ -418,6 +433,7 @@ impl Codegen {
                     }));
                     take_skip_ptrs.push(None);
                     enumerate_ptrs.push(None);
+                    chain_infos.push(None);
                 }
                 IterStep::Take(n_expr) | IterStep::Skip(n_expr) => {
                     let n_val = self.emit_expr(n_expr)?;
@@ -426,6 +442,31 @@ impl Codegen {
                     zip_infos.push(None);
                     take_skip_ptrs.push(Some(remaining_ptr));
                     enumerate_ptrs.push(None);
+                    chain_infos.push(None);
+                }
+                IterStep::Chain(chain_expr) => {
+                    let chain_arr = self.emit_expr(chain_expr)?;
+                    let chain_elem_ty = self.infer_array_elem_type(chain_expr);
+                    let (chain_data, chain_len) = self.emit_fat_ptr_load(&chain_arr);
+
+                    // Save first source length, then compute combined length
+                    let first_len = len_val.clone();
+                    let total_len = self.fresh_temp();
+                    self.emit_line(&format!(
+                        "{} = add i64 {}, {}",
+                        total_len, first_len, chain_len
+                    ));
+                    len_val = total_len;
+
+                    closure_infos.push(None);
+                    zip_infos.push(None);
+                    take_skip_ptrs.push(None);
+                    enumerate_ptrs.push(None);
+                    chain_infos.push(Some(ChainInfo {
+                        data_ptr: chain_data,
+                        first_len,
+                        elem_ty: chain_elem_ty,
+                    }));
                 }
             }
         }
@@ -466,6 +507,12 @@ impl Codegen {
             len_val
         };
 
+        // When chain is present and source is a range, use simple idx < total_len
+        // condition instead of range-style overflow-protected condition. The total_len
+        // is already pre-computed so overflow isn't an issue.
+        let has_chain = chain_infos.iter().any(|c| c.is_some());
+        let range_end = if has_chain { None } else { range_end };
+
         Ok((
             data_ptr,
             len_val,
@@ -475,6 +522,7 @@ impl Codegen {
             take_skip_ptrs,
             enumerate_ptrs,
             range_end,
+            chain_infos,
         ))
     }
 
@@ -566,6 +614,7 @@ impl Codegen {
             take_skip_ptrs,
             enumerate_ptrs,
             range_end,
+            chain_infos,
         ) = self.emit_pipeline_preamble(
             pipeline.source,
             &pipeline.steps,
@@ -618,6 +667,7 @@ impl Codegen {
             &take_skip_ptrs,
             &enumerate_ptrs,
             is_range,
+            &chain_infos,
         )?;
 
         // 6. Body block
@@ -669,6 +719,7 @@ impl Codegen {
             take_skip_ptrs,
             enumerate_ptrs,
             range_end,
+            chain_infos,
         ) = self.emit_pipeline_preamble(
             pipeline.source,
             &pipeline.steps,
@@ -728,6 +779,7 @@ impl Codegen {
                 &enumerate_ptrs,
                 is_range,
                 &range_end,
+                &chain_infos,
             ),
             PipelineTerminator::Fold(init_expr, _) => {
                 let init_val = self.emit_expr(init_expr)?;
@@ -749,6 +801,7 @@ impl Codegen {
                     &tci.ret_ty,
                     is_range,
                     &range_end,
+                    &chain_infos,
                 )
             }
             PipelineTerminator::Any(_) => {
@@ -769,6 +822,7 @@ impl Codegen {
                     &tci.env_ptr,
                     is_range,
                     &range_end,
+                    &chain_infos,
                 )
             }
             PipelineTerminator::All(_) => {
@@ -789,6 +843,7 @@ impl Codegen {
                     &tci.env_ptr,
                     is_range,
                     &range_end,
+                    &chain_infos,
                 )
             }
             PipelineTerminator::Find(_) => {
@@ -808,6 +863,7 @@ impl Codegen {
                     &tci.env_ptr,
                     is_range,
                     &range_end,
+                    &chain_infos,
                 )
             }
             PipelineTerminator::Reduce(_) => {
@@ -828,6 +884,7 @@ impl Codegen {
                     &tci.ret_ty,
                     is_range,
                     &range_end,
+                    &chain_infos,
                 )
             }
         }
@@ -854,9 +911,85 @@ impl Codegen {
         take_skip_ptrs: &[Option<String>],
         enumerate_ptrs: &[Option<String>],
         is_range_source: bool,
+        chain_infos: &[Option<ChainInfo>],
     ) -> Result<(String, String), CodegenError> {
-        // Load element at current index
-        let mut current_val = if is_range_source {
+        // Load element at current index — with chain conditional if chain is at position 0
+        let mut current_val = if !chain_infos.is_empty() {
+            if let Some(ref ci) = chain_infos[0] {
+                // Chain at position 0: conditionally load from first or second source
+                let in_first = self.fresh_temp();
+                self.emit_line(&format!(
+                    "{} = icmp slt i64 {}, {}",
+                    in_first, cur_idx, ci.first_len
+                ));
+                let chain_first_label = self.fresh_label("chain.first");
+                let chain_second_label = self.fresh_label("chain.second");
+                let chain_merge_label = self.fresh_label("chain.merge");
+                self.emit_cond_branch(&in_first, &chain_first_label, &chain_second_label);
+
+                // First source
+                self.emit_label(&chain_first_label);
+                self.block_terminated = false;
+                let first_val = if is_range_source {
+                    let val = self.fresh_temp();
+                    self.emit_line(&format!("{} = add i64 {}, {}", val, data_ptr, cur_idx));
+                    val
+                } else {
+                    let elem_gep = self.fresh_temp();
+                    self.emit_line(&format!(
+                        "{} = getelementptr {}, ptr {}, i64 {}",
+                        elem_gep, src_elem_ty, data_ptr, cur_idx
+                    ));
+                    self.emit_load(src_elem_ty, &elem_gep)
+                };
+                self.emit_line(&format!("br label %{}", chain_merge_label));
+
+                // Second source (chain array)
+                self.emit_label(&chain_second_label);
+                self.block_terminated = false;
+                let chain_off = self.fresh_temp();
+                self.emit_line(&format!(
+                    "{} = sub i64 {}, {}",
+                    chain_off, cur_idx, ci.first_len
+                ));
+                let chain_gep = self.fresh_temp();
+                self.emit_line(&format!(
+                    "{} = getelementptr {}, ptr {}, i64 {}",
+                    chain_gep, ci.elem_ty, ci.data_ptr, chain_off
+                ));
+                let chain_val = self.emit_load(&ci.elem_ty, &chain_gep);
+                self.emit_line(&format!("br label %{}", chain_merge_label));
+
+                // Merge
+                self.emit_label(&chain_merge_label);
+                self.block_terminated = false;
+                let merged = self.fresh_temp();
+                self.emit_line(&format!(
+                    "{} = phi {} [{}, %{}], [{}, %{}]",
+                    merged,
+                    src_elem_ty,
+                    first_val,
+                    chain_first_label,
+                    chain_val,
+                    chain_second_label
+                ));
+                merged
+            } else {
+                // No chain at position 0, normal load
+                if is_range_source {
+                    let val = self.fresh_temp();
+                    self.emit_line(&format!("{} = add i64 {}, {}", val, data_ptr, cur_idx));
+                    val
+                } else {
+                    let elem_gep = self.fresh_temp();
+                    self.emit_line(&format!(
+                        "{} = getelementptr {}, ptr {}, i64 {}",
+                        elem_gep, src_elem_ty, data_ptr, cur_idx
+                    ));
+                    self.emit_load(src_elem_ty, &elem_gep)
+                }
+            }
+        } else if is_range_source {
             // Range source: element = start + index
             let val = self.fresh_temp();
             self.emit_line(&format!("{} = add i64 {}, {}", val, data_ptr, cur_idx));
@@ -1025,6 +1158,12 @@ impl Codegen {
                         self.emit_line(&format!("br label %{}", body_label));
                     }
                 }
+                IterStep::Chain(_) => {
+                    // No-op: element already selected by conditional load at the top.
+                    if is_last {
+                        self.emit_line(&format!("br label %{}", body_label));
+                    }
+                }
             }
         }
 
@@ -1056,6 +1195,7 @@ impl Codegen {
         enumerate_ptrs: &[Option<String>],
         is_range_source: bool,
         range_end: &Option<(String, bool)>,
+        chain_infos: &[Option<ChainInfo>],
     ) -> Result<PipelineLoopParts, CodegenError> {
         let cond_label = self.fresh_label(&format!("{prefix}.cond"));
         let step_label = self.fresh_label(&format!("{prefix}.step"));
@@ -1091,6 +1231,7 @@ impl Codegen {
             take_skip_ptrs,
             enumerate_ptrs,
             is_range_source,
+            chain_infos,
         )?;
 
         self.emit_label(&body_label);
@@ -1120,6 +1261,7 @@ impl Codegen {
         enumerate_ptrs: &[Option<String>],
         is_range_source: bool,
         range_end: &Option<(String, bool)>,
+        chain_infos: &[Option<ChainInfo>],
     ) -> Result<String, CodegenError> {
         let elem_size = self.llvm_type_size(final_elem_ty);
 
@@ -1162,6 +1304,7 @@ impl Codegen {
             enumerate_ptrs,
             is_range_source,
             range_end,
+            chain_infos,
         )?;
 
         // Body: store element to output array (guard against exceeding safe_len)
@@ -1220,6 +1363,7 @@ impl Codegen {
         acc_ty: &str,
         is_range_source: bool,
         range_end: &Option<(String, bool)>,
+        chain_infos: &[Option<ChainInfo>],
     ) -> Result<String, CodegenError> {
         let acc_ptr = self.emit_alloca_store(acc_ty, init_val);
 
@@ -1236,6 +1380,7 @@ impl Codegen {
             enumerate_ptrs,
             is_range_source,
             range_end,
+            chain_infos,
         )?;
 
         // Body: call closure(env, acc, elem) → new acc
@@ -1282,6 +1427,7 @@ impl Codegen {
         term_env_ptr: &str,
         is_range_source: bool,
         range_end: &Option<(String, bool)>,
+        chain_infos: &[Option<ChainInfo>],
     ) -> Result<String, CodegenError> {
         let prefix = if is_any { "any" } else { "all" };
         let init_val = if is_any { "false" } else { "true" };
@@ -1302,6 +1448,7 @@ impl Codegen {
             enumerate_ptrs,
             is_range_source,
             range_end,
+            chain_infos,
         )?;
 
         // Body: call predicate, short-circuit on match
@@ -1352,6 +1499,7 @@ impl Codegen {
         term_env_ptr: &str,
         is_range_source: bool,
         range_end: &Option<(String, bool)>,
+        chain_infos: &[Option<ChainInfo>],
     ) -> Result<String, CodegenError> {
         let option_name = self.yorum_type_to_option_name(final_elem_ty);
         let option_llvm = format!("%{}", option_name);
@@ -1374,6 +1522,7 @@ impl Codegen {
             enumerate_ptrs,
             is_range_source,
             range_end,
+            chain_infos,
         )?;
 
         // Body: call predicate, branch to found on match
@@ -1418,6 +1567,7 @@ impl Codegen {
         ret_ty: &str,
         is_range_source: bool,
         range_end: &Option<(String, bool)>,
+        chain_infos: &[Option<ChainInfo>],
     ) -> Result<String, CodegenError> {
         let option_name = self.yorum_type_to_option_name(final_elem_ty);
         let option_llvm = format!("%{}", option_name);
@@ -1445,6 +1595,7 @@ impl Codegen {
             enumerate_ptrs,
             is_range_source,
             range_end,
+            chain_infos,
         )?;
 
         // Body: check has_value to decide first vs accumulate

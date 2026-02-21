@@ -271,5 +271,32 @@ fn main() -> int {
     print_str("range skip+take sum: ");
     print_int(sum);
 
+    // Chain: concatenate two arrays
+    print_str("\n--- chain ---");
+    let a: [int] = [1, 2, 3];
+    let b: [int] = [4, 5, 6];
+    sum = 0;
+    for x in a.iter().chain(b) {
+        sum += x;
+        print_str("  ");
+        print_int(x);
+    }
+    print_str("chain sum: ");
+    print_int(sum);
+
+    // Chain + map
+    let doubled: [int] = a.iter().chain(b).map(|v: int| -> int { return v * 2; }).collect();
+    sum = 0;
+    for x in doubled.iter() {
+        sum += x;
+    }
+    print_str("chain+map+collect sum: ");
+    print_int(sum);
+
+    // Chain + fold
+    let chain_fold: int = a.iter().chain(b).fold(0, |acc: int, x: int| -> int { return acc + x; });
+    print_str("chain fold: ");
+    print_int(chain_fold);
+
     return 0;
 }

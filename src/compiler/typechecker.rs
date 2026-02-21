@@ -1562,7 +1562,7 @@ impl TypeChecker {
     fn is_iter_pipeline(expr: &Expr) -> bool {
         if let ExprKind::MethodCall(ref receiver, ref method, _) = expr.kind {
             match method.as_str() {
-                "map" | "filter" | "enumerate" | "zip" | "take" | "skip" => {
+                "map" | "filter" | "enumerate" | "zip" | "take" | "skip" | "chain" => {
                     Self::has_iter_base(receiver)
                 }
                 _ => false,
@@ -1577,7 +1577,7 @@ impl TypeChecker {
         if let ExprKind::MethodCall(ref receiver, ref method, _) = expr.kind {
             match method.as_str() {
                 "iter" => true,
-                "map" | "filter" | "enumerate" | "zip" | "take" | "skip" => {
+                "map" | "filter" | "enumerate" | "zip" | "take" | "skip" | "chain" => {
                     Self::has_iter_base(receiver)
                 }
                 _ => false,
@@ -2073,6 +2073,38 @@ impl TypeChecker {
                         return None;
                     }
                     return Some(input_ty);
+                }
+                "chain" => {
+                    let input_ty = self.infer_pipeline_elem_type(receiver)?;
+                    if args.len() != 1 {
+                        self.errors.push(TypeError {
+                            message: format!(
+                                "chain() takes exactly 1 argument, found {}",
+                                args.len()
+                            ),
+                            span: expr.span,
+                        });
+                        return None;
+                    }
+                    let arg_ty = self.infer_expr(&args[0])?;
+                    if let Type::Array(inner) = arg_ty {
+                        if *inner != input_ty {
+                            self.errors.push(TypeError {
+                                message: format!(
+                                    "chain() argument element type '{}' does not match pipeline element type '{}'",
+                                    inner, input_ty
+                                ),
+                                span: args[0].span,
+                            });
+                            return None;
+                        }
+                        return Some(input_ty);
+                    }
+                    self.errors.push(TypeError {
+                        message: format!("chain() argument must be an array, found '{}'", arg_ty),
+                        span: args[0].span,
+                    });
+                    return None;
                 }
                 _ => {}
             }

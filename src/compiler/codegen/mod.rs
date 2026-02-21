@@ -65,6 +65,7 @@ pub(crate) enum IterStep<'a> {
     Zip(&'a Expr),
     Take(&'a Expr),
     Skip(&'a Expr),
+    Chain(&'a Expr),
 }
 
 /// A fully extracted iterator pipeline: array/range source + ordered steps.
@@ -105,6 +106,13 @@ pub(crate) struct ZipInfo {
     pub(crate) len_val: String,
     pub(crate) idx_ptr: String,
     pub(crate) elem_ty: String,
+}
+
+/// Pre-emitted chain data source info.
+pub(crate) struct ChainInfo {
+    pub(crate) data_ptr: String,  // data pointer of second array
+    pub(crate) first_len: String, // length of first source (for conditional load)
+    pub(crate) elem_ty: String,   // element LLVM type
 }
 
 /// Shared state returned by `emit_pipeline_loop_header`.

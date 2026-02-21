@@ -8795,6 +8795,154 @@ fn test_for_iter_zip_not_array() {
 }
 
 // ═══════════════════════════════════════════════════════════════
+//  Iterator chain tests
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn test_for_iter_chain_basic() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let a: [int] = [1, 2, 3];\n\
+         \x20   let b: [int] = [4, 5, 6];\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for x in a.iter().chain(b) {\n\
+         \x20       sum += x;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    assert!(ir.contains("chain.first"));
+    assert!(ir.contains("chain.second"));
+    assert!(ir.contains("chain.merge"));
+}
+
+#[test]
+fn test_for_iter_chain_with_map() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let a: [int] = [1, 2, 3];\n\
+         \x20   let b: [int] = [4, 5, 6];\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for x in a.iter().chain(b).map(|v: int| -> int { return v * 2; }) {\n\
+         \x20       sum += x;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    assert!(ir.contains("chain.first"));
+    assert!(ir.contains("chain.merge"));
+}
+
+#[test]
+fn test_for_iter_chain_with_filter() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let a: [int] = [1, 2, 3];\n\
+         \x20   let b: [int] = [4, 5, 6];\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for x in a.iter().chain(b).filter(|v: int| -> bool { return v > 2; }) {\n\
+         \x20       sum += x;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    assert!(ir.contains("chain.first"));
+    assert!(ir.contains("chain.merge"));
+}
+
+#[test]
+fn test_iter_chain_collect() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let a: [int] = [1, 2, 3];\n\
+         \x20   let b: [int] = [4, 5, 6];\n\
+         \x20   let c: [int] = a.iter().chain(b).collect();\n\
+         \x20   return len(c);\n\
+         }\n",
+    );
+    assert!(ir.contains("chain.first"));
+    assert!(ir.contains("chain.merge"));
+}
+
+#[test]
+fn test_iter_chain_fold() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let a: [int] = [1, 2, 3];\n\
+         \x20   let b: [int] = [4, 5, 6];\n\
+         \x20   let sum: int = a.iter().chain(b).fold(0, |acc: int, x: int| -> int { return acc + x; });\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    assert!(ir.contains("chain.first"));
+    assert!(ir.contains("chain.merge"));
+}
+
+#[test]
+fn test_iter_chain_type_mismatch() {
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20   let a: [int] = [1, 2, 3];\n\
+         \x20   let b: [string] = [\"a\", \"b\"];\n\
+         \x20   for x in a.iter().chain(b) {\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+    let msg = result.unwrap_err().to_string();
+    assert!(msg.contains("does not match"));
+}
+
+#[test]
+fn test_iter_chain_not_array() {
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20   let a: [int] = [1, 2, 3];\n\
+         \x20   for x in a.iter().chain(42) {\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+    let msg = result.unwrap_err().to_string();
+    assert!(msg.contains("must be an array"));
+}
+
+#[test]
+fn test_iter_chain_single_element_arrays() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let a: [int] = [1];\n\
+         \x20   let b: [int] = [2];\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for x in a.iter().chain(b) {\n\
+         \x20       sum += x;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    assert!(ir.contains("chain.first"));
+    assert!(ir.contains("chain.merge"));
+}
+
+#[test]
+fn test_iter_chain_range_source() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let b: [int] = [10, 20, 30];\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for x in (0..3).iter().chain(b) {\n\
+         \x20       sum += x;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    assert!(ir.contains("chain.first"));
+    assert!(ir.contains("chain.merge"));
+}
+
+// ═══════════════════════════════════════════════════════════════
 //  Iterator terminator tests (collect, fold, any, all, find, reduce)
 // ═══════════════════════════════════════════════════════════════
 

@@ -428,5 +428,54 @@ fn main() -> int {
     print_str("map value sum: ");
     print_int(map_val_sum);
 
+    // --- Unbounded ranges ---
+    print_str("\n--- Unbounded ranges ---");
+    let mut unb_sum: int = 0;
+    for x in (0..).iter().take(5) {
+        unb_sum += x;
+    }
+    print_str("(0..).take(5) sum: ");
+    print_int(unb_sum);
+
+    let unb_sum2: int = (1..).iter()
+        .map(|x: int| -> int { return x * x; })
+        .take(4)
+        .sum();
+    print_str("(1..).map(x*x).take(4) sum: ");
+    print_int(unb_sum2);
+
+    let unb_count: int = (1..).iter()
+        .take_while(|x: int| -> bool { return x < 5; })
+        .count();
+    print_str("(1..).take_while(<5).count: ");
+    print_int(unb_count);
+
+    // --- flat_map ---
+    print_str("\n--- flat_map ---");
+    let nested: [int] = [1, 2, 3];
+    let expanded: [int] = nested.iter()
+        .flat_map(|x: int| -> [int] { return [x, x * 10]; })
+        .collect();
+    print_str("flat_map collect len: ");
+    print_int(len(expanded));
+
+    let flat_sum: int = nested.iter()
+        .flat_map(|x: int| -> [int] { return [x, x * 10]; })
+        .filter(|v: int| -> bool { return v > 5; })
+        .sum();
+    print_str("flat_map filter sum: ");
+    print_int(flat_sum);
+
+    // --- flatten ---
+    print_str("\n--- flatten ---");
+    let grid: [[int]] = [[1, 2], [3, 4], [5, 6]];
+    let flat: [int] = grid.iter().flatten().collect();
+    print_str("flatten collect len: ");
+    print_int(len(flat));
+
+    let flat_total: int = grid.iter().flatten().sum();
+    print_str("flatten sum: ");
+    print_int(flat_total);
+
     return 0;
 }

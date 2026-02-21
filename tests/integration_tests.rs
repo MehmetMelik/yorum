@@ -10951,3 +10951,284 @@ fn test_run_position_match() {
         2,
     );
 }
+
+// ── Unbounded ranges ────────────────────────────────────────
+
+#[test]
+fn test_unbounded_range_take_sum() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let s: int = (0..).iter().take(5).sum();\n\
+         \x20   return s;\n\
+         }\n",
+    );
+    assert!(ir.contains("label"));
+}
+
+#[test]
+fn test_unbounded_range_take_while_count() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let c: int = (1..).iter().take_while(|x: int| -> bool { return x < 5; }).count();\n\
+         \x20   return c;\n\
+         }\n",
+    );
+    assert!(ir.contains("label"));
+}
+
+#[test]
+fn test_unbounded_range_find() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let found: Option<int> = (1..).iter().find(|x: int| -> bool { return x > 5; });\n\
+         \x20   match found {\n\
+         \x20       Some(v) => { return v; }\n\
+         \x20       None => { return 0; }\n\
+         \x20   }\n\
+         }\n",
+    );
+    assert!(ir.contains("label"));
+}
+
+#[test]
+fn test_unbounded_range_collect_requires_take() {
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = (0..).iter().collect();\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+    let msg = result.unwrap_err().to_string();
+    assert!(
+        msg.contains("unbounded"),
+        "expected unbounded range error, got: {}",
+        msg
+    );
+}
+
+#[test]
+fn test_unbounded_range_for_loop() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for x in (0..).iter().take(5) {\n\
+         \x20       sum += x;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    assert!(ir.contains("label"));
+}
+
+#[test]
+fn test_run_unbounded_take_sum() {
+    compile_run_and_check(
+        "fn main() -> int {\n\
+         \x20   let s: int = (0..).iter().take(5).sum();\n\
+         \x20   return s;\n\
+         }\n",
+        10,
+    );
+}
+
+#[test]
+fn test_run_unbounded_take_while_count() {
+    compile_run_and_check(
+        "fn main() -> int {\n\
+         \x20   let c: int = (1..).iter().take_while(|x: int| -> bool { return x < 5; }).count();\n\
+         \x20   return c;\n\
+         }\n",
+        4,
+    );
+}
+
+#[test]
+fn test_run_unbounded_find() {
+    compile_run_and_check(
+        "fn main() -> int {\n\
+         \x20   let found: Option<int> = (1..).iter().find(|x: int| -> bool { return x > 5; });\n\
+         \x20   match found {\n\
+         \x20       Some(v) => { return v; }\n\
+         \x20       None => { return 0; }\n\
+         \x20   }\n\
+         }\n",
+        6,
+    );
+}
+
+// ── flat_map ────────────────────────────────────────────────
+
+#[test]
+fn test_iter_flat_map_collect() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let expanded: [int] = arr.iter()\n\
+         \x20       .flat_map(|x: int| -> [int] { return [x, x * 10]; })\n\
+         \x20       .collect();\n\
+         \x20   return len(expanded);\n\
+         }\n",
+    );
+    assert!(ir.contains("flat."));
+}
+
+#[test]
+fn test_iter_flat_map_sum() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let s: int = arr.iter()\n\
+         \x20       .flat_map(|x: int| -> [int] { return [x, x * 10]; })\n\
+         \x20       .sum();\n\
+         \x20   return s;\n\
+         }\n",
+    );
+    assert!(ir.contains("flat."));
+}
+
+#[test]
+fn test_iter_flat_map_filter_sum() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let s: int = arr.iter()\n\
+         \x20       .flat_map(|x: int| -> [int] { return [x, x * 10]; })\n\
+         \x20       .filter(|v: int| -> bool { return v > 5; })\n\
+         \x20       .sum();\n\
+         \x20   return s;\n\
+         }\n",
+    );
+    assert!(ir.contains("flat."));
+}
+
+#[test]
+fn test_iter_flat_map_non_array_return_error() {
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let s: int = arr.iter()\n\
+         \x20       .flat_map(|x: int| -> int { return x * 2; })\n\
+         \x20       .sum();\n\
+         \x20   return s;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+    let msg = result.unwrap_err().to_string();
+    assert!(
+        msg.contains("must return an array"),
+        "expected array return error, got: {}",
+        msg
+    );
+}
+
+#[test]
+fn test_run_flat_map_collect() {
+    compile_run_and_check(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let expanded: [int] = arr.iter()\n\
+         \x20       .flat_map(|x: int| -> [int] { return [x, x * 10]; })\n\
+         \x20       .collect();\n\
+         \x20   return len(expanded);\n\
+         }\n",
+        6,
+    );
+}
+
+#[test]
+fn test_run_flat_map_sum() {
+    compile_run_and_check(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let s: int = arr.iter()\n\
+         \x20       .flat_map(|x: int| -> [int] { return [x, x * 10]; })\n\
+         \x20       .sum();\n\
+         \x20   return s;\n\
+         }\n",
+        66,
+    );
+}
+
+#[test]
+fn test_run_flat_map_filter_sum() {
+    compile_run_and_check(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let s: int = arr.iter()\n\
+         \x20       .flat_map(|x: int| -> [int] { return [x, x * 10]; })\n\
+         \x20       .filter(|v: int| -> bool { return v > 5; })\n\
+         \x20       .sum();\n\
+         \x20   return s;\n\
+         }\n",
+        60,
+    );
+}
+
+// ── flatten ─────────────────────────────────────────────────
+
+#[test]
+fn test_iter_flatten_collect() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let grid: [[int]] = [[1, 2], [3, 4], [5, 6]];\n\
+         \x20   let flat: [int] = grid.iter().flatten().collect();\n\
+         \x20   return len(flat);\n\
+         }\n",
+    );
+    assert!(ir.contains("flat."));
+}
+
+#[test]
+fn test_iter_flatten_sum() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let grid: [[int]] = [[1, 2], [3, 4], [5, 6]];\n\
+         \x20   let s: int = grid.iter().flatten().sum();\n\
+         \x20   return s;\n\
+         }\n",
+    );
+    assert!(ir.contains("flat."));
+}
+
+#[test]
+fn test_iter_flatten_non_array_elements_error() {
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let s: int = arr.iter().flatten().sum();\n\
+         \x20   return s;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+    let msg = result.unwrap_err().to_string();
+    assert!(
+        msg.contains("flatten()") && msg.contains("array elements"),
+        "expected flatten array elements error, got: {}",
+        msg
+    );
+}
+
+#[test]
+fn test_run_flatten_collect() {
+    compile_run_and_check(
+        "fn main() -> int {\n\
+         \x20   let grid: [[int]] = [[1, 2], [3, 4], [5, 6]];\n\
+         \x20   let flat: [int] = grid.iter().flatten().collect();\n\
+         \x20   return len(flat);\n\
+         }\n",
+        6,
+    );
+}
+
+#[test]
+fn test_run_flatten_sum() {
+    compile_run_and_check(
+        "fn main() -> int {\n\
+         \x20   let grid: [[int]] = [[1, 2], [3, 4], [5, 6]];\n\
+         \x20   let s: int = grid.iter().flatten().sum();\n\
+         \x20   return s;\n\
+         }\n",
+        21,
+    );
+}

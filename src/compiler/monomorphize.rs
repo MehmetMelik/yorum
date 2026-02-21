@@ -292,6 +292,9 @@ impl Monomorphizer {
                 self.collect_from_expr(start);
                 self.collect_from_expr(end);
             }
+            ExprKind::RangeFrom(start) => {
+                self.collect_from_expr(start);
+            }
             ExprKind::Try(inner) => {
                 self.collect_from_expr(inner);
             }
@@ -769,6 +772,7 @@ fn substitute_expr(expr: &Expr, subst: &HashMap<String, Type>) -> Expr {
             Box::new(substitute_expr(start, subst)),
             Box::new(substitute_expr(end, subst)),
         ),
+        ExprKind::RangeFrom(start) => ExprKind::RangeFrom(Box::new(substitute_expr(start, subst))),
         ExprKind::Try(inner) => ExprKind::Try(Box::new(substitute_expr(inner, subst))),
         other => other.clone(),
     };
@@ -1052,6 +1056,15 @@ fn rewrite_expr(
                 _struct_insts,
             );
             rewrite_expr(end, generic_fns, _generic_structs, fn_insts, _struct_insts);
+        }
+        ExprKind::RangeFrom(start) => {
+            rewrite_expr(
+                start,
+                generic_fns,
+                _generic_structs,
+                fn_insts,
+                _struct_insts,
+            );
         }
         ExprKind::Try(inner) => {
             rewrite_expr(

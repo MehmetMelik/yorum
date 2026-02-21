@@ -20,6 +20,14 @@ impl Codegen {
                         return elem_types.iter().map(|t| self.llvm_type_size(t)).sum();
                     }
                 }
+                // Handle anonymous struct types like { ptr, i64, i64 }
+                if llvm_ty.starts_with('{') && llvm_ty.ends_with('}') {
+                    let inner = &llvm_ty[1..llvm_ty.len() - 1];
+                    return inner
+                        .split(',')
+                        .map(|field| self.llvm_type_size(field.trim()))
+                        .sum();
+                }
                 8
             }
         }
@@ -532,7 +540,9 @@ impl Codegen {
                 format!("%tuple.{}", semantic_name)
             }
             ExprKind::Spawn(_) => "ptr".to_string(),
-            ExprKind::Range(_, _) | ExprKind::RangeInclusive(_, _) => "i64".to_string(),
+            ExprKind::Range(_, _) | ExprKind::RangeInclusive(_, _) | ExprKind::RangeFrom(_) => {
+                "i64".to_string()
+            }
             ExprKind::Try(inner) => {
                 // The result type of ? is T from Option<T> or T from Result<T, E>
                 let inner_ty = self.expr_llvm_type(inner);

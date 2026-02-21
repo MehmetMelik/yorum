@@ -68,13 +68,23 @@ pub(crate) enum IterStep<'a> {
     Chain(&'a Expr),
     TakeWhile(&'a ClosureExpr),
     Rev,
+    FlatMap(&'a ClosureExpr),
+    Flatten,
+}
+
+/// Pre-emitted flat_map/flatten info for nested loop emission.
+pub(crate) struct FlatMapInfo {
+    pub(crate) closure_info: Option<ClosureInfo>, // None for flatten
+    pub(crate) inner_elem_ty: String,             // LLVM type of flattened elements
+    pub(crate) step_index: usize,                 // position in steps array
 }
 
 /// A fully extracted iterator pipeline: array/range source + ordered steps.
 pub(crate) struct IterPipeline<'a> {
     pub(crate) source: &'a Expr, // source expression (receiver of .iter())
     pub(crate) steps: Vec<IterStep<'a>>, // ordered pipeline steps
-    pub(crate) is_range_source: bool, // true if source is Range/RangeInclusive
+    pub(crate) is_range_source: bool, // true if source is Range/RangeInclusive/RangeFrom
+    pub(crate) is_unbounded_range: bool, // true if source is RangeFrom
 }
 
 /// A terminator at the end of a pipeline (standalone expression, not for-loop).
@@ -95,7 +105,8 @@ pub(crate) struct TerminatedPipeline<'a> {
     pub(crate) source: &'a Expr,
     pub(crate) steps: Vec<IterStep<'a>>,
     pub(crate) terminator: PipelineTerminator<'a>,
-    pub(crate) is_range_source: bool, // true if source is Range/RangeInclusive
+    pub(crate) is_range_source: bool, // true if source is Range/RangeInclusive/RangeFrom
+    pub(crate) is_unbounded_range: bool, // true if source is RangeFrom
 }
 
 /// Pre-emitted closure info for a pipeline step.
@@ -151,9 +162,11 @@ pub(crate) struct PipelineContext {
     pub take_skip_ptrs: Vec<Option<String>>,
     pub enumerate_ptrs: Vec<Option<String>>,
     pub is_range_source: bool,
+    pub is_unbounded_range: bool,
     pub range_end: Option<(String, bool)>,
     pub chain_infos: Vec<Option<ChainInfo>>,
     pub map_iter_info: Option<MapIterInfo>,
+    pub flat_map_info: Option<FlatMapInfo>,
 }
 
 /// Tracks per-variable string buffer metadata for capacity-aware str_concat.
@@ -1798,9 +1811,11 @@ impl Codegen {
 
             ExprKind::TupleLit(elements) => self.emit_tuple_lit(elements),
 
-            ExprKind::Range(_, _) | ExprKind::RangeInclusive(_, _) => Err(CodegenError {
-                message: "range expression is only valid in for loops".to_string(),
-            })?,
+            ExprKind::Range(_, _) | ExprKind::RangeInclusive(_, _) | ExprKind::RangeFrom(_) => {
+                Err(CodegenError {
+                    message: "range expression is only valid in for loops".to_string(),
+                })?
+            }
 
             ExprKind::Try(inner) => self.emit_try_expr(inner),
 
@@ -1836,7 +1851,14 @@ impl Codegen {
                     return Ok(ptr);
                 }
                 // Determine element type from first element
-                let elem_ty = self.expr_llvm_type(&elements[0]);
+                // Arrays use reference semantics (ptr to fat pointer), so when
+                // elements are arrays, use ptr as the element type.
+                let raw_elem_ty = self.expr_llvm_type(&elements[0]);
+                let elem_ty = if raw_elem_ty == "{ ptr, i64, i64 }" {
+                    "ptr".to_string()
+                } else {
+                    raw_elem_ty
+                };
                 let elem_size = self.llvm_type_size(&elem_ty);
                 let total_size = elem_size * count;
 
@@ -3046,6 +3068,9 @@ impl Codegen {
                 Self::collect_idents_from_expr(start, locals, names);
                 Self::collect_idents_from_expr(end, locals, names);
             }
+            ExprKind::RangeFrom(start) => {
+                Self::collect_idents_from_expr(start, locals, names);
+            }
             ExprKind::Try(inner) => {
                 Self::collect_idents_from_expr(inner, locals, names);
             }
@@ -3179,6 +3204,7 @@ impl Codegen {
             ExprKind::Range(s, e) | ExprKind::RangeInclusive(s, e) => {
                 Self::expr_mutates_array(s, array_name) || Self::expr_mutates_array(e, array_name)
             }
+            ExprKind::RangeFrom(s) => Self::expr_mutates_array(s, array_name),
             ExprKind::Try(inner) => Self::expr_mutates_array(inner, array_name),
             ExprKind::Literal(_) | ExprKind::Ident(_) => false,
         }

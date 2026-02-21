@@ -83,6 +83,24 @@ impl Codegen {
                         }
                         return None;
                     }
+                    "flat_map" => {
+                        if args.len() == 1 {
+                            if let ExprKind::Closure(ref c) = args[0].kind {
+                                steps.push(IterStep::FlatMap(c));
+                                current = receiver;
+                                continue;
+                            }
+                        }
+                        return None;
+                    }
+                    "flatten" => {
+                        if args.is_empty() {
+                            steps.push(IterStep::Flatten);
+                            current = receiver;
+                            continue;
+                        }
+                        return None;
+                    }
                     "rev" => {
                         if args.is_empty() {
                             steps.push(IterStep::Rev);
@@ -95,8 +113,11 @@ impl Codegen {
                         if args.is_empty() {
                             let is_range = matches!(
                                 receiver.kind,
-                                ExprKind::Range(_, _) | ExprKind::RangeInclusive(_, _)
+                                ExprKind::Range(_, _)
+                                    | ExprKind::RangeInclusive(_, _)
+                                    | ExprKind::RangeFrom(_)
                             );
+                            let is_unbounded = matches!(receiver.kind, ExprKind::RangeFrom(_));
                             if is_range || self.expr_struct_name(receiver).is_err() {
                                 if steps.is_empty() {
                                     return None; // Just .iter() with no combinators
@@ -106,6 +127,7 @@ impl Codegen {
                                     source: receiver,
                                     steps,
                                     is_range_source: is_range,
+                                    is_unbounded_range: is_unbounded,
                                 });
                             }
                         }
@@ -123,6 +145,7 @@ impl Codegen {
                                 source: current, // current is the chars() MethodCall node
                                 steps,
                                 is_range_source: false,
+                                is_unbounded_range: false,
                             });
                         }
                         return None;
@@ -143,7 +166,7 @@ impl Codegen {
         if let ExprKind::MethodCall(ref receiver, ref method, _) = expr.kind {
             match method.as_str() {
                 "map" | "filter" | "enumerate" | "zip" | "take" | "skip" | "chain"
-                | "take_while" | "rev" => Self::has_iter_base(receiver),
+                | "take_while" | "rev" | "flat_map" | "flatten" => Self::has_iter_base(receiver),
                 _ => false,
             }
         } else {
@@ -157,7 +180,7 @@ impl Codegen {
                 "iter" | "chars" => true,
                 "map" | "filter" | "enumerate" | "zip" | "take" | "skip" | "chain" | "reduce"
                 | "fold" | "collect" | "find" | "any" | "all" | "take_while" | "rev" | "sum"
-                | "count" | "position" => Self::has_iter_base(receiver),
+                | "count" | "position" | "flat_map" | "flatten" => Self::has_iter_base(receiver),
                 _ => false,
             }
         } else {
@@ -231,6 +254,7 @@ impl Codegen {
                     steps: pipeline.steps,
                     terminator,
                     is_range_source: pipeline.is_range_source,
+                    is_unbounded_range: pipeline.is_unbounded_range,
                 });
             }
 
@@ -241,14 +265,18 @@ impl Codegen {
                 if inner_method == "iter" && inner_args.is_empty() {
                     let is_range = matches!(
                         inner_recv.kind,
-                        ExprKind::Range(_, _) | ExprKind::RangeInclusive(_, _)
+                        ExprKind::Range(_, _)
+                            | ExprKind::RangeInclusive(_, _)
+                            | ExprKind::RangeFrom(_)
                     );
+                    let is_unbounded = matches!(inner_recv.kind, ExprKind::RangeFrom(_));
                     if is_range || self.expr_struct_name(inner_recv).is_err() {
                         return Some(TerminatedPipeline {
                             source: inner_recv,
                             steps: Vec::new(),
                             terminator,
                             is_range_source: is_range,
+                            is_unbounded_range: is_unbounded,
                         });
                     }
                 }
@@ -259,6 +287,7 @@ impl Codegen {
                         steps: Vec::new(),
                         terminator,
                         is_range_source: false,
+                        is_unbounded_range: false,
                     });
                 }
             }
@@ -316,6 +345,24 @@ impl Codegen {
                     let right_semantic = llvm_to_semantic_name(&right_llvm);
                     ty = format!("%tuple.{}.{}", left_semantic, right_semantic);
                 }
+                IterStep::FlatMap(c) => {
+                    if let Type::Array(ref inner) = c.return_type {
+                        ty = self.llvm_type(inner);
+                    }
+                }
+                IterStep::Flatten => {
+                    // Flatten unwraps one layer of array — the inner element type
+                    // is computed from the current AST type in the preamble and stored
+                    // in FlatMapInfo. Here we just mark that the type will change.
+                    // The actual type is set correctly during preamble when flat_map_info
+                    // is constructed. For pipeline_final_elem_type, we need to derive
+                    // it from the current LLVM array element type. Since arrays are
+                    // fat pointers { ptr, i64, i64 }, after flatten the element type
+                    // is whatever the inner array's element was. We rely on the
+                    // preamble to provide the correct type via FlatMapInfo.
+                    // For now, mark unchanged — the real type override happens in
+                    // emit_for_flat_pipeline / emit_flat_terminated_pipeline.
+                }
                 IterStep::Filter(_)
                 | IterStep::Take(_)
                 | IterStep::Skip(_)
@@ -350,70 +397,78 @@ impl Codegen {
             Option<(String, bool)>, // range_end: Some((end_val, inclusive)) for ranges, None for arrays
             Vec<Option<ChainInfo>>,
             Option<MapIterInfo>, // Map.iter() implicit values zip
+            Option<FlatMapInfo>, // flat_map/flatten info for nested loop emission
         ),
         CodegenError,
     > {
         let (data_ptr, mut len_val, src_elem_ty, range_end, map_iter_info) = if is_range_source {
-            // Range source: emit start and end, compute length estimate for allocation.
-            // The loop condition uses direct value comparison (start + idx vs end)
-            // instead of this length, avoiding overflow for wide ranges.
-            let (start_expr, end_expr, inclusive) = match &source.kind {
-                ExprKind::Range(s, e) => (s, e, false),
-                ExprKind::RangeInclusive(s, e) => (s, e, true),
-                _ => unreachable!(),
-            };
-            let start_val = self.emit_expr(start_expr)?;
-            let end_val = self.emit_expr(end_expr)?;
-
-            // Compute a saturating non-negative allocation length:
-            //   len = max(0, end-start[+1]) clamped to i64::MAX.
-            // Use i128 arithmetic so wide valid ranges don't wrap negative.
-            let start_i128 = self.fresh_temp();
-            self.emit_line(&format!("{} = sext i64 {} to i128", start_i128, start_val));
-            let end_i128 = self.fresh_temp();
-            self.emit_line(&format!("{} = sext i64 {} to i128", end_i128, end_val));
-            let span_i128 = self.fresh_temp();
-            self.emit_line(&format!(
-                "{} = sub i128 {}, {}",
-                span_i128, end_i128, start_i128
-            ));
-            let len_i128 = if inclusive {
-                let len_inc = self.fresh_temp();
-                self.emit_line(&format!("{} = add i128 {}, 1", len_inc, span_i128));
-                len_inc
+            // Unbounded range: (start..).iter() — no end, no length
+            if let ExprKind::RangeFrom(ref start_expr) = source.kind {
+                let start_val = self.emit_expr(start_expr)?;
+                // Use a large allocation hint for terminators that need it (capped by take later)
+                (start_val, "16".to_string(), "i64".to_string(), None, None)
             } else {
-                span_i128
-            };
-            let len_non_pos = self.fresh_temp();
-            self.emit_line(&format!("{} = icmp sle i128 {}, 0", len_non_pos, len_i128));
-            let len_gt_i64_max = self.fresh_temp();
-            self.emit_line(&format!(
-                "{} = icmp sgt i128 {}, 9223372036854775807",
-                len_gt_i64_max, len_i128
-            ));
-            let len_hi_clamped = self.fresh_temp();
-            self.emit_line(&format!(
-                "{} = select i1 {}, i128 9223372036854775807, i128 {}",
-                len_hi_clamped, len_gt_i64_max, len_i128
-            ));
-            let len_sat_i128 = self.fresh_temp();
-            self.emit_line(&format!(
-                "{} = select i1 {}, i128 0, i128 {}",
-                len_sat_i128, len_non_pos, len_hi_clamped
-            ));
-            let alloc_len = self.fresh_temp();
-            self.emit_line(&format!(
-                "{} = trunc i128 {} to i64",
-                alloc_len, len_sat_i128
-            ));
+                // Range source: emit start and end, compute length estimate for allocation.
+                // The loop condition uses direct value comparison (start + idx vs end)
+                // instead of this length, avoiding overflow for wide ranges.
+                let (start_expr, end_expr, inclusive) = match &source.kind {
+                    ExprKind::Range(s, e) => (s, e, false),
+                    ExprKind::RangeInclusive(s, e) => (s, e, true),
+                    _ => unreachable!(),
+                };
+                let start_val = self.emit_expr(start_expr)?;
+                let end_val = self.emit_expr(end_expr)?;
 
-            (
-                start_val,
-                alloc_len,
-                "i64".to_string(),
-                Some((end_val, inclusive)),
-                None,
-            )
+                // Compute a saturating non-negative allocation length:
+                //   len = max(0, end-start[+1]) clamped to i64::MAX.
+                // Use i128 arithmetic so wide valid ranges don't wrap negative.
+                let start_i128 = self.fresh_temp();
+                self.emit_line(&format!("{} = sext i64 {} to i128", start_i128, start_val));
+                let end_i128 = self.fresh_temp();
+                self.emit_line(&format!("{} = sext i64 {} to i128", end_i128, end_val));
+                let span_i128 = self.fresh_temp();
+                self.emit_line(&format!(
+                    "{} = sub i128 {}, {}",
+                    span_i128, end_i128, start_i128
+                ));
+                let len_i128 = if inclusive {
+                    let len_inc = self.fresh_temp();
+                    self.emit_line(&format!("{} = add i128 {}, 1", len_inc, span_i128));
+                    len_inc
+                } else {
+                    span_i128
+                };
+                let len_non_pos = self.fresh_temp();
+                self.emit_line(&format!("{} = icmp sle i128 {}, 0", len_non_pos, len_i128));
+                let len_gt_i64_max = self.fresh_temp();
+                self.emit_line(&format!(
+                    "{} = icmp sgt i128 {}, 9223372036854775807",
+                    len_gt_i64_max, len_i128
+                ));
+                let len_hi_clamped = self.fresh_temp();
+                self.emit_line(&format!(
+                    "{} = select i1 {}, i128 9223372036854775807, i128 {}",
+                    len_hi_clamped, len_gt_i64_max, len_i128
+                ));
+                let len_sat_i128 = self.fresh_temp();
+                self.emit_line(&format!(
+                    "{} = select i1 {}, i128 0, i128 {}",
+                    len_sat_i128, len_non_pos, len_hi_clamped
+                ));
+                let alloc_len = self.fresh_temp();
+                self.emit_line(&format!(
+                    "{} = trunc i128 {} to i64",
+                    alloc_len, len_sat_i128
+                ));
+
+                (
+                    start_val,
+                    alloc_len,
+                    "i64".to_string(),
+                    Some((end_val, inclusive)),
+                    None,
+                )
+            }
         } else if let ExprKind::MethodCall(ref string_recv, ref method, _) = source.kind {
             if method == "chars" {
                 // String .chars() source: iterate bytes as char (i32)
@@ -533,6 +588,7 @@ impl Codegen {
         let mut enumerate_ptrs: Vec<Option<String>> = Vec::new();
         let mut chain_infos: Vec<Option<ChainInfo>> = Vec::new();
         let mut current_elem_ty = src_elem_ty.clone();
+        let mut flat_map_info: Option<FlatMapInfo> = None;
 
         for step in steps {
             match step {
@@ -706,6 +762,54 @@ impl Codegen {
                         elem_ty: chain_elem_ty,
                     }));
                 }
+                IterStep::FlatMap(c) => {
+                    // Pre-emit the flat_map closure
+                    let (fn_ptr, env_ptr, ret_ty) = self.emit_pipeline_closure(c)?;
+                    let inner_ty = if let Type::Array(ref inner) = c.return_type {
+                        self.llvm_type(inner)
+                    } else {
+                        unreachable!("flat_map closure must return array")
+                    };
+                    flat_map_info = Some(FlatMapInfo {
+                        closure_info: Some(ClosureInfo {
+                            fn_ptr,
+                            env_ptr,
+                            ret_ty,
+                        }),
+                        inner_elem_ty: inner_ty,
+                        step_index: closure_infos.len(),
+                    });
+                    current_elem_ty = if let Type::Array(ref inner) = c.return_type {
+                        self.llvm_type(inner)
+                    } else {
+                        unreachable!()
+                    };
+                    // Push placeholders for all info vectors
+                    closure_infos.push(None);
+                    zip_infos.push(None);
+                    take_skip_ptrs.push(None);
+                    enumerate_ptrs.push(None);
+                    chain_infos.push(None);
+                }
+                IterStep::Flatten => {
+                    // For flatten, the current_elem_ty is an array (fat ptr).
+                    // We need to figure out the inner element type from the AST types.
+                    // current_elem_ty is "{ ptr, i64, i64 }" for arrays. The inner
+                    // element type comes from the source's AST type.
+                    // We'll compute this from the source and steps so far.
+                    let inner_ty = self.infer_flatten_inner_type(source, steps, &closure_infos);
+                    flat_map_info = Some(FlatMapInfo {
+                        closure_info: None,
+                        inner_elem_ty: inner_ty.clone(),
+                        step_index: closure_infos.len(),
+                    });
+                    current_elem_ty = inner_ty;
+                    closure_infos.push(None);
+                    zip_infos.push(None);
+                    take_skip_ptrs.push(None);
+                    enumerate_ptrs.push(None);
+                    chain_infos.push(None);
+                }
             }
         }
 
@@ -762,6 +866,7 @@ impl Codegen {
             range_end,
             chain_infos,
             map_iter_info,
+            flat_map_info,
         ))
     }
 
@@ -777,19 +882,70 @@ impl Codegen {
         result
     }
 
+    /// Infer the inner element type for flatten() by walking source + steps.
+    pub(crate) fn infer_flatten_inner_type(
+        &self,
+        source: &Expr,
+        steps: &[IterStep<'_>],
+        _closure_infos: &[Option<ClosureInfo>],
+    ) -> String {
+        // The element type before flatten should be an array.
+        // Walk steps to find the last map before flatten.
+        // Start with source elem type.
+        let mut ast_ty: Option<Type> = None;
+
+        // Determine base element type from source
+        if let ExprKind::Ident(ref name) = source.kind {
+            if let Some(Type::Array(ref inner)) = self.var_ast_types.get(name) {
+                ast_ty = Some(*inner.clone());
+            }
+        }
+
+        // Walk steps and track type changes
+        for step in steps {
+            match step {
+                IterStep::Map(c) => {
+                    ast_ty = Some(c.return_type.clone());
+                }
+                IterStep::Flatten => {
+                    // Unwrap one array layer
+                    if let Some(Type::Array(ref inner)) = ast_ty {
+                        return self.llvm_type(inner);
+                    }
+                    break;
+                }
+                _ => {} // Filter, Take, Skip, etc. don't change the type
+            }
+        }
+
+        // Fallback: if we couldn't determine, use i64
+        if let Some(Type::Array(ref inner)) = ast_ty {
+            return self.llvm_type(inner);
+        }
+        "i64".to_string()
+    }
+
     /// Emit the loop condition for a pipeline.
     /// For arrays: `idx < len`.  For ranges: `(start + idx) < end` or `<= end`,
     /// avoiding overflow from pre-computing the total length.
+    /// For unbounded ranges: unconditional branch to step (no bounds check).
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn emit_pipeline_loop_cond(
         &mut self,
         idx_ptr: &str,
         data_ptr: &str,
         len_val: &str,
         range_end: &Option<(String, bool)>,
+        is_unbounded: bool,
         step_label: &str,
         end_label: &str,
     ) -> String {
         let cur_idx = self.emit_load("i64", idx_ptr);
+        if is_unbounded {
+            // Unbounded range: always continue (take/take_while/find/etc. will break)
+            self.emit_line(&format!("br label %{}", step_label));
+            return cur_idx;
+        }
         let cmp = self.fresh_temp();
         if let Some((ref end_val, inclusive)) = *range_end {
             // Range source: compare actual range value against end bound.
@@ -855,6 +1011,7 @@ impl Codegen {
             range_end,
             chain_infos,
             map_iter_info,
+            flat_map_info,
         ) = self.emit_pipeline_preamble(
             pipeline.source,
             &pipeline.steps,
@@ -863,7 +1020,12 @@ impl Codegen {
 
         // 2. Determine final output type and build context
         let idx_ptr = self.emit_alloca_store("i64", "0");
-        let final_elem_ty = self.pipeline_final_elem_type(&src_elem_ty, &pipeline.steps);
+        let mut final_elem_ty = self.pipeline_final_elem_type(&src_elem_ty, &pipeline.steps);
+        // For Flatten, the pipeline_final_elem_type can't derive the inner type from LLVM types alone,
+        // so override with the info computed during preamble.
+        if let Some(ref fmi) = flat_map_info {
+            final_elem_ty = fmi.inner_elem_ty.clone();
+        }
         let ctx = PipelineContext {
             data_ptr,
             len_val,
@@ -875,10 +1037,17 @@ impl Codegen {
             take_skip_ptrs,
             enumerate_ptrs,
             is_range_source: pipeline.is_range_source,
+            is_unbounded_range: pipeline.is_unbounded_range,
             range_end,
             chain_infos,
             map_iter_info,
+            flat_map_info,
         };
+
+        // Check for flat_map/flatten — delegate to nested loop emitter
+        if ctx.flat_map_info.is_some() {
+            return self.emit_for_flat_pipeline(var_name, &ctx, &pipeline.steps, body);
+        }
 
         // 3. Alloca for loop variable
         let var_ptr = self.fresh_temp();
@@ -899,6 +1068,7 @@ impl Codegen {
             &ctx.data_ptr,
             &ctx.len_val,
             &ctx.range_end,
+            ctx.is_unbounded_range,
             &step_label,
             &end_label,
         );
@@ -947,6 +1117,669 @@ impl Codegen {
         Ok(())
     }
 
+    /// Emit a for-loop over a flat_map/flatten pipeline using nested loops.
+    /// Outer loop iterates source elements, applies pre-flat_map steps.
+    /// Inner loop iterates flattened elements, applies post-flat_map steps + user body.
+    fn emit_for_flat_pipeline(
+        &mut self,
+        var_name: &str,
+        ctx: &PipelineContext,
+        steps: &[IterStep<'_>],
+        body: &Block,
+    ) -> Result<(), CodegenError> {
+        let fmi = ctx.flat_map_info.as_ref().unwrap();
+        let flat_idx = fmi.step_index;
+        let inner_elem_ty = fmi.inner_elem_ty.clone();
+        let pre_steps = &steps[..flat_idx];
+        let post_steps = &steps[flat_idx + 1..];
+
+        // Alloca for the loop variable (final output type)
+        let var_ptr = self.fresh_temp();
+        self.emit_line(&format!("{} = alloca {}", var_ptr, ctx.final_elem_ty));
+
+        // Outer loop labels
+        let outer_cond = self.fresh_label("flat.outer.cond");
+        let outer_step = self.fresh_label("flat.outer.step");
+        let outer_body = self.fresh_label("flat.outer.body");
+        let outer_end = self.fresh_label("flat.outer.end");
+
+        self.emit_line(&format!("br label %{}", outer_cond));
+
+        // Outer condition
+        self.emit_label(&outer_cond);
+        self.block_terminated = false;
+        let cur_idx = self.emit_pipeline_loop_cond(
+            &ctx.idx_ptr,
+            &ctx.data_ptr,
+            &ctx.len_val,
+            &ctx.range_end,
+            ctx.is_unbounded_range,
+            &outer_step,
+            &outer_end,
+        );
+
+        // Outer step: load element, apply pre-steps
+        self.emit_label(&outer_step);
+        self.block_terminated = false;
+        let (outer_val, _outer_ty) = self.emit_pipeline_steps(
+            &cur_idx,
+            &outer_cond,
+            &outer_body,
+            &outer_end,
+            ctx,
+            pre_steps,
+        )?;
+
+        // Outer body: call flat_map closure or use element as inner array
+        self.emit_label(&outer_body);
+        self.block_terminated = false;
+
+        let (inner_data_ptr, inner_len) = if let Some(ref ci) = fmi.closure_info {
+            // flat_map: call closure to get inner array
+            let pre_elem_ty = if pre_steps.is_empty() {
+                ctx.src_elem_ty.clone()
+            } else {
+                self.pipeline_final_elem_type(&ctx.src_elem_ty, pre_steps)
+            };
+            let inner_arr = self.fresh_temp();
+            self.emit_line(&format!(
+                "{} = call ptr {}(ptr {}, {} {})",
+                inner_arr, ci.fn_ptr, ci.env_ptr, pre_elem_ty, outer_val
+            ));
+            self.emit_fat_ptr_load(&inner_arr)
+        } else {
+            // flatten: outer_val IS the inner array (fat ptr alloca)
+            self.emit_fat_ptr_load(&outer_val)
+        };
+
+        // Inner loop
+        let inner_idx_ptr = self.emit_alloca_store("i64", "0");
+        let inner_cond = self.fresh_label("flat.inner.cond");
+        let inner_step = self.fresh_label("flat.inner.step");
+        let inner_body = self.fresh_label("flat.inner.body");
+        let inner_end = self.fresh_label("flat.inner.end");
+
+        self.emit_line(&format!("br label %{}", inner_cond));
+
+        // Inner condition: inner_idx < inner_len
+        self.emit_label(&inner_cond);
+        self.block_terminated = false;
+        let inner_cur = self.emit_load("i64", &inner_idx_ptr);
+        let inner_cmp = self.fresh_temp();
+        self.emit_line(&format!(
+            "{} = icmp slt i64 {}, {}",
+            inner_cmp, inner_cur, inner_len
+        ));
+        self.emit_cond_branch(&inner_cmp, &inner_step, &inner_end);
+
+        // Inner step: load inner element, apply post-steps
+        self.emit_label(&inner_step);
+        self.block_terminated = false;
+        let inner_gep = self.fresh_temp();
+        self.emit_line(&format!(
+            "{} = getelementptr {}, ptr {}, i64 {}",
+            inner_gep, inner_elem_ty, inner_data_ptr, inner_cur
+        ));
+        let inner_val = self.emit_load(&inner_elem_ty, &inner_gep);
+        // Increment inner index
+        let inner_next = self.fresh_temp();
+        self.emit_line(&format!("{} = add i64 {}, 1", inner_next, inner_cur));
+        self.emit_line(&format!("store i64 {}, ptr {}", inner_next, inner_idx_ptr));
+
+        // Apply post-steps (filter, take, etc.) — for now, branch directly to body
+        // For post-steps that need processing, we'd need to apply them here.
+        // Most common usage is flat_map().collect() or flat_map().filter().collect()
+        // For simplicity, handle the no-post-steps case and filter case.
+        let mut final_val = inner_val.clone();
+        let mut final_ty = inner_elem_ty.clone();
+        if post_steps.is_empty() {
+            self.emit_line(&format!("br label %{}", inner_body));
+        } else {
+            // Apply post-steps inline
+            for (i, step) in post_steps.iter().enumerate() {
+                let is_last = i + 1 == post_steps.len();
+                let next_label = if is_last {
+                    inner_body.clone()
+                } else {
+                    self.fresh_label("flat.post")
+                };
+                match step {
+                    IterStep::Filter(_) => {
+                        let ci = ctx.closure_infos[flat_idx + 1 + i].as_ref().unwrap();
+                        let result = self.fresh_temp();
+                        self.emit_line(&format!(
+                            "{} = call i1 {}(ptr {}, {} {})",
+                            result, ci.fn_ptr, ci.env_ptr, final_ty, final_val
+                        ));
+                        self.emit_cond_branch(&result, &next_label, &inner_cond);
+                    }
+                    IterStep::Map(_) => {
+                        let ci = ctx.closure_infos[flat_idx + 1 + i].as_ref().unwrap();
+                        let result = self.fresh_temp();
+                        self.emit_line(&format!(
+                            "{} = call {} {}(ptr {}, {} {})",
+                            result, ci.ret_ty, ci.fn_ptr, ci.env_ptr, final_ty, final_val
+                        ));
+                        final_val = result;
+                        final_ty = ci.ret_ty.clone();
+                        if is_last {
+                            self.emit_line(&format!("br label %{}", next_label));
+                        }
+                    }
+                    IterStep::Take(_) => {
+                        let take_ptr = ctx.take_skip_ptrs[flat_idx + 1 + i].as_ref().unwrap();
+                        let remaining = self.emit_load("i64", take_ptr);
+                        let done = self.fresh_temp();
+                        self.emit_line(&format!("{} = icmp sle i64 {}, 0", done, remaining));
+                        let take_cont = self.fresh_label("flat.take.cont");
+                        self.emit_cond_branch(&done, &outer_end, &take_cont);
+                        self.emit_label(&take_cont);
+                        self.block_terminated = false;
+                        let new_remaining = self.fresh_temp();
+                        self.emit_line(&format!("{} = sub i64 {}, 1", new_remaining, remaining));
+                        self.emit_line(&format!("store i64 {}, ptr {}", new_remaining, take_ptr));
+                        if is_last {
+                            self.emit_line(&format!("br label %{}", next_label));
+                        }
+                    }
+                    IterStep::TakeWhile(_) => {
+                        let ci = ctx.closure_infos[flat_idx + 1 + i].as_ref().unwrap();
+                        let result = self.fresh_temp();
+                        self.emit_line(&format!(
+                            "{} = call i1 {}(ptr {}, {} {})",
+                            result, ci.fn_ptr, ci.env_ptr, final_ty, final_val
+                        ));
+                        self.emit_cond_branch(&result, &next_label, &outer_end);
+                    }
+                    _ => {
+                        if is_last {
+                            self.emit_line(&format!("br label %{}", next_label));
+                        }
+                    }
+                }
+                if !is_last && !matches!(step, IterStep::Filter(_) | IterStep::TakeWhile(_)) {
+                    self.emit_label(&next_label);
+                    self.block_terminated = false;
+                }
+            }
+        }
+
+        // Inner body: store value, emit user body
+        self.emit_label(&inner_body);
+        self.block_terminated = false;
+
+        self.push_scope();
+        self.emit_line(&format!(
+            "store {} {}, ptr {}",
+            ctx.final_elem_ty, final_val, var_ptr
+        ));
+        self.define_var(var_name, &var_ptr, &ctx.final_elem_ty);
+
+        // continue → inner_cond (next inner element), break → outer_end
+        self.loop_labels
+            .push((inner_cond.clone(), outer_end.clone()));
+        self.emit_block(body)?;
+        self.loop_labels.pop();
+
+        if !self.block_terminated {
+            self.emit_line(&format!("br label %{}", inner_cond));
+        }
+        self.pop_scope();
+
+        // Inner end: go to next outer element
+        self.emit_label(&inner_end);
+        self.block_terminated = false;
+        self.emit_line(&format!("br label %{}", outer_cond));
+
+        // Outer end
+        self.emit_label(&outer_end);
+        self.block_terminated = false;
+        Ok(())
+    }
+
+    /// Emit a terminated pipeline (collect, sum, etc.) over a flat_map/flatten pipeline.
+    fn emit_flat_terminated_pipeline(
+        &mut self,
+        ctx: &PipelineContext,
+        steps: &[IterStep<'_>],
+        terminator: &PipelineTerminator<'_>,
+        term_closure_info: Option<&ClosureInfo>,
+    ) -> Result<String, CodegenError> {
+        let fmi = ctx.flat_map_info.as_ref().unwrap();
+        let flat_idx = fmi.step_index;
+        let inner_elem_ty = fmi.inner_elem_ty.clone();
+        let pre_steps = &steps[..flat_idx];
+        let post_steps = &steps[flat_idx + 1..];
+
+        // Set up terminator accumulator based on terminator type
+        let mut collect_out_data_ptr = String::new();
+        let mut collect_out_idx_ptr = String::new();
+        let mut collect_safe_len = String::new();
+        let (result_ptr, result_ty) = match terminator {
+            PipelineTerminator::Collect => {
+                // Allocate output array with initial capacity
+                let elem_size_val = self.llvm_type_size(&ctx.final_elem_ty);
+                let init_cap_val: usize = 16;
+                let alloc_bytes = elem_size_val * init_cap_val;
+                let out_data = self.fresh_temp();
+                self.emit_line(&format!(
+                    "{} = call ptr @malloc(i64 {})",
+                    out_data, alloc_bytes
+                ));
+                let out_idx = self.emit_alloca_store("i64", "0");
+                // Store capacity in a local for grow checks
+                let cap_ptr = self.emit_alloca_store("i64", &format!("{}", init_cap_val));
+                let data_ptr_store = self.emit_alloca_store("ptr", &out_data);
+                collect_out_data_ptr = data_ptr_store.clone();
+                collect_out_idx_ptr = out_idx.clone();
+                collect_safe_len = cap_ptr;
+                (data_ptr_store, "ptr".to_string())
+            }
+            PipelineTerminator::Sum => {
+                let ptr = self.emit_alloca_store(&ctx.final_elem_ty, "0");
+                (ptr, ctx.final_elem_ty.clone())
+            }
+            PipelineTerminator::Count => {
+                let ptr = self.emit_alloca_store("i64", "0");
+                (ptr, "i64".to_string())
+            }
+            PipelineTerminator::Find(_) => {
+                // Option: allocate and set to None (tag=1)
+                let enum_name = format!("Option__{}", llvm_to_semantic_name(&ctx.final_elem_ty));
+                let enum_ty = format!("%{}", enum_name);
+                let result_ptr = self.fresh_temp();
+                self.emit_line(&format!("{} = alloca {}", result_ptr, enum_ty));
+                // Initialize to None (tag=1)
+                let tag_ptr = self.fresh_temp();
+                self.emit_line(&format!(
+                    "{} = getelementptr {}, ptr {}, i32 0, i32 0",
+                    tag_ptr, enum_ty, result_ptr
+                ));
+                self.emit_line(&format!("store i32 1, ptr {}", tag_ptr));
+                (result_ptr, enum_ty)
+            }
+            PipelineTerminator::Any(_) => {
+                let ptr = self.emit_alloca_store("i1", "0");
+                (ptr, "i1".to_string())
+            }
+            PipelineTerminator::All(_) => {
+                let ptr = self.emit_alloca_store("i1", "1");
+                (ptr, "i1".to_string())
+            }
+            _ => {
+                // For Fold, Reduce, Position — fall back
+                return Err(CodegenError {
+                    message: "flat_map/flatten with this terminator is not yet supported"
+                        .to_string(),
+                });
+            }
+        };
+
+        // Outer loop
+        let outer_cond = self.fresh_label("flat.t.outer.cond");
+        let outer_step = self.fresh_label("flat.t.outer.step");
+        let outer_body = self.fresh_label("flat.t.outer.body");
+        let outer_end = self.fresh_label("flat.t.outer.end");
+
+        self.emit_line(&format!("br label %{}", outer_cond));
+
+        self.emit_label(&outer_cond);
+        self.block_terminated = false;
+        let cur_idx = self.emit_pipeline_loop_cond(
+            &ctx.idx_ptr,
+            &ctx.data_ptr,
+            &ctx.len_val,
+            &ctx.range_end,
+            ctx.is_unbounded_range,
+            &outer_step,
+            &outer_end,
+        );
+
+        // Outer step: load element, apply pre-steps
+        self.emit_label(&outer_step);
+        self.block_terminated = false;
+        let (outer_val, _) = self.emit_pipeline_steps(
+            &cur_idx,
+            &outer_cond,
+            &outer_body,
+            &outer_end,
+            ctx,
+            pre_steps,
+        )?;
+
+        // Outer body: get inner array
+        self.emit_label(&outer_body);
+        self.block_terminated = false;
+
+        let (inner_data_ptr, inner_len) = if let Some(ref ci) = fmi.closure_info {
+            let pre_elem_ty = if pre_steps.is_empty() {
+                ctx.src_elem_ty.clone()
+            } else {
+                self.pipeline_final_elem_type(&ctx.src_elem_ty, pre_steps)
+            };
+            let inner_arr = self.fresh_temp();
+            self.emit_line(&format!(
+                "{} = call ptr {}(ptr {}, {} {})",
+                inner_arr, ci.fn_ptr, ci.env_ptr, pre_elem_ty, outer_val
+            ));
+            self.emit_fat_ptr_load(&inner_arr)
+        } else {
+            self.emit_fat_ptr_load(&outer_val)
+        };
+
+        // Inner loop
+        let inner_idx_ptr = self.emit_alloca_store("i64", "0");
+        let inner_cond = self.fresh_label("flat.t.inner.cond");
+        let inner_step = self.fresh_label("flat.t.inner.step");
+        let inner_body_label = self.fresh_label("flat.t.inner.body");
+        let inner_end = self.fresh_label("flat.t.inner.end");
+
+        self.emit_line(&format!("br label %{}", inner_cond));
+
+        self.emit_label(&inner_cond);
+        self.block_terminated = false;
+        let inner_cur = self.emit_load("i64", &inner_idx_ptr);
+        let inner_cmp = self.fresh_temp();
+        self.emit_line(&format!(
+            "{} = icmp slt i64 {}, {}",
+            inner_cmp, inner_cur, inner_len
+        ));
+        self.emit_cond_branch(&inner_cmp, &inner_step, &inner_end);
+
+        // Inner step: load element
+        self.emit_label(&inner_step);
+        self.block_terminated = false;
+        let inner_gep = self.fresh_temp();
+        self.emit_line(&format!(
+            "{} = getelementptr {}, ptr {}, i64 {}",
+            inner_gep, inner_elem_ty, inner_data_ptr, inner_cur
+        ));
+        let inner_val = self.emit_load(&inner_elem_ty, &inner_gep);
+        let inner_next = self.fresh_temp();
+        self.emit_line(&format!("{} = add i64 {}, 1", inner_next, inner_cur));
+        self.emit_line(&format!("store i64 {}, ptr {}", inner_next, inner_idx_ptr));
+
+        // Apply post-steps
+        let mut final_val = inner_val.clone();
+        let mut final_ty = inner_elem_ty.clone();
+        if post_steps.is_empty() {
+            self.emit_line(&format!("br label %{}", inner_body_label));
+        } else {
+            for (i, step) in post_steps.iter().enumerate() {
+                let is_last = i + 1 == post_steps.len();
+                let next_label = if is_last {
+                    inner_body_label.clone()
+                } else {
+                    self.fresh_label("flat.t.post")
+                };
+                match step {
+                    IterStep::Filter(_) => {
+                        let ci = ctx.closure_infos[flat_idx + 1 + i].as_ref().unwrap();
+                        let result = self.fresh_temp();
+                        self.emit_line(&format!(
+                            "{} = call i1 {}(ptr {}, {} {})",
+                            result, ci.fn_ptr, ci.env_ptr, final_ty, final_val
+                        ));
+                        self.emit_cond_branch(&result, &next_label, &inner_cond);
+                    }
+                    IterStep::Map(_) => {
+                        let ci = ctx.closure_infos[flat_idx + 1 + i].as_ref().unwrap();
+                        let result = self.fresh_temp();
+                        self.emit_line(&format!(
+                            "{} = call {} {}(ptr {}, {} {})",
+                            result, ci.ret_ty, ci.fn_ptr, ci.env_ptr, final_ty, final_val
+                        ));
+                        final_val = result;
+                        final_ty = ci.ret_ty.clone();
+                        if is_last {
+                            self.emit_line(&format!("br label %{}", next_label));
+                        }
+                    }
+                    IterStep::Take(_) => {
+                        let take_ptr = ctx.take_skip_ptrs[flat_idx + 1 + i].as_ref().unwrap();
+                        let remaining = self.emit_load("i64", take_ptr);
+                        let done = self.fresh_temp();
+                        self.emit_line(&format!("{} = icmp sle i64 {}, 0", done, remaining));
+                        let take_cont = self.fresh_label("flat.t.take.cont");
+                        self.emit_cond_branch(&done, &outer_end, &take_cont);
+                        self.emit_label(&take_cont);
+                        self.block_terminated = false;
+                        let new_remaining = self.fresh_temp();
+                        self.emit_line(&format!("{} = sub i64 {}, 1", new_remaining, remaining));
+                        self.emit_line(&format!("store i64 {}, ptr {}", new_remaining, take_ptr));
+                        if is_last {
+                            self.emit_line(&format!("br label %{}", next_label));
+                        }
+                    }
+                    IterStep::TakeWhile(_) => {
+                        let ci = ctx.closure_infos[flat_idx + 1 + i].as_ref().unwrap();
+                        let result = self.fresh_temp();
+                        self.emit_line(&format!(
+                            "{} = call i1 {}(ptr {}, {} {})",
+                            result, ci.fn_ptr, ci.env_ptr, final_ty, final_val
+                        ));
+                        self.emit_cond_branch(&result, &next_label, &outer_end);
+                    }
+                    _ => {
+                        if is_last {
+                            self.emit_line(&format!("br label %{}", next_label));
+                        }
+                    }
+                }
+                if !is_last && !matches!(step, IterStep::Filter(_) | IterStep::TakeWhile(_)) {
+                    self.emit_label(&next_label);
+                    self.block_terminated = false;
+                }
+            }
+        }
+
+        // Inner body: apply terminator accumulation
+        self.emit_label(&inner_body_label);
+        self.block_terminated = false;
+
+        match terminator {
+            PipelineTerminator::Collect => {
+                // Push element to result array with grow
+                let cur_len = self.emit_load("i64", &collect_out_idx_ptr);
+                let cur_cap = self.emit_load("i64", &collect_safe_len);
+                let cur_data = self.emit_load("ptr", &collect_out_data_ptr);
+                // Check if we need to grow
+                let needs_grow = self.fresh_temp();
+                self.emit_line(&format!(
+                    "{} = icmp sge i64 {}, {}",
+                    needs_grow, cur_len, cur_cap
+                ));
+                let grow_label = self.fresh_label("flat.grow");
+                let store_label = self.fresh_label("flat.store");
+                self.emit_cond_branch(&needs_grow, &grow_label, &store_label);
+
+                // Grow: double capacity and realloc
+                self.emit_label(&grow_label);
+                self.block_terminated = false;
+                let new_cap = self.fresh_temp();
+                self.emit_line(&format!("{} = mul i64 {}, 2", new_cap, cur_cap));
+                let elem_size_val = self.llvm_type_size(&ctx.final_elem_ty);
+                let new_bytes = self.fresh_temp();
+                self.emit_line(&format!(
+                    "{} = mul i64 {}, {}",
+                    new_bytes, new_cap, elem_size_val
+                ));
+                let new_data = self.fresh_temp();
+                self.emit_line(&format!(
+                    "{} = call ptr @realloc(ptr {}, i64 {})",
+                    new_data, cur_data, new_bytes
+                ));
+                self.emit_line(&format!(
+                    "store ptr {}, ptr {}",
+                    new_data, collect_out_data_ptr
+                ));
+                self.emit_line(&format!("store i64 {}, ptr {}", new_cap, collect_safe_len));
+                self.emit_line(&format!("br label %{}", store_label));
+
+                // Store element
+                self.emit_label(&store_label);
+                self.block_terminated = false;
+                let data_phi = self.emit_load("ptr", &collect_out_data_ptr);
+                let out_gep = self.fresh_temp();
+                self.emit_line(&format!(
+                    "{} = getelementptr {}, ptr {}, i64 {}",
+                    out_gep, ctx.final_elem_ty, data_phi, cur_len
+                ));
+                self.emit_line(&format!(
+                    "store {} {}, ptr {}",
+                    ctx.final_elem_ty, final_val, out_gep
+                ));
+                let next_len = self.fresh_temp();
+                self.emit_line(&format!("{} = add i64 {}, 1", next_len, cur_len));
+                self.emit_line(&format!(
+                    "store i64 {}, ptr {}",
+                    next_len, collect_out_idx_ptr
+                ));
+            }
+            PipelineTerminator::Sum => {
+                let cur = self.emit_load(&ctx.final_elem_ty, &result_ptr);
+                let new_val = self.fresh_temp();
+                if ctx.final_elem_ty == "double" {
+                    self.emit_line(&format!("{} = fadd double {}, {}", new_val, cur, final_val));
+                } else {
+                    self.emit_line(&format!(
+                        "{} = add {} {}, {}",
+                        new_val, ctx.final_elem_ty, cur, final_val
+                    ));
+                }
+                self.emit_line(&format!(
+                    "store {} {}, ptr {}",
+                    ctx.final_elem_ty, new_val, result_ptr
+                ));
+            }
+            PipelineTerminator::Count => {
+                let cur = self.emit_load("i64", &result_ptr);
+                let new_val = self.fresh_temp();
+                self.emit_line(&format!("{} = add i64 {}, 1", new_val, cur));
+                self.emit_line(&format!("store i64 {}, ptr {}", new_val, result_ptr));
+            }
+            PipelineTerminator::Find(_) => {
+                let tci = term_closure_info.unwrap();
+                let pred_result = self.fresh_temp();
+                self.emit_line(&format!(
+                    "{} = call i1 {}(ptr {}, {} {})",
+                    pred_result, tci.fn_ptr, tci.env_ptr, final_ty, final_val
+                ));
+                let found_label = self.fresh_label("flat.t.found");
+                let cont_label = self.fresh_label("flat.t.cont");
+                self.emit_cond_branch(&pred_result, &found_label, &cont_label);
+
+                self.emit_label(&found_label);
+                self.block_terminated = false;
+                // Store Some(val)
+                let tag_ptr = self.fresh_temp();
+                self.emit_line(&format!(
+                    "{} = getelementptr {}, ptr {}, i32 0, i32 0",
+                    tag_ptr, result_ty, result_ptr
+                ));
+                self.emit_line(&format!("store i32 0, ptr {}", tag_ptr));
+                let data_field = self.fresh_temp();
+                self.emit_line(&format!(
+                    "{} = getelementptr {}, ptr {}, i32 0, i32 1",
+                    data_field, result_ty, result_ptr
+                ));
+                self.emit_line(&format!(
+                    "store {} {}, ptr {}",
+                    final_ty, final_val, data_field
+                ));
+                self.emit_line(&format!("br label %{}", outer_end));
+
+                self.emit_label(&cont_label);
+                self.block_terminated = false;
+            }
+            PipelineTerminator::Any(_) => {
+                let tci = term_closure_info.unwrap();
+                let pred_result = self.fresh_temp();
+                self.emit_line(&format!(
+                    "{} = call i1 {}(ptr {}, {} {})",
+                    pred_result, tci.fn_ptr, tci.env_ptr, final_ty, final_val
+                ));
+                let found_label = self.fresh_label("flat.t.any.found");
+                let cont_label = self.fresh_label("flat.t.any.cont");
+                self.emit_cond_branch(&pred_result, &found_label, &cont_label);
+
+                self.emit_label(&found_label);
+                self.block_terminated = false;
+                self.emit_line(&format!("store i1 1, ptr {}", result_ptr));
+                self.emit_line(&format!("br label %{}", outer_end));
+
+                self.emit_label(&cont_label);
+                self.block_terminated = false;
+            }
+            PipelineTerminator::All(_) => {
+                let tci = term_closure_info.unwrap();
+                let pred_result = self.fresh_temp();
+                self.emit_line(&format!(
+                    "{} = call i1 {}(ptr {}, {} {})",
+                    pred_result, tci.fn_ptr, tci.env_ptr, final_ty, final_val
+                ));
+                let fail_label = self.fresh_label("flat.t.all.fail");
+                let cont_label = self.fresh_label("flat.t.all.cont");
+                self.emit_cond_branch(&pred_result, &cont_label, &fail_label);
+
+                self.emit_label(&fail_label);
+                self.block_terminated = false;
+                self.emit_line(&format!("store i1 0, ptr {}", result_ptr));
+                self.emit_line(&format!("br label %{}", outer_end));
+
+                self.emit_label(&cont_label);
+                self.block_terminated = false;
+            }
+            _ => {}
+        }
+
+        // Continue inner loop
+        if !self.block_terminated {
+            self.emit_line(&format!("br label %{}", inner_cond));
+        }
+
+        // Inner end → outer cond
+        self.emit_label(&inner_end);
+        self.block_terminated = false;
+        self.emit_line(&format!("br label %{}", outer_cond));
+
+        // Outer end: return result
+        self.emit_label(&outer_end);
+        self.block_terminated = false;
+
+        // Return the result value
+        match terminator {
+            PipelineTerminator::Collect => {
+                let final_data = self.emit_load("ptr", &collect_out_data_ptr);
+                let final_len = self.emit_load("i64", &collect_out_idx_ptr);
+                let final_cap = self.emit_load("i64", &collect_safe_len);
+                let fat = self.fresh_temp();
+                self.emit_line(&format!("{} = alloca {{ ptr, i64, i64 }}", fat));
+                self.emit_fat_ptr_init(&fat, &final_data, &final_len, &final_cap);
+                Ok(fat)
+            }
+            PipelineTerminator::Sum => {
+                let result = self.emit_load(&ctx.final_elem_ty, &result_ptr);
+                Ok(result)
+            }
+            PipelineTerminator::Count => {
+                let result = self.emit_load("i64", &result_ptr);
+                Ok(result)
+            }
+            PipelineTerminator::Find(_) => {
+                let result = self.emit_load(&result_ty, &result_ptr);
+                Ok(result)
+            }
+            PipelineTerminator::Any(_) | PipelineTerminator::All(_) => {
+                let result = self.emit_load("i1", &result_ptr);
+                Ok(result)
+            }
+            _ => Err(CodegenError {
+                message: "unsupported flat_map terminator".to_string(),
+            }),
+        }
+    }
+
     // ── Pipeline terminator emission ──────────────────────────
 
     /// Emit a terminated pipeline expression (collect, fold, any, all, find, reduce).
@@ -966,6 +1799,7 @@ impl Codegen {
             range_end,
             chain_infos,
             map_iter_info,
+            flat_map_info,
         ) = self.emit_pipeline_preamble(
             pipeline.source,
             &pipeline.steps,
@@ -1014,7 +1848,10 @@ impl Codegen {
         };
 
         // Determine element type after all pipeline steps (before terminator)
-        let final_elem_ty = self.pipeline_final_elem_type(&src_elem_ty, &pipeline.steps);
+        let mut final_elem_ty = self.pipeline_final_elem_type(&src_elem_ty, &pipeline.steps);
+        if let Some(ref fmi) = flat_map_info {
+            final_elem_ty = fmi.inner_elem_ty.clone();
+        }
 
         // 3. Alloca for index counter and build context
         let idx_ptr = self.emit_alloca_store("i64", "0");
@@ -1029,12 +1866,24 @@ impl Codegen {
             take_skip_ptrs,
             enumerate_ptrs,
             is_range_source: pipeline.is_range_source,
+            is_unbounded_range: pipeline.is_unbounded_range,
             range_end,
             chain_infos,
             map_iter_info,
+            flat_map_info,
         };
 
-        // 4. Dispatch to specific terminator emitter
+        // 4. Check for flat_map/flatten — delegate to nested-loop terminator
+        if ctx.flat_map_info.is_some() {
+            return self.emit_flat_terminated_pipeline(
+                &ctx,
+                &pipeline.steps,
+                &pipeline.terminator,
+                term_closure_info.as_ref(),
+            );
+        }
+
+        // 4b. Dispatch to specific terminator emitter
         match &pipeline.terminator {
             PipelineTerminator::Collect => self.emit_terminator_collect(&ctx, &pipeline.steps),
             PipelineTerminator::Fold(init_expr, _) => {
@@ -1447,6 +2296,12 @@ impl Codegen {
                         self.emit_line(&format!("br label %{}", body_label));
                     }
                 }
+                IterStep::FlatMap(_) | IterStep::Flatten => {
+                    // No-op: flat_map/flatten are handled by the outer nested-loop wrapper.
+                    if is_last {
+                        self.emit_line(&format!("br label %{}", body_label));
+                    }
+                }
             }
         }
 
@@ -1483,6 +2338,7 @@ impl Codegen {
             &ctx.data_ptr,
             &ctx.len_val,
             &ctx.range_end,
+            ctx.is_unbounded_range,
             &step_label,
             &end_label,
         );
@@ -2024,6 +2880,61 @@ impl Codegen {
         }
         let next_val = self.fresh_temp();
         self.emit_line(&format!("{} = add i64 {}, 1", next_val, cur_val2));
+        self.emit_line(&format!("store i64 {}, ptr {}", next_val, var_ptr));
+        self.emit_line(&format!("br label %{}", cond_label));
+
+        self.emit_label(&end_label);
+        self.block_terminated = false;
+        Ok(())
+    }
+
+    /// Emit a for-loop over an unbounded range: `for i in start.. { body }`
+    /// Loop has no bounds check; user must break out manually.
+    pub(crate) fn emit_for_unbounded_range(
+        &mut self,
+        var_name: &str,
+        start_expr: &Expr,
+        body: &Block,
+    ) -> Result<(), CodegenError> {
+        let start_val = self.emit_expr(start_expr)?;
+        let var_ptr = self.emit_alloca_store("i64", &start_val);
+
+        let cond_label = self.fresh_label("for.cond");
+        let body_label = self.fresh_label("for.body");
+        let inc_label = self.fresh_label("for.inc");
+        let end_label = self.fresh_label("for.end");
+
+        self.emit_line(&format!("br label %{}", cond_label));
+
+        // Condition: unconditional (user must break)
+        self.emit_label(&cond_label);
+        self.block_terminated = false;
+        self.emit_line(&format!("br label %{}", body_label));
+
+        // Body
+        self.emit_label(&body_label);
+        self.block_terminated = false;
+
+        self.push_scope();
+        self.define_var(var_name, &var_ptr, "i64");
+
+        self.loop_labels
+            .push((inc_label.clone(), end_label.clone()));
+        self.emit_block(body)?;
+        self.loop_labels.pop();
+
+        if !self.block_terminated {
+            self.emit_line(&format!("br label %{}", inc_label));
+        }
+
+        self.pop_scope();
+
+        // Increment
+        self.emit_label(&inc_label);
+        self.block_terminated = false;
+        let cur_val = self.emit_load("i64", &var_ptr);
+        let next_val = self.fresh_temp();
+        self.emit_line(&format!("{} = add i64 {}, 1", next_val, cur_val));
         self.emit_line(&format!("store i64 {}, ptr {}", next_val, var_ptr));
         self.emit_line(&format!("br label %{}", cond_label));
 

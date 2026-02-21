@@ -337,6 +337,9 @@ impl OwnershipChecker {
                 self.check_expr_use(start);
                 self.check_expr_use(end);
             }
+            ExprKind::RangeFrom(start) => {
+                self.check_expr_use(start);
+            }
             ExprKind::Try(inner) => {
                 self.check_expr_use(inner);
             }
@@ -395,7 +398,9 @@ impl OwnershipChecker {
     /// Try to infer the element type of a for-loop iterable.
     /// Falls back to Unit (copy) if the type cannot be determined.
     fn infer_iterable_elem_type(&self, iterable: &Expr) -> Type {
-        if let ExprKind::Range(_, _) | ExprKind::RangeInclusive(_, _) = &iterable.kind {
+        if let ExprKind::Range(_, _) | ExprKind::RangeInclusive(_, _) | ExprKind::RangeFrom(_) =
+            &iterable.kind
+        {
             return Type::Int;
         }
         // Handle iterator pipeline chains: .iter().map(f).filter(g)
@@ -432,6 +437,21 @@ impl OwnershipChecker {
                 "chain" | "rev" if Self::has_iter_base(receiver) => {
                     return self.infer_iterable_elem_type(receiver);
                 }
+                "flat_map" if Self::has_iter_base(receiver) => {
+                    if args.len() == 1 {
+                        if let ExprKind::Closure(c) = &args[0].kind {
+                            if let Type::Array(ref inner) = c.return_type {
+                                return *inner.clone();
+                            }
+                        }
+                    }
+                }
+                "flatten" if Self::has_iter_base(receiver) => {
+                    let inner = self.infer_iterable_elem_type(receiver);
+                    if let Type::Array(ref elem) = inner {
+                        return *elem.clone();
+                    }
+                }
                 "chars" => {
                     return Type::Char;
                 }
@@ -439,7 +459,9 @@ impl OwnershipChecker {
                     // Range expressions produce int elements
                     if matches!(
                         receiver.kind,
-                        ExprKind::Range(_, _) | ExprKind::RangeInclusive(_, _)
+                        ExprKind::Range(_, _)
+                            | ExprKind::RangeInclusive(_, _)
+                            | ExprKind::RangeFrom(_)
                     ) {
                         return Type::Int;
                     }
@@ -479,7 +501,7 @@ impl OwnershipChecker {
                 "iter" | "chars" => true,
                 "map" | "filter" | "enumerate" | "zip" | "take" | "skip" | "reduce" | "fold"
                 | "collect" | "find" | "any" | "all" | "chain" | "take_while" | "rev" | "sum"
-                | "count" | "position" => Self::has_iter_base(receiver),
+                | "count" | "position" | "flat_map" | "flatten" => Self::has_iter_base(receiver),
                 _ => false,
             }
         } else {

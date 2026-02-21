@@ -603,6 +603,10 @@ impl Codegen {
         if let ExprKind::RangeInclusive(ref start, ref end) = s.iterable.kind {
             return self.emit_for_range(&s.var_name, start, end, true, &s.body);
         }
+        // Unbounded range: for i in start.. (user must break)
+        if let ExprKind::RangeFrom(ref start) = s.iterable.kind {
+            return self.emit_for_unbounded_range(&s.var_name, start, &s.body);
+        }
 
         // Bare (range).iter() → same as range for-loop
         if let ExprKind::MethodCall(ref receiver, ref method, ref args) = s.iterable.kind {
@@ -612,6 +616,9 @@ impl Codegen {
                 }
                 if let ExprKind::RangeInclusive(ref start, ref end) = receiver.kind {
                     return self.emit_for_range(&s.var_name, start, end, true, &s.body);
+                }
+                if let ExprKind::RangeFrom(ref start) = receiver.kind {
+                    return self.emit_for_unbounded_range(&s.var_name, start, &s.body);
                 }
             }
         }

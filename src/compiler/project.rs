@@ -696,6 +696,9 @@ fn rewrite_expr_calls(expr: &mut Expr, name_map: &HashMap<String, String>) {
             rewrite_expr_calls(start, name_map);
             rewrite_expr_calls(end, name_map);
         }
+        ExprKind::RangeFrom(start) => {
+            rewrite_expr_calls(start, name_map);
+        }
         _ => {}
     }
 }

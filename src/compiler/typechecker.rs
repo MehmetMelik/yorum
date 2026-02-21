@@ -1271,7 +1271,32 @@ impl TypeChecker {
             }
 
             Stmt::For(s) => {
-                if let ExprKind::Range(ref start, ref end)
+                if let ExprKind::RangeFrom(ref start) = s.iterable.kind {
+                    // Unbounded range-based for: check start is int, loop var is int
+                    if let Some(start_ty) = self.infer_expr(start) {
+                        if start_ty != Type::Int {
+                            self.errors.push(TypeError {
+                                message: format!("range start must be 'int', found '{}'", start_ty),
+                                span: start.span,
+                            });
+                        }
+                    }
+                    // Bare unbounded range in for-loop is allowed (must break manually)
+                    self.loop_depth += 1;
+                    self.push_scope();
+                    self.define_with_span(&s.var_name, Type::Int, false, s.span);
+                    if self.collect_symbols {
+                        self.symbol_table.definitions.push(SymbolDef {
+                            name: s.var_name.clone(),
+                            kind: SymbolKind::Variable,
+                            type_desc: format!("for {}: int", s.var_name),
+                            span: s.span,
+                        });
+                    }
+                    self.check_block(&s.body);
+                    self.pop_scope();
+                    self.loop_depth -= 1;
+                } else if let ExprKind::Range(ref start, ref end)
                 | ExprKind::RangeInclusive(ref start, ref end) = s.iterable.kind
                 {
                     // Range-based for: check bounds are int, loop var is int
@@ -1563,7 +1588,7 @@ impl TypeChecker {
         if let ExprKind::MethodCall(ref receiver, ref method, _) = expr.kind {
             match method.as_str() {
                 "map" | "filter" | "enumerate" | "zip" | "take" | "skip" | "chain"
-                | "take_while" | "rev" => Self::has_iter_base(receiver),
+                | "take_while" | "rev" | "flat_map" | "flatten" => Self::has_iter_base(receiver),
                 _ => false,
             }
         } else {
@@ -1577,7 +1602,7 @@ impl TypeChecker {
             match method.as_str() {
                 "iter" | "chars" => true,
                 "map" | "filter" | "enumerate" | "zip" | "take" | "skip" | "chain"
-                | "take_while" | "rev" => Self::has_iter_base(receiver),
+                | "take_while" | "rev" | "flat_map" | "flatten" => Self::has_iter_base(receiver),
                 _ => false,
             }
         } else {
@@ -1592,6 +1617,31 @@ impl TypeChecker {
         )
     }
 
+    /// Check if a pipeline chain has a bounding step (take or take_while).
+    fn pipeline_has_bounding_step(expr: &Expr) -> bool {
+        if let ExprKind::MethodCall(ref receiver, ref method, _) = expr.kind {
+            match method.as_str() {
+                "take" | "take_while" => true,
+                "iter" | "chars" => false,
+                _ => Self::pipeline_has_bounding_step(receiver),
+            }
+        } else {
+            false
+        }
+    }
+
+    /// Check if a pipeline chain has an unbounded range source.
+    fn pipeline_has_unbounded_source(expr: &Expr) -> bool {
+        if let ExprKind::MethodCall(ref receiver, ref method, _) = expr.kind {
+            match method.as_str() {
+                "iter" => matches!(receiver.kind, ExprKind::RangeFrom(_)),
+                _ => Self::pipeline_has_unbounded_source(receiver),
+            }
+        } else {
+            false
+        }
+    }
+
     /// Infer the return type of a pipeline terminator expression.
     /// `receiver` is the pipeline chain (e.g., `arr.iter().map(f)`), `method` is the
     /// terminator name, `args` are the terminator arguments.
@@ -1603,6 +1653,22 @@ impl TypeChecker {
         span: Span,
     ) -> Option<Type> {
         let elem_ty = self.infer_pipeline_elem_type(receiver)?;
+
+        // Safety: unbounded range with exhaustive terminators requires take/take_while
+        if Self::pipeline_has_unbounded_source(receiver) {
+            let needs_bound = matches!(method, "collect" | "fold" | "reduce" | "sum" | "count");
+            if needs_bound && !Self::pipeline_has_bounding_step(receiver) {
+                self.errors.push(TypeError {
+                    message: format!(
+                        "unbounded range with .{}() requires .take() or .take_while() to limit iteration",
+                        method
+                    ),
+                    span,
+                });
+                return None;
+            }
+        }
+
         match method {
             "collect" => {
                 if !args.is_empty() {
@@ -1926,6 +1992,24 @@ impl TypeChecker {
         if let ExprKind::MethodCall(ref receiver, ref method, ref args) = expr.kind {
             match method.as_str() {
                 "iter" => {
+                    // Unbounded range: (start..).iter()
+                    if let ExprKind::RangeFrom(ref start) = receiver.kind {
+                        if !args.is_empty() {
+                            self.errors.push(TypeError {
+                                message: "iter() takes no arguments".to_string(),
+                                span: expr.span,
+                            });
+                        }
+                        if let Some(t) = self.infer_expr(start) {
+                            if t != Type::Int {
+                                self.errors.push(TypeError {
+                                    message: format!("range start must be int, found '{}'", t),
+                                    span: start.span,
+                                });
+                            }
+                        }
+                        return Some(Type::Int);
+                    }
                     // Range expressions: (start..end).iter() or (start..=end).iter()
                     if matches!(
                         receiver.kind,
@@ -2313,6 +2397,77 @@ impl TypeChecker {
                     self.errors.push(TypeError {
                         message: "take_while() argument must be a closure".to_string(),
                         span: args[0].span,
+                    });
+                    return None;
+                }
+                "flat_map" => {
+                    let input_ty = self.infer_pipeline_elem_type(receiver)?;
+                    if args.len() != 1 {
+                        self.errors.push(TypeError {
+                            message: format!(
+                                "flat_map() takes exactly 1 argument, found {}",
+                                args.len()
+                            ),
+                            span: expr.span,
+                        });
+                        return None;
+                    }
+                    if let ExprKind::Closure(ref c) = args[0].kind {
+                        if c.params.len() != 1 {
+                            self.errors.push(TypeError {
+                                message: format!(
+                                    "flat_map() closure must take 1 parameter, found {}",
+                                    c.params.len()
+                                ),
+                                span: args[0].span,
+                            });
+                            return None;
+                        }
+                        if c.params[0].ty != input_ty {
+                            self.errors.push(TypeError {
+                                message: format!(
+                                    "flat_map() closure parameter type '{}' does not match element type '{}'",
+                                    c.params[0].ty, input_ty
+                                ),
+                                span: args[0].span,
+                            });
+                            return None;
+                        }
+                        // Return type must be an array
+                        if let Type::Array(ref inner) = c.return_type {
+                            return Some(*inner.clone());
+                        }
+                        self.errors.push(TypeError {
+                            message: format!(
+                                "flat_map() closure must return an array, found '{}'",
+                                c.return_type
+                            ),
+                            span: args[0].span,
+                        });
+                        return None;
+                    }
+                    self.errors.push(TypeError {
+                        message: "flat_map() argument must be a closure".to_string(),
+                        span: args[0].span,
+                    });
+                    return None;
+                }
+                "flatten" => {
+                    let input_ty = self.infer_pipeline_elem_type(receiver)?;
+                    if !args.is_empty() {
+                        self.errors.push(TypeError {
+                            message: format!("flatten() takes no arguments, found {}", args.len()),
+                            span: expr.span,
+                        });
+                        return None;
+                    }
+                    // Input type must be an array (i.e., we're flattening [[T]] → [T])
+                    if let Type::Array(ref inner) = input_ty {
+                        return Some(*inner.clone());
+                    }
+                    self.errors.push(TypeError {
+                        message: format!("flatten() requires array elements, found '{}'", input_ty),
+                        span: expr.span,
                     });
                     return None;
                 }
@@ -4154,6 +4309,22 @@ impl TypeChecker {
                 None
             }
 
+            ExprKind::RangeFrom(start) => {
+                if let Some(start_ty) = self.infer_expr(start) {
+                    if start_ty != Type::Int {
+                        self.errors.push(TypeError {
+                            message: format!("range start must be 'int', found '{}'", start_ty),
+                            span: start.span,
+                        });
+                    }
+                }
+                self.errors.push(TypeError {
+                    message: "range expression is only valid in for loops".to_string(),
+                    span: expr.span,
+                });
+                None
+            }
+
             ExprKind::Try(inner) => {
                 // ? operator: inner must be Option<T> or Result<T, E>
                 // Enclosing function must return compatible Option/Result
@@ -4627,6 +4798,9 @@ impl TypeChecker {
             ExprKind::Range(start, end) | ExprKind::RangeInclusive(start, end) => {
                 Self::collect_calls_in_expr(start, out);
                 Self::collect_calls_in_expr(end, out);
+            }
+            ExprKind::RangeFrom(start) => {
+                Self::collect_calls_in_expr(start, out);
             }
             ExprKind::Try(inner) => Self::collect_calls_in_expr(inner, out),
             ExprKind::Literal(_) | ExprKind::Ident(_) => {}

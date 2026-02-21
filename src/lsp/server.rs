@@ -831,6 +831,7 @@ fn methods_for_type(type_str: &str) -> Vec<(&'static str, &'static str)> {
             ("iter", "() -> Iterator"),
             ("sort_int", "() -> [int]"),
             ("contains", "(elem) -> bool"),
+            ("clear", "() -> unit"),
         ]
     } else if type_str.starts_with("Map<") {
         vec![
@@ -841,6 +842,7 @@ fn methods_for_type(type_str: &str) -> Vec<(&'static str, &'static str)> {
             ("map_size", "() -> int"),
             ("map_keys", "() -> [K]"),
             ("map_values", "() -> [V]"),
+            ("iter", "() -> Iterator<(K, V)>"),
         ]
     } else if type_str.starts_with("Set<") {
         vec![
@@ -849,7 +851,10 @@ fn methods_for_type(type_str: &str) -> Vec<(&'static str, &'static str)> {
             ("set_remove", "(elem) -> unit"),
             ("set_size", "() -> int"),
             ("set_values", "() -> [T]"),
+            ("iter", "() -> Iterator<T>"),
         ]
+    } else if type_str == "string" {
+        vec![("len", "() -> int"), ("chars", "() -> Iterator<char>")]
     } else {
         vec![]
     }

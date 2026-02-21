@@ -144,6 +144,7 @@ Rationale: No language ecosystem grows without a package manager. Prerequisite f
 | **Self-hosted compiler parity** | Bring Yorum-in-Yorum up to full-feature parity (generics, closures, traits, multi-file) |
 | **JSON/Regex builtins** | Commonly needed for scripting and web use cases |
 | **Iterator trait/protocol** | User-definable `Iterator` trait so custom types can be iterable. See analysis below |
+| **UTF-8 / Unicode support** | Upgrade `char` from `i8` to `i32` (codepoints). See analysis below |
 
 ### Iterator Trait/Protocol — Analysis
 
@@ -162,7 +163,25 @@ Currently, iterator pipelines are **structural**: the compiler recognizes `.iter
 - **Limited benefit today:** the 6 built-in sources (array, range, unbounded range, string, Set, Map) cover the vast majority of iteration use cases. Custom iterables are rare in practice
 - **Breaks the "no hidden behavior" principle:** an Iterator trait with `next()` introduces hidden state mutation on each call, which goes against Yorum's deterministic/explicit design
 
-**Recommendation:** keep the structural approach. If user-defined iteration is needed, a simpler alternative is allowing `impl` blocks to define a `to_array()` or `iter()` method that returns `[T]`, which then participates in the existing pipeline system without adding trait-based iteration machinery
+**Recommendation:** keep the structural approach. If user-defined iteration is needed, a simpler alternative is allowing `impl` blocks to define a `to_array()` or `iter()` method that returns `[T]`, which then participates in the existing pipeline system without adding trait-based iteration machinery.
+
+### UTF-8 / Unicode — Analysis
+
+Currently, `char` is `i8` (1 byte, ASCII). All string APIs operate on bytes: `str_len` calls `strlen`, `str_charAt` returns a byte, `.chars()` iterates bytes. This is consistent and unambiguous but breaks on multi-byte UTF-8 input (e.g., `"café".chars()` yields 5 bytes, not 4 characters).
+
+**Rejected approach: dual-type system (`char` + `rune`)**
+
+Adding a `rune` type (`i32`) alongside `char` was considered and rejected. It would create a "which one do I use?" decision at every string operation — exactly the kind of ambiguity Yorum is designed to eliminate. Precedent is negative: Go's `byte`/`rune` split is a common source of bugs, Python 2's `str`/`unicode` was bad enough to justify a breaking Python 3 migration. An LLM generating code would have to choose between two APIs where one silently produces wrong results on non-ASCII input. This violates the "one obvious way" principle.
+
+**Recommended approach: upgrade `char` to `i32` (v2.0)**
+
+Make `char` a 32-bit Unicode codepoint in a major version bump. One type, one set of APIs, no ambiguity. `.chars()` decodes UTF-8 automatically. `str_len` returns codepoint count. Every program handles Unicode correctly by default. This is a breaking change affecting:
+- ABI (`char` from `i8` to `i32`)
+- All char builtins (`char_is_alpha`, `char_to_int`, etc.)
+- All string builtins (`str_charAt`, `str_sub`, `str_len` become O(n) for indexed access)
+- Self-hosted compiler (5,226 lines using `char` for lexing — works because source is ASCII, but type size changes)
+
+**Current status:** Yorum is an ASCII language. This is documented and consistent. UTF-8 support is deferred to v2.0 as a clean breaking change rather than adding a parallel type system that undermines LLM friendliness
 
 ---
 

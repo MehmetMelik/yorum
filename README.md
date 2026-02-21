@@ -293,26 +293,58 @@ fn main() -> int {
     let has_big: bool = nums.iter().any(|v: int| -> bool { return v > 8; });
     let first: Option<int> = nums.iter().find(|v: int| -> bool { return v > 5; });
 
-    // Range pipelines: ranges work as pipeline sources
+    // Range pipelines
     let squares: [int] = (0..10).iter().map(|x: int| -> int { return x * x; }).collect();
-    let even_sum: int = (1..=100).iter().filter(|x: int| -> bool { return x % 2 == 0; }).fold(0, |acc: int, x: int| -> int { return acc + x; });
+
+    // Chain: concatenate two iterables
+    let a: [int] = [1, 2, 3];
+    let b: [int] = [4, 5, 6];
+    let all: [int] = a.iter().chain(b).collect();           // [1, 2, 3, 4, 5, 6]
+
+    // Flat_map and flatten
+    let nested: [[int]] = [[1, 2], [3, 4], [5]];
+    let flat: [int] = nested.iter().flatten().collect();     // [1, 2, 3, 4, 5]
+
+    // Sum, count, position
+    let s: int = nums.iter().sum();                          // 55
+    let n: int = nums.iter().filter(|v: int| -> bool { return v > 5; }).count();  // 5
+    let pos: Option<int> = nums.iter().position(|v: int| -> bool { return v > 7; });  // Some(7)
+
+    // Take_while and rev
+    let prefix: [int] = nums.iter().take_while(|v: int| -> bool { return v < 4; }).collect();  // [1, 2, 3]
+    let reversed: [int] = nums.iter().rev().take(3).collect();  // [10, 9, 8]
+
+    // String chars
+    let mut vowels: int = 0;
+    for c in "hello world".chars() {
+        if c == 'o' { vowels += 1; }
+    }
+
+    // Unbounded ranges (must have take or take_while)
+    let first_10: [int] = (0..).iter().take(10).collect();   // [0, 1, ..., 9]
+
+    // Set and Map iteration
+    let s: Set<int> = set_new();
+    set_add(s, 10);
+    set_add(s, 20);
+    let set_sum: int = s.iter().sum();                       // 30
+
+    let m: Map<string, int> = map_new();
+    map_set(m, "a", 1);
+    map_set(m, "b", 2);
+    let entries: int = m.iter().count();                     // 2
+
     return 0;
 }
 ```
 
-`.iter()` on an array or range starts an iterator pipeline. **Combinators** transform the stream inside
-for-loops: `.map(f)` transforms elements, `.filter(f)` keeps matching elements, `.enumerate()` adds
-indices, `.zip(arr2)` pairs elements, `.take(n)` limits count, `.skip(n)` skips elements,
-`.chain(arr2)` concatenates two iterables, `.flat_map(f)` maps and flattens, `.flatten()` flattens
-nested arrays, `.take_while(f)` yields while predicate holds, `.rev()` reverses iteration order.
-**Terminators** consume the pipeline as standalone expressions: `.collect()` materializes to an array,
-`.fold(init, f)` accumulates a value, `.any(f)`/`.all(f)` test predicates, `.find(f)` returns
-`Option<T>`, `.reduce(f)` accumulates without an initial value, `.sum()` adds all elements,
-`.count()` counts elements, `.position(f)` finds the index of the first match.
-**Sources:** arrays (`.iter()`), ranges (`(0..n).iter()`, `(0..=n).iter()`), unbounded ranges
-(`(0..).iter()` with `.take(n)` or `.take_while(f)`), strings (`.chars()`), Sets (`set.iter()`),
-and Maps (`map.iter()` yields `(K, V)` tuples). All pipelines are fused into a single loop — no
-intermediate allocations (except `.collect()`), no iterator structs. Closures must be inline.
+**Sources:** `.iter()` on arrays, ranges (`(0..n)`, `(0..=n)`, `(0..)`), Sets, and Maps; `.chars()`
+on strings. **Combinators** (in for-loops and before terminators): `.map(f)`, `.filter(f)`,
+`.enumerate()`, `.zip(arr)`, `.take(n)`, `.skip(n)`, `.chain(arr)`, `.flat_map(f)`, `.flatten()`,
+`.take_while(f)`, `.rev()`. **Terminators** (standalone expressions): `.collect()`, `.fold(init, f)`,
+`.any(f)`, `.all(f)`, `.find(f)`, `.reduce(f)`, `.sum()`, `.count()`, `.position(f)`. All pipelines
+are fused into a single LLVM loop — no intermediate allocations (except `.collect()`), no iterator
+structs. Closures must be inline.
 
 ### String Interpolation
 
@@ -947,7 +979,7 @@ diff gen1.ll gen2.ll    # identical — fixed-point achieved
 ## Testing
 
 ```bash
-cargo test                    # 756 tests (68 unit + 688 integration)
+cargo test                    # 837 tests (81 unit + 756 integration)
 cargo test compiler::lexer    # tests in one module
 cargo test test_fibonacci     # single test by name
 ```
@@ -994,6 +1026,7 @@ cargo test test_fibonacci     # single test by name
 | **v1.10** | Codegen refactor: fat pointer/struct helpers, pipeline deduplication, module extraction into 5 files | Done |
 | **v1.11** | Array repeat syntax `[value; count]`, bounds check elision for `for i in 0..len(arr)` loops | Done |
 | **v1.12** | Iterator ecosystem: `.chain()`, `.flat_map()`, `.flatten()`, `.take_while()`, `.chars()`, `.rev()`, `.sum()`, `.count()`, `.position()`, unbounded ranges, Set/Map `.iter()`, codegen hardening | Done |
+| **v1.12.1** | LSP chain-aware dot-completions with type propagation through iterator pipelines | Done |
 
 ## License
 

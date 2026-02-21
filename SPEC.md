@@ -1,6 +1,6 @@
 # Yorum Language Specification
 
-**Version:** 1.12.0
+**Version:** 1.12.1
 
 ## 1. Overview
 
@@ -1171,7 +1171,11 @@ HTTP/1.0 only (no TLS/HTTPS).
 - Unbounded ranges: `(0..).iter().take(n)` — compile-time enforcement of termination
 - Set/Map iteration: `set.iter()`, `map.iter()` yields `(K, V)` tuples
 - Codegen hardening: SIGBUS crash fixes for Set/Map return-by-value, flat-map pipeline fixes, array-of-arrays lifetime fix
-- 17 new integration tests (712 total: 68 unit + 644 integration)
+
+### v1.12.1 (Done)
+- LSP chain-aware dot-completions: accurate iterator completions after any pipeline chain with full type propagation through combinators and terminators
+- LSP dot-completion fixes for v1.12.0 generic types (Set, Map, Task, Chan, Result)
+- 13 new unit tests (837 total: 81 unit + 756 integration)
 
 ## Appendix A: Application Binary Interface (ABI)
 

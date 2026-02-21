@@ -356,61 +356,114 @@ impl LspServer {
 
     fn dot_completions(&self, source: &str, line_text: &str) -> Vec<CompletionItem> {
         let mut items = Vec::new();
-        let ident = extract_last_ident(line_text);
-        if ident.is_empty() {
-            return items;
-        }
 
         let (_, symbols) = crate::check_with_symbols(source);
-        if let Some(sym) = symbols {
-            // Resolve the type of the identifier
-            let resolved_type = resolve_ident_type(&ident, &sym);
+        let sym = match symbols {
+            Some(s) => s,
+            None => return items,
+        };
 
-            if let Some(ref type_str) = resolved_type {
-                // Struct fields
-                if let Some(struct_name) = extract_struct_name(type_str) {
-                    for sd in &sym.definitions {
-                        if sd.name == struct_name
-                            && matches!(sd.kind, crate::compiler::typechecker::SymbolKind::Struct)
-                        {
-                            for field in extract_fields_from_struct_desc(&sd.type_desc) {
-                                items.push(CompletionItem {
-                                    label: field.0.clone(),
-                                    kind: COMPLETION_KIND_FIELD,
-                                    detail: Some(field.1.clone()),
-                                    insert_text: None,
-                                });
-                            }
-                            // User-defined struct methods (mangled as StructName_method)
-                            let prefix = format!("{}_", struct_name);
-                            for fd in &sym.definitions {
-                                if matches!(
-                                    fd.kind,
-                                    crate::compiler::typechecker::SymbolKind::Function
-                                ) {
-                                    if let Some(method_name) = fd.name.strip_prefix(&prefix) {
+        // Try chain-aware completion first
+        if let Some(chain_text) = extract_chain_text(line_text) {
+            if let Some(chain_expr) = parse_chain_expr(&chain_text) {
+                if let Some(chain_type) = walk_chain_type(&chain_expr, &sym) {
+                    if chain_type.is_iterator {
+                        for (name, sig) in iterator_methods(&chain_type.elem_type) {
+                            items.push(CompletionItem {
+                                label: name.to_string(),
+                                kind: COMPLETION_KIND_FUNCTION,
+                                detail: Some(sig),
+                                insert_text: Some(format!("{}()", name)),
+                            });
+                        }
+                        return items;
+                    } else {
+                        // Non-iterator chain result — use methods_for_type
+                        let type_str = &chain_type.elem_type;
+                        if let Some(struct_name) = extract_struct_name(type_str) {
+                            for sd in &sym.definitions {
+                                if sd.name == struct_name
+                                    && matches!(
+                                        sd.kind,
+                                        crate::compiler::typechecker::SymbolKind::Struct
+                                    )
+                                {
+                                    for field in extract_fields_from_struct_desc(&sd.type_desc) {
                                         items.push(CompletionItem {
-                                            label: method_name.to_string(),
-                                            kind: COMPLETION_KIND_FUNCTION,
-                                            detail: Some(fd.type_desc.clone()),
-                                            insert_text: Some(format!("{}()", method_name)),
+                                            label: field.0.clone(),
+                                            kind: COMPLETION_KIND_FIELD,
+                                            detail: Some(field.1.clone()),
+                                            insert_text: None,
                                         });
                                     }
                                 }
                             }
                         }
+                        for (name, sig) in methods_for_type(type_str) {
+                            items.push(CompletionItem {
+                                label: name.to_string(),
+                                kind: COMPLETION_KIND_FUNCTION,
+                                detail: Some(sig.to_string()),
+                                insert_text: Some(format!("{}()", name)),
+                            });
+                        }
+                        return items;
                     }
                 }
+            }
+        }
 
-                // Type-based method completions
-                for (name, sig) in methods_for_type(type_str) {
-                    items.push(CompletionItem {
-                        label: name.to_string(),
-                        kind: COMPLETION_KIND_FUNCTION,
-                        detail: Some(sig.to_string()),
-                        insert_text: Some(format!("{}()", name)),
-                    });
+        // Fall back to existing simple-ident logic
+        let ident = extract_last_ident(line_text);
+        if ident.is_empty() {
+            return items;
+        }
+
+        // Resolve the type of the identifier
+        let resolved_type = resolve_ident_type(&ident, &sym);
+
+        if let Some(ref type_str) = resolved_type {
+            // Struct fields
+            if let Some(struct_name) = extract_struct_name(type_str) {
+                for sd in &sym.definitions {
+                    if sd.name == struct_name
+                        && matches!(sd.kind, crate::compiler::typechecker::SymbolKind::Struct)
+                    {
+                        for field in extract_fields_from_struct_desc(&sd.type_desc) {
+                            items.push(CompletionItem {
+                                label: field.0.clone(),
+                                kind: COMPLETION_KIND_FIELD,
+                                detail: Some(field.1.clone()),
+                                insert_text: None,
+                            });
+                        }
+                        // User-defined struct methods (mangled as StructName_method)
+                        let prefix = format!("{}_", struct_name);
+                        for fd in &sym.definitions {
+                            if matches!(fd.kind, crate::compiler::typechecker::SymbolKind::Function)
+                            {
+                                if let Some(method_name) = fd.name.strip_prefix(&prefix) {
+                                    items.push(CompletionItem {
+                                        label: method_name.to_string(),
+                                        kind: COMPLETION_KIND_FUNCTION,
+                                        detail: Some(fd.type_desc.clone()),
+                                        insert_text: Some(format!("{}()", method_name)),
+                                    });
+                                }
+                            }
+                        }
+                    }
                 }
+            }
+
+            // Type-based method completions
+            for (name, sig) in methods_for_type(type_str) {
+                items.push(CompletionItem {
+                    label: name.to_string(),
+                    kind: COMPLETION_KIND_FUNCTION,
+                    detail: Some(sig.to_string()),
+                    insert_text: Some(format!("{}()", name)),
+                });
             }
         }
 
@@ -733,6 +786,446 @@ pub fn extract_last_ident(line: &str) -> String {
     }
 }
 
+/// Extract a method-chain expression ending at the trailing dot.
+/// Returns None if this is a simple `ident.` (no parens before the dot).
+fn extract_chain_text(line: &str) -> Option<String> {
+    let trimmed = line.trim_end_matches('.');
+    // Quick check: if no '(' in the trimmed text, it's not a chain
+    if !trimmed.contains('(') {
+        return None;
+    }
+    // Scan backwards from end, tracking bracket depth.
+    // Skip characters inside string and char literals to avoid
+    // corrupting depth counts on literal delimiters like '(' in strings.
+    let chars: Vec<char> = trimmed.chars().collect();
+    let mut depth_paren = 0i32;
+    let mut depth_brace = 0i32;
+    let mut depth_bracket = 0i32;
+    let mut start = 0;
+    let mut i = chars.len();
+    while i > 0 {
+        i -= 1;
+        // Skip char literals: scan backwards past 'x' or '\n' sequences
+        if chars[i] == '\'' && i >= 2 {
+            // Could be 'x' (len 3) or '\n' (len 4)
+            if chars[i - 2] == '\'' {
+                i -= 2;
+                continue;
+            } else if i >= 3 && chars[i - 3] == '\'' && chars[i - 2] == '\\' {
+                i -= 3;
+                continue;
+            }
+        }
+        // Skip string literals: scan backwards to the opening quote
+        if chars[i] == '"' {
+            if i > 0 {
+                i -= 1;
+                while i > 0 {
+                    if chars[i] == '"' && (i == 0 || chars[i - 1] != '\\') {
+                        break;
+                    }
+                    i -= 1;
+                }
+            }
+            continue;
+        }
+        match chars[i] {
+            ')' => depth_paren += 1,
+            '(' => {
+                depth_paren -= 1;
+                if depth_paren < 0 {
+                    start = i + 1;
+                    break;
+                }
+            }
+            '}' => depth_brace += 1,
+            '{' => {
+                depth_brace -= 1;
+                if depth_brace < 0 {
+                    start = i + 1;
+                    break;
+                }
+            }
+            ']' => depth_bracket += 1,
+            '[' => {
+                depth_bracket -= 1;
+                if depth_bracket < 0 {
+                    start = i + 1;
+                    break;
+                }
+            }
+            _ => {
+                if depth_paren == 0 && depth_brace == 0 && depth_bracket == 0 {
+                    // At top level — check for chain-start boundaries
+                    if !chars[i].is_alphanumeric()
+                        && chars[i] != '_'
+                        && chars[i] != '.'
+                        && chars[i] != ')'
+                        && chars[i] != '}'
+                        && chars[i] != ']'
+                    {
+                        start = i + 1;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    let chain = trimmed[start..].trim();
+    if chain.is_empty() {
+        None
+    } else {
+        Some(chain.to_string())
+    }
+}
+
+/// Parse a chain expression using the real parser.
+fn parse_chain_expr(chain_text: &str) -> Option<crate::compiler::ast::Expr> {
+    let synthetic = format!("fn __lsp() -> unit {{ {}; }}", chain_text);
+    let mut lexer = crate::compiler::lexer::Lexer::new(&synthetic);
+    let tokens = lexer.tokenize().ok()?;
+    let mut parser = crate::compiler::parser::Parser::new(tokens);
+    let program = parser.parse_program().ok()?;
+    // Extract the expression from: fn __lsp() { <expr>; }
+    let decl = program.declarations.first()?;
+    if let crate::compiler::ast::Declaration::Function(f) = decl {
+        if let Some(crate::compiler::ast::Stmt::Expr(ref expr_stmt)) = f.body.stmts.first() {
+            return Some(expr_stmt.expr.clone());
+        }
+    }
+    None
+}
+
+struct ChainType {
+    /// The element type as a display string (e.g., "int", "string", "(int, string)")
+    elem_type: String,
+    /// Whether we're in iterator context (after .iter()/.chars())
+    is_iterator: bool,
+}
+
+/// Walk a method-chain AST, propagating element types through iterator pipeline steps.
+fn walk_chain_type(
+    expr: &crate::compiler::ast::Expr,
+    sym: &crate::compiler::typechecker::SymbolTable,
+) -> Option<ChainType> {
+    use crate::compiler::ast::ExprKind;
+
+    match &expr.kind {
+        ExprKind::Ident(name) => {
+            let type_str = resolve_ident_type(name, sym)?;
+            Some(ChainType {
+                elem_type: type_str,
+                is_iterator: false,
+            })
+        }
+        ExprKind::FieldAccess(receiver, field) => {
+            // e.g., self.items — resolve the field type from the struct
+            let recv = walk_chain_type(receiver, sym)?;
+            if let Some(struct_name) = extract_struct_name(&recv.elem_type) {
+                for sd in &sym.definitions {
+                    if sd.name == struct_name
+                        && matches!(sd.kind, crate::compiler::typechecker::SymbolKind::Struct)
+                    {
+                        for (fname, ftype) in extract_fields_from_struct_desc(&sd.type_desc) {
+                            if fname == *field {
+                                return Some(ChainType {
+                                    elem_type: ftype,
+                                    is_iterator: false,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+            None
+        }
+        ExprKind::MethodCall(receiver, method, args) => {
+            let recv = walk_chain_type(receiver, sym)?;
+
+            match method.as_str() {
+                "iter" => {
+                    let inner = extract_iter_elem_type(&recv.elem_type)?;
+                    Some(ChainType {
+                        elem_type: inner,
+                        is_iterator: true,
+                    })
+                }
+                "chars" => {
+                    if recv.elem_type == "string" {
+                        Some(ChainType {
+                            elem_type: "char".to_string(),
+                            is_iterator: true,
+                        })
+                    } else {
+                        None
+                    }
+                }
+                "map" | "flat_map" => {
+                    if !recv.is_iterator {
+                        return None;
+                    }
+                    // Extract return type from closure argument
+                    let ret_type = args.first().and_then(|arg| {
+                        if let ExprKind::Closure(c) = &arg.kind {
+                            Some(format!("{}", c.return_type))
+                        } else {
+                            None
+                        }
+                    });
+                    if let Some(rt) = ret_type {
+                        let elem = if method == "flat_map" {
+                            // flat_map closure returns [T], extract T
+                            extract_array_inner(&rt).unwrap_or(rt)
+                        } else {
+                            rt
+                        };
+                        Some(ChainType {
+                            elem_type: elem,
+                            is_iterator: true,
+                        })
+                    } else {
+                        // Can't determine type, keep iterator context with unknown element
+                        Some(ChainType {
+                            elem_type: "?".to_string(),
+                            is_iterator: true,
+                        })
+                    }
+                }
+                "filter" | "take" | "skip" | "chain" | "take_while" | "rev" => {
+                    if !recv.is_iterator {
+                        return None;
+                    }
+                    Some(ChainType {
+                        elem_type: recv.elem_type,
+                        is_iterator: true,
+                    })
+                }
+                "enumerate" => {
+                    if !recv.is_iterator {
+                        return None;
+                    }
+                    Some(ChainType {
+                        elem_type: format!("(int, {})", recv.elem_type),
+                        is_iterator: true,
+                    })
+                }
+                "zip" => {
+                    if !recv.is_iterator {
+                        return None;
+                    }
+                    let other_elem = args.first().and_then(|arg| {
+                        match &arg.kind {
+                            ExprKind::Ident(name) => {
+                                let ty = resolve_ident_type(name, sym)?;
+                                extract_iter_elem_type(&ty)
+                            }
+                            ExprKind::Range(..) | ExprKind::RangeInclusive(..) => {
+                                Some("int".to_string())
+                            }
+                            ExprKind::MethodCall(..) => {
+                                // Recursively resolve chained zip args
+                                let ct = walk_chain_type(arg, sym)?;
+                                if ct.is_iterator {
+                                    Some(ct.elem_type)
+                                } else {
+                                    extract_iter_elem_type(&ct.elem_type)
+                                }
+                            }
+                            _ => None,
+                        }
+                    });
+                    let other = other_elem.unwrap_or_else(|| "?".to_string());
+                    Some(ChainType {
+                        elem_type: format!("({}, {})", recv.elem_type, other),
+                        is_iterator: true,
+                    })
+                }
+                "flatten" => {
+                    if !recv.is_iterator {
+                        return None;
+                    }
+                    let inner =
+                        extract_array_inner(&recv.elem_type).unwrap_or(recv.elem_type.clone());
+                    Some(ChainType {
+                        elem_type: inner,
+                        is_iterator: true,
+                    })
+                }
+                // Terminators — produce non-iterator results
+                "collect" => {
+                    if !recv.is_iterator {
+                        return None;
+                    }
+                    Some(ChainType {
+                        elem_type: format!("[{}]", recv.elem_type),
+                        is_iterator: false,
+                    })
+                }
+                "sum" | "count" => {
+                    if !recv.is_iterator {
+                        return None;
+                    }
+                    Some(ChainType {
+                        elem_type: "int".to_string(),
+                        is_iterator: false,
+                    })
+                }
+                "any" | "all" => {
+                    if !recv.is_iterator {
+                        return None;
+                    }
+                    Some(ChainType {
+                        elem_type: "bool".to_string(),
+                        is_iterator: false,
+                    })
+                }
+                "find" => {
+                    if !recv.is_iterator {
+                        return None;
+                    }
+                    Some(ChainType {
+                        elem_type: format!("Option<{}>", recv.elem_type),
+                        is_iterator: false,
+                    })
+                }
+                "position" => {
+                    if !recv.is_iterator {
+                        return None;
+                    }
+                    Some(ChainType {
+                        elem_type: "Option<int>".to_string(),
+                        is_iterator: false,
+                    })
+                }
+                "fold" => {
+                    if !recv.is_iterator {
+                        return None;
+                    }
+                    // Result type depends on init value and closure, use element type
+                    Some(ChainType {
+                        elem_type: recv.elem_type,
+                        is_iterator: false,
+                    })
+                }
+                "reduce" => {
+                    if !recv.is_iterator {
+                        return None;
+                    }
+                    Some(ChainType {
+                        elem_type: format!("Option<{}>", recv.elem_type),
+                        is_iterator: false,
+                    })
+                }
+                _ => None,
+            }
+        }
+        ExprKind::Range(..) | ExprKind::RangeInclusive(..) | ExprKind::RangeFrom(..) => {
+            // Range expressions produce int sequences — not yet iterated
+            Some(ChainType {
+                elem_type: "[int]".to_string(),
+                is_iterator: false,
+            })
+        }
+        _ => None,
+    }
+}
+
+/// Extract the element type for iteration from a container type string.
+fn extract_iter_elem_type(type_str: &str) -> Option<String> {
+    if type_str.starts_with('[') && type_str.ends_with(']') {
+        // [int] -> int
+        Some(type_str[1..type_str.len() - 1].to_string())
+    } else if type_str.starts_with("Map<") {
+        // Map<K, V> -> (K, V)
+        let inner = &type_str[4..type_str.len() - 1];
+        // Split on first comma at depth 0
+        if let Some((k, v)) = split_generic_args(inner) {
+            Some(format!("({}, {})", k.trim(), v.trim()))
+        } else {
+            None
+        }
+    } else if type_str.starts_with("Set<") {
+        // Set<T> -> T
+        Some(type_str[4..type_str.len() - 1].to_string())
+    } else {
+        None
+    }
+}
+
+/// Split "K, V" respecting generic nesting depth, at the first top-level comma.
+fn split_generic_args(s: &str) -> Option<(&str, &str)> {
+    let mut depth = 0;
+    for (i, ch) in s.char_indices() {
+        match ch {
+            '<' => depth += 1,
+            '>' => depth -= 1,
+            ',' if depth == 0 => {
+                return Some((&s[..i], &s[i + 1..]));
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Extract inner type from an array type string: "[int]" -> "int".
+fn extract_array_inner(type_str: &str) -> Option<String> {
+    if type_str.starts_with('[') && type_str.ends_with(']') {
+        Some(type_str[1..type_str.len() - 1].to_string())
+    } else {
+        None
+    }
+}
+
+/// Return method completions for an iterator with the given element type.
+fn iterator_methods(elem_type: &str) -> Vec<(&'static str, String)> {
+    vec![
+        // Combinators
+        ("map", format!("(|{}| -> ?) -> Iterator<?>", elem_type)),
+        (
+            "filter",
+            format!("(|{}| -> bool) -> Iterator<{}>", elem_type, elem_type),
+        ),
+        ("enumerate", format!("() -> Iterator<(int, {})>", elem_type)),
+        ("zip", format!("(iterable) -> Iterator<({}, ?)>", elem_type)),
+        ("take", format!("(n: int) -> Iterator<{}>", elem_type)),
+        ("skip", format!("(n: int) -> Iterator<{}>", elem_type)),
+        ("chain", format!("(iterable) -> Iterator<{}>", elem_type)),
+        (
+            "take_while",
+            format!("(|{}| -> bool) -> Iterator<{}>", elem_type, elem_type),
+        ),
+        ("rev", format!("() -> Iterator<{}>", elem_type)),
+        (
+            "flat_map",
+            format!("(|{}| -> [?]) -> Iterator<?>", elem_type),
+        ),
+        ("flatten", format!("() -> Iterator<{}>", elem_type)),
+        // Terminators
+        ("collect", format!("() -> [{}]", elem_type)),
+        (
+            "fold",
+            format!("(init, |acc, {}| -> acc) -> acc", elem_type),
+        ),
+        (
+            "reduce",
+            format!("(|{0}, {0}| -> {0}) -> Option<{0}>", elem_type),
+        ),
+        ("any", format!("(|{}| -> bool) -> bool", elem_type)),
+        ("all", format!("(|{}| -> bool) -> bool", elem_type)),
+        (
+            "find",
+            format!("(|{}| -> bool) -> Option<{}>", elem_type, elem_type),
+        ),
+        ("sum", "() -> int".to_string()),
+        ("count", "() -> int".to_string()),
+        (
+            "position",
+            format!("(|{}| -> bool) -> Option<int>", elem_type),
+        ),
+    ]
+}
+
 /// Extract a struct name from a type description like "Point" or "let x: Point".
 fn extract_struct_name(type_desc: &str) -> Option<String> {
     let name = type_desc.trim();
@@ -831,6 +1324,7 @@ fn methods_for_type(type_str: &str) -> Vec<(&'static str, &'static str)> {
             ("iter", "() -> Iterator"),
             ("sort_int", "() -> [int]"),
             ("contains", "(elem) -> bool"),
+            ("clear", "() -> unit"),
         ]
     } else if type_str.starts_with("Map<") {
         vec![
@@ -841,6 +1335,7 @@ fn methods_for_type(type_str: &str) -> Vec<(&'static str, &'static str)> {
             ("map_size", "() -> int"),
             ("map_keys", "() -> [K]"),
             ("map_values", "() -> [V]"),
+            ("iter", "() -> Iterator<(K, V)>"),
         ]
     } else if type_str.starts_with("Set<") {
         vec![
@@ -849,7 +1344,10 @@ fn methods_for_type(type_str: &str) -> Vec<(&'static str, &'static str)> {
             ("set_remove", "(elem) -> unit"),
             ("set_size", "() -> int"),
             ("set_values", "() -> [T]"),
+            ("iter", "() -> Iterator<T>"),
         ]
+    } else if type_str == "string" {
+        vec![("len", "() -> int"), ("chars", "() -> Iterator<char>")]
     } else {
         vec![]
     }
@@ -1069,5 +1567,268 @@ mod tests {
         assert_eq!(resp["result"]["capabilities"]["hoverProvider"], true);
         assert_eq!(resp["result"]["capabilities"]["definitionProvider"], true);
         assert_eq!(resp["result"]["serverInfo"]["name"], "yorum-lsp");
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  Chain-aware dot-completion tests
+    // ═══════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_extract_chain_text_simple_ident() {
+        // Simple ident — no chain
+        assert_eq!(extract_chain_text("    arr."), None);
+        assert_eq!(extract_chain_text("    x."), None);
+    }
+
+    #[test]
+    fn test_extract_chain_text_iter() {
+        let result = extract_chain_text("    arr.iter().");
+        assert_eq!(result, Some("arr.iter()".to_string()));
+    }
+
+    #[test]
+    fn test_extract_chain_text_map_with_closure() {
+        let result = extract_chain_text("    arr.iter().map(|x: int| -> int { x + 1 }).");
+        assert_eq!(
+            result,
+            Some("arr.iter().map(|x: int| -> int { x + 1 })".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_chain_text_with_let() {
+        // let binding = arr.iter().
+        let result = extract_chain_text("    let y = arr.iter().");
+        assert_eq!(result, Some("arr.iter()".to_string()));
+    }
+
+    #[test]
+    fn test_parse_chain_expr_simple() {
+        let expr = parse_chain_expr("arr.iter()");
+        assert!(expr.is_some());
+        let expr = expr.unwrap();
+        if let crate::compiler::ast::ExprKind::MethodCall(_, method, _) = &expr.kind {
+            assert_eq!(method, "iter");
+        } else {
+            panic!("Expected MethodCall, got {:?}", expr.kind);
+        }
+    }
+
+    #[test]
+    fn test_parse_chain_expr_map() {
+        let expr = parse_chain_expr("arr.iter().map(|x: int| -> string { return x; })");
+        assert!(expr.is_some());
+        let expr = expr.unwrap();
+        if let crate::compiler::ast::ExprKind::MethodCall(_, method, _) = &expr.kind {
+            assert_eq!(method, "map");
+        } else {
+            panic!("Expected MethodCall for map");
+        }
+    }
+
+    #[test]
+    fn test_extract_iter_elem_type() {
+        assert_eq!(extract_iter_elem_type("[int]"), Some("int".to_string()));
+        assert_eq!(
+            extract_iter_elem_type("[string]"),
+            Some("string".to_string())
+        );
+        assert_eq!(
+            extract_iter_elem_type("Map<string, int>"),
+            Some("(string, int)".to_string())
+        );
+        assert_eq!(extract_iter_elem_type("Set<int>"), Some("int".to_string()));
+        assert_eq!(extract_iter_elem_type("int"), None);
+    }
+
+    #[test]
+    fn test_chain_completion_iter_on_array() {
+        // Source must be parseable — define arr, use a dummy statement
+        let source =
+            "fn main() -> unit {\n    let arr: [int] = [1, 2, 3];\n    let x: int = 0;\n}\n";
+        let server = LspServer::new();
+        let line_text = "    arr.iter().";
+        let items = server.dot_completions(source, line_text);
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        assert!(labels.contains(&"map"), "Should contain map: {:?}", labels);
+        assert!(
+            labels.contains(&"filter"),
+            "Should contain filter: {:?}",
+            labels
+        );
+        assert!(
+            labels.contains(&"collect"),
+            "Should contain collect: {:?}",
+            labels
+        );
+        assert!(
+            labels.contains(&"enumerate"),
+            "Should contain enumerate: {:?}",
+            labels
+        );
+        assert!(
+            labels.contains(&"fold"),
+            "Should contain fold: {:?}",
+            labels
+        );
+    }
+
+    #[test]
+    fn test_chain_completion_map_changes_type() {
+        let source =
+            "fn main() -> unit {\n    let arr: [int] = [1, 2, 3];\n    let x: int = 0;\n}\n";
+        let server = LspServer::new();
+        let line_text = "    arr.iter().map(|x: int| -> string { return int_to_string(x); }).";
+        let items = server.dot_completions(source, line_text);
+        // Should show iterator methods with string element type
+        let collect_item = items.iter().find(|i| i.label == "collect");
+        assert!(collect_item.is_some(), "Should contain collect");
+        assert_eq!(
+            collect_item.unwrap().detail.as_deref(),
+            Some("() -> [string]")
+        );
+    }
+
+    #[test]
+    fn test_chain_completion_enumerate() {
+        let source =
+            "fn main() -> unit {\n    let arr: [int] = [1, 2, 3];\n    let x: int = 0;\n}\n";
+        let server = LspServer::new();
+        let line_text = "    arr.iter().enumerate().";
+        let items = server.dot_completions(source, line_text);
+        let collect_item = items.iter().find(|i| i.label == "collect");
+        assert!(collect_item.is_some(), "Should contain collect");
+        assert_eq!(
+            collect_item.unwrap().detail.as_deref(),
+            Some("() -> [(int, int)]")
+        );
+    }
+
+    #[test]
+    fn test_chain_completion_filter_preserves_type() {
+        let source =
+            "fn main() -> unit {\n    let arr: [int] = [1, 2, 3];\n    let x: int = 0;\n}\n";
+        let server = LspServer::new();
+        let line_text = "    arr.iter().filter(|x: int| -> bool { return x > 0; }).";
+        let items = server.dot_completions(source, line_text);
+        let collect_item = items.iter().find(|i| i.label == "collect");
+        assert!(collect_item.is_some(), "Should contain collect");
+        assert_eq!(collect_item.unwrap().detail.as_deref(), Some("() -> [int]"));
+    }
+
+    #[test]
+    fn test_chain_completion_string_chars() {
+        let source =
+            "fn main() -> unit {\n    let s: string = \"hello\";\n    let x: int = 0;\n}\n";
+        let server = LspServer::new();
+        let line_text = "    s.chars().";
+        let items = server.dot_completions(source, line_text);
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        assert!(labels.contains(&"map"), "Should contain map: {:?}", labels);
+        let collect_item = items.iter().find(|i| i.label == "collect");
+        assert!(collect_item.is_some());
+        assert_eq!(
+            collect_item.unwrap().detail.as_deref(),
+            Some("() -> [char]")
+        );
+    }
+
+    #[test]
+    fn test_chain_completion_collect_returns_array_methods() {
+        let source =
+            "fn main() -> unit {\n    let arr: [int] = [1, 2, 3];\n    let x: int = 0;\n}\n";
+        let server = LspServer::new();
+        let line_text = "    arr.iter().filter(|x: int| -> bool { return x > 0; }).collect().";
+        let items = server.dot_completions(source, line_text);
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        // collect() returns [int], so should show array methods
+        assert!(labels.contains(&"len"), "Should contain len: {:?}", labels);
+        assert!(
+            labels.contains(&"push"),
+            "Should contain push: {:?}",
+            labels
+        );
+        assert!(
+            labels.contains(&"iter"),
+            "Should contain iter: {:?}",
+            labels
+        );
+    }
+
+    #[test]
+    fn test_extract_chain_text_skips_string_literals() {
+        // Literal '(' inside a string should not corrupt depth tracking
+        let result =
+            extract_chain_text("    arr.iter().map(|x: int| -> string { return \"(\"; }).");
+        assert_eq!(
+            result,
+            Some("arr.iter().map(|x: int| -> string { return \"(\"; })".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_chain_text_skips_char_literals() {
+        let result = extract_chain_text("    arr.iter().map(|x: int| -> char { return '('; }).");
+        assert_eq!(
+            result,
+            Some("arr.iter().map(|x: int| -> char { return '('; })".to_string())
+        );
+    }
+
+    #[test]
+    fn test_chain_completion_range_pipeline() {
+        let source = "fn main() -> unit {\n    let x: int = 0;\n}\n";
+        let server = LspServer::new();
+        let line_text = "    (0..10).iter().";
+        let items = server.dot_completions(source, line_text);
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        assert!(labels.contains(&"map"), "Should contain map: {:?}", labels);
+        assert!(
+            labels.contains(&"collect"),
+            "Should contain collect: {:?}",
+            labels
+        );
+        let collect_item = items.iter().find(|i| i.label == "collect");
+        assert_eq!(collect_item.unwrap().detail.as_deref(), Some("() -> [int]"));
+    }
+
+    #[test]
+    fn test_chain_completion_range_map() {
+        let source = "fn main() -> unit {\n    let x: int = 0;\n}\n";
+        let server = LspServer::new();
+        let line_text = "    (0..10).iter().map(|x: int| -> string { return int_to_string(x); }).";
+        let items = server.dot_completions(source, line_text);
+        let collect_item = items.iter().find(|i| i.label == "collect");
+        assert!(collect_item.is_some(), "Should contain collect");
+        assert_eq!(
+            collect_item.unwrap().detail.as_deref(),
+            Some("() -> [string]")
+        );
+    }
+
+    #[test]
+    fn test_chain_completion_reduce_returns_option() {
+        let source =
+            "fn main() -> unit {\n    let arr: [int] = [1, 2, 3];\n    let x: int = 0;\n}\n";
+        let server = LspServer::new();
+        let line_text = "    arr.iter().reduce(|a: int, b: int| -> int { return a + b; }).";
+        let items = server.dot_completions(source, line_text);
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        // reduce returns Option<int>, so should show Option methods
+        assert!(
+            labels.contains(&"unwrap"),
+            "Should contain unwrap: {:?}",
+            labels
+        );
+        assert!(
+            labels.contains(&"is_some"),
+            "Should contain is_some: {:?}",
+            labels
+        );
+        assert!(
+            labels.contains(&"is_none"),
+            "Should contain is_none: {:?}",
+            labels
+        );
     }
 }

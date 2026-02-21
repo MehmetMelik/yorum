@@ -92,10 +92,11 @@ Rationale: No language ecosystem grows without a package manager. Prerequisite f
 
 ## v1.9 — Iterators & Functional Patterns (Done)
 
-- ~~**Iterator trait/protocol** — `for x in expr` works with any type implementing `Iterator`~~
+- ~~**Structural iterator pipelines** — `.iter()` recognized by compiler for arrays, ranges, Sets, Maps; fused into single LLVM loops with no iterator structs~~
 - ~~**Lazy iterator combinators** — `map`, `filter`, `fold`, `take`, `skip`, `zip`, `enumerate`, `chain`~~
 - ~~**Range types as iterators** — `0..n`, `0..=n`~~
 - ~~**`collect()`** — materialize an iterator into an array~~
+- **User-definable Iterator trait/protocol** — not implemented; see Longer-term section
 
 ---
 
@@ -130,6 +131,15 @@ Rationale: No language ecosystem grows without a package manager. Prerequisite f
 
 ---
 
+## v1.12.1 — LSP Chain-Aware Completions (Done)
+
+- ~~**Chain-aware dot-completions:** `.` after any iterator pipeline chain shows correct combinators/terminators with typed signatures derived by walking the AST~~
+- ~~**Type propagation through pipelines:** element types tracked through `.map()` (closure return type), `.enumerate()` (wraps in tuple), `.zip()` (pairs types), `.filter()` (preserves type), `.collect()` (returns array), etc.~~
+- ~~**Non-iterator chain results:** `.collect().` shows array methods, enabling accurate completions after terminators~~
+- ~~**LSP dot-completion fixes:** generic types from v1.12.0 (Set, Map, Task, Chan, Result) now resolve correctly~~
+
+---
+
 ## Longer-term (v2.0+)
 
 | Feature | Notes |
@@ -142,6 +152,45 @@ Rationale: No language ecosystem grows without a package manager. Prerequisite f
 | **Cross-compilation** | Emit LLVM IR for different targets. Platform-specific logic already exists |
 | **Self-hosted compiler parity** | Bring Yorum-in-Yorum up to full-feature parity (generics, closures, traits, multi-file) |
 | **JSON/Regex builtins** | Commonly needed for scripting and web use cases |
+| **Iterator trait/protocol** | User-definable `Iterator` trait so custom types can be iterable. See analysis below |
+| **UTF-8 / Unicode support** | Upgrade `char` from `i8` to `i32` (codepoints). See analysis below |
+
+### Iterator Trait/Protocol — Analysis
+
+Currently, iterator pipelines are **structural**: the compiler recognizes `.iter()` on built-in types (arrays, ranges, Sets, Maps) and `.chars()` on strings, then fuses the entire pipeline into a single LLVM loop. There are no iterator structs, no `next()` method, no vtables.
+
+**Pros of adding Iterator trait:**
+- Custom types become iterable in for-loops (e.g., `for node in tree { ... }`)
+- User-defined data structures can participate in the full pipeline ecosystem (map, filter, collect, etc.)
+- Closer to Rust/Python/Java convention — familiar mental model for users
+- Enables library authors to provide iterable APIs
+
+**Cons of adding Iterator trait:**
+- **Performance regression:** the current approach emits a single fused loop with zero overhead. A trait-based `next()` protocol requires either virtual dispatch (vtables, indirect calls) or monomorphization of every pipeline combination — both are slower or more complex than structural fusion
+- **Complexity explosion:** the codegen currently pattern-matches pipeline shapes at compile time. A trait-based system would need to compose arbitrary combinator chains generically, requiring either a lazy iterator state machine (like Rust) or runtime dispatch
+- **Closures can't implement traits:** Yorum closures are `{ fn_ptr, env_ptr }` pairs with no trait impl mechanism. Adapting combinators like `.map(f)` to work on trait-based iterators would require either trait objects or a different closure model
+- **Limited benefit today:** the 6 built-in sources (array, range, unbounded range, string, Set, Map) cover the vast majority of iteration use cases. Custom iterables are rare in practice
+- **Breaks the "no hidden behavior" principle:** an Iterator trait with `next()` introduces hidden state mutation on each call, which goes against Yorum's deterministic/explicit design
+
+**Recommendation:** keep the structural approach. If user-defined iteration is needed, a simpler alternative is allowing `impl` blocks to define a `to_array()` or `iter()` method that returns `[T]`, which then participates in the existing pipeline system without adding trait-based iteration machinery.
+
+### UTF-8 / Unicode — Analysis
+
+Currently, `char` is `i8` (1 byte, ASCII). All string APIs operate on bytes: `str_len` calls `strlen`, `str_charAt` returns a byte, `.chars()` iterates bytes. This is consistent and unambiguous but breaks on multi-byte UTF-8 input (e.g., `"café".chars()` yields 5 bytes, not 4 characters).
+
+**Rejected approach: dual-type system (`char` + `rune`)**
+
+Adding a `rune` type (`i32`) alongside `char` was considered and rejected. It would create a "which one do I use?" decision at every string operation — exactly the kind of ambiguity Yorum is designed to eliminate. Precedent is negative: Go's `byte`/`rune` split is a common source of bugs, Python 2's `str`/`unicode` was bad enough to justify a breaking Python 3 migration. An LLM generating code would have to choose between two APIs where one silently produces wrong results on non-ASCII input. This violates the "one obvious way" principle.
+
+**Recommended approach: upgrade `char` to `i32` (v2.0)**
+
+Make `char` a 32-bit Unicode codepoint in a major version bump. One type, one set of APIs, no ambiguity. `.chars()` decodes UTF-8 automatically. `str_len` returns codepoint count. Every program handles Unicode correctly by default. This is a breaking change affecting:
+- ABI (`char` from `i8` to `i32`)
+- All char builtins (`char_is_alpha`, `char_to_int`, etc.)
+- All string builtins (`str_charAt`, `str_sub`, `str_len` become O(n) for indexed access)
+- Self-hosted compiler (5,226 lines using `char` for lexing — works because source is ASCII, but type size changes)
+
+**Current status:** Yorum is an ASCII language. This is documented and consistent. UTF-8 support is deferred to v2.0 as a clean breaking change rather than adding a parallel type system that undermines LLM friendliness
 
 ---
 
@@ -161,3 +210,4 @@ The top 3 highest-impact releases:
 10. ~~**v1.10 (Codegen Refactor)** — fat pointer/struct helpers, pipeline deduplication, module extraction~~ **Done**
 11. ~~**v1.11 (Optimizations)** — array repeat `[value; count]`, bounds check elision~~ **Done**
 12. ~~**v1.12 (Iterator Ecosystem)** — `.chain()`, `.flat_map()`, `.flatten()`, `.take_while()`, `.chars()`, `.rev()`, `.sum()`, `.count()`, `.position()`, unbounded ranges, Set/Map `.iter()`~~ **Done**
+13. ~~**v1.12.1 (LSP Chain Completions)** — chain-aware dot-completions with type propagation through iterator pipelines~~ **Done**

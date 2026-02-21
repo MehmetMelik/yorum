@@ -2,6 +2,30 @@
 
 All notable changes to the Yorum programming language compiler.
 
+## [1.10.0] - 2026-02-20
+
+**Codegen Refactor** — Extract helpers, deduplicate boilerplate, and split the monolithic `codegen.rs` into a directory module.
+
+### Changed
+
+- **Fat pointer helpers:** extracted `emit_fat_ptr_load`, `emit_fat_ptr_init`, `emit_fat_ptr_field_load`, `emit_fat_ptr_field_store` to eliminate repeated GEP/load/store boilerplate for array fat pointers
+- **Struct field helpers:** added `emit_struct_gep`, `emit_struct_field_load`, `emit_struct_field_store` for named struct field access
+- **Low-level IR helpers:** added `emit_load`, `emit_alloca_store`, `emit_memcpy`, `emit_cond_branch` to reduce inline format string repetition
+- **Builtin helpers split:** `emit_builtin_helpers` decomposed into 7 thematic sub-methods (`emit_builtin_io_helpers`, `emit_builtin_concurrency_helpers`, `emit_builtin_conversion_helpers`, `emit_builtin_map_core_helpers`, `emit_builtin_math_helpers`, `emit_builtin_string_helpers`, `emit_builtin_collection_helpers`)
+- **Pipeline deduplication:** unified 5 terminator loop prologues into shared `emit_pipeline_loop_header`
+- **Module extraction:** split `codegen.rs` (9,892 lines) into directory module `codegen/`:
+  - `mod.rs` (3,138 lines) — core infrastructure, `emit_expr`, `emit_function`, closures, spawn
+  - `builtins.rs` (3,513 lines) — all `emit_builtin_*`, map/set/networking helpers
+  - `pipelines.rs` (1,609 lines) — pipeline extraction, steps, terminators, `emit_for_range`
+  - `statements.rs` (886 lines) — `emit_let`/`assign`/`if`/`while`/`for`/`match`/`return`
+  - `types.rs` (772 lines) — `llvm_type`, type predicates, tuple management, const folding
+
+All changes are purely mechanical refactoring — no behavior changes.
+
+**Stats:** 7 files changed | Tests: 695 (68 unit + 627 integration)
+
+---
+
 ## [1.9.1] - 2026-02-20
 
 **Iterator Combinators, Terminators & Range Pipelines** — `.enumerate()`, `.zip()`, `.take()`, `.skip()` combinators, `.collect()`, `.fold()`, `.any()`, `.all()`, `.find()`, `.reduce()` terminators, and range expressions as pipeline sources (Phase 3).
@@ -680,6 +704,7 @@ The compiler written in Yorum itself (5,226 lines), achieving bootstrap fixed-po
 
 ---
 
+[1.10.0]: https://github.com/MehmetMelik/yorum/compare/v1.9.1...v1.10.0
 [1.9.1]: https://github.com/MehmetMelik/yorum/compare/v1.9.0...v1.9.1
 [1.9.0]: https://github.com/MehmetMelik/yorum/compare/v1.9.0-beta...v1.9.0
 [1.9.0-beta]: https://github.com/MehmetMelik/yorum/compare/v1.9.0-alpha...v1.9.0-beta

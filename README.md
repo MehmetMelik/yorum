@@ -793,7 +793,7 @@ source.yrm
 | Ownership | `src/compiler/ownership.rs` | Move tracking, use-after-move prevention, must-join enforcement for tasks |
 | Monomorphizer | `src/compiler/monomorphize.rs` | Eliminates generics by cloning concrete instantiations |
 | DCE | `src/compiler/dce.rs` | Dead code elimination via BFS reachability from `main` |
-| Codegen | `src/compiler/codegen.rs` | Textual LLVM IR, alloca/load/store pattern, contract checks, pthread spawn/join |
+| Codegen | `src/compiler/codegen/` | Textual LLVM IR, alloca/load/store pattern, contract checks, pthread spawn/join. Directory module: `mod.rs` (core), `builtins.rs`, `pipelines.rs`, `statements.rs`, `types.rs` |
 | Module Resolver | `src/compiler/module_resolver.rs` | Discovers `.yrm` files, maps filesystem paths to module names |
 | Project Builder | `src/compiler/project.rs` | Reads `yorum.toml`, merges modules, runs compilation pipeline |
 
@@ -871,6 +871,7 @@ cargo test test_fibonacci     # single test by name
 | **v1.9-beta** | Iterator pipelines: `.map()`, `.filter()` with fused for-loop codegen | Done |
 | **v1.9** | Iterator combinators (`.enumerate()`, `.zip()`, `.take()`, `.skip()`) and terminators (`.collect()`, `.fold()`, `.any()`, `.all()`, `.find()`, `.reduce()`) | Done |
 | **v1.9.1** | Range pipeline sources, aggregate codegen fixes, overflow hardening, tuple mangle bug fix, codegen cleanup | Done |
+| **v1.10** | Codegen refactor: fat pointer/struct helpers, pipeline deduplication, module extraction into 5 files | Done |
 
 ## License
 

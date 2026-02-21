@@ -11232,3 +11232,94 @@ fn test_run_flatten_sum() {
         21,
     );
 }
+
+// ── Review fix: unbounded range collect dynamic grow ────────
+
+#[test]
+fn test_run_unbounded_take20_collect() {
+    compile_run_and_check(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = (0..).iter().take(20).collect();\n\
+         \x20   return len(arr);\n\
+         }\n",
+        20,
+    );
+}
+
+// ── Review fix: post-flat_map type tracking ─────────────────
+
+#[test]
+fn test_run_flat_map_map_collect() {
+    compile_run_and_check(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let result: [int] = arr.iter()\n\
+         \x20       .flat_map(|x: int| -> [int] { return [x, x * 10]; })\n\
+         \x20       .map(|v: int| -> int { return v + 100; })\n\
+         \x20       .collect();\n\
+         \x20   return len(result);\n\
+         }\n",
+        6,
+    );
+}
+
+// ── Review fix: reject unsupported post-flat steps ──────────
+
+#[test]
+fn test_skip_after_flat_map_error() {
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let s: int = arr.iter().flat_map(|x: int| -> [int] { return [x]; }).skip(1).sum();\n\
+         \x20   return s;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+    let msg = result.unwrap_err().to_string();
+    assert!(
+        msg.contains("not supported after flat_map"),
+        "expected unsupported error, got: {}",
+        msg
+    );
+}
+
+#[test]
+fn test_enumerate_after_flatten_error() {
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20   let grid: [[int]] = [[1, 2], [3, 4]];\n\
+         \x20   let s: int = grid.iter().flatten().enumerate().count();\n\
+         \x20   return s;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+    let msg = result.unwrap_err().to_string();
+    assert!(
+        msg.contains("not supported after flat_map"),
+        "expected unsupported error, got: {}",
+        msg
+    );
+}
+
+// ── Review fix: reject multiple flat stages ─────────────────
+
+#[test]
+fn test_double_flat_map_error() {
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let s: int = arr.iter()\n\
+         \x20       .flat_map(|x: int| -> [int] { return [x]; })\n\
+         \x20       .flat_map(|x: int| -> [int] { return [x]; })\n\
+         \x20       .sum();\n\
+         \x20   return s;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+    let msg = result.unwrap_err().to_string();
+    assert!(
+        msg.contains("only one flat_map/flatten"),
+        "expected single-flat error, got: {}",
+        msg
+    );
+}

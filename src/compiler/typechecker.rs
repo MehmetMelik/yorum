@@ -1642,6 +1642,19 @@ impl TypeChecker {
         }
     }
 
+    /// Check if a pipeline chain contains a flat_map or flatten step.
+    fn pipeline_has_flat_step(expr: &Expr) -> bool {
+        if let ExprKind::MethodCall(ref receiver, ref method, _) = expr.kind {
+            match method.as_str() {
+                "flat_map" | "flatten" => true,
+                "iter" | "chars" => false,
+                _ => Self::pipeline_has_flat_step(receiver),
+            }
+        } else {
+            false
+        }
+    }
+
     /// Infer the return type of a pipeline terminator expression.
     /// `receiver` is the pipeline chain (e.g., `arr.iter().map(f)`), `method` is the
     /// terminator name, `args` are the terminator arguments.
@@ -2201,6 +2214,14 @@ impl TypeChecker {
                     return None;
                 }
                 "enumerate" => {
+                    if Self::pipeline_has_flat_step(receiver) {
+                        self.errors.push(TypeError {
+                            message: "enumerate() is not supported after flat_map/flatten"
+                                .to_string(),
+                            span: expr.span,
+                        });
+                        return None;
+                    }
                     let input_ty = self.infer_pipeline_elem_type(receiver)?;
                     if !args.is_empty() {
                         self.errors.push(TypeError {
@@ -2215,6 +2236,13 @@ impl TypeChecker {
                     return Some(Type::Tuple(vec![Type::Int, input_ty]));
                 }
                 "zip" => {
+                    if Self::pipeline_has_flat_step(receiver) {
+                        self.errors.push(TypeError {
+                            message: "zip() is not supported after flat_map/flatten".to_string(),
+                            span: expr.span,
+                        });
+                        return None;
+                    }
                     let input_ty = self.infer_pipeline_elem_type(receiver)?;
                     if args.len() != 1 {
                         self.errors.push(TypeError {
@@ -2268,6 +2296,13 @@ impl TypeChecker {
                     return None;
                 }
                 "take" | "skip" => {
+                    if method == "skip" && Self::pipeline_has_flat_step(receiver) {
+                        self.errors.push(TypeError {
+                            message: "skip() is not supported after flat_map/flatten".to_string(),
+                            span: expr.span,
+                        });
+                        return None;
+                    }
                     let input_ty = self.infer_pipeline_elem_type(receiver)?;
                     if args.len() != 1 {
                         self.errors.push(TypeError {
@@ -2401,6 +2436,14 @@ impl TypeChecker {
                     return None;
                 }
                 "flat_map" => {
+                    if Self::pipeline_has_flat_step(receiver) {
+                        self.errors.push(TypeError {
+                            message: "only one flat_map/flatten is allowed per pipeline"
+                                .to_string(),
+                            span: expr.span,
+                        });
+                        return None;
+                    }
                     let input_ty = self.infer_pipeline_elem_type(receiver)?;
                     if args.len() != 1 {
                         self.errors.push(TypeError {
@@ -2453,6 +2496,14 @@ impl TypeChecker {
                     return None;
                 }
                 "flatten" => {
+                    if Self::pipeline_has_flat_step(receiver) {
+                        self.errors.push(TypeError {
+                            message: "only one flat_map/flatten is allowed per pipeline"
+                                .to_string(),
+                            span: expr.span,
+                        });
+                        return None;
+                    }
                     let input_ty = self.infer_pipeline_elem_type(receiver)?;
                     if !args.is_empty() {
                         self.errors.push(TypeError {

@@ -351,17 +351,9 @@ impl Codegen {
                     }
                 }
                 IterStep::Flatten => {
-                    // Flatten unwraps one layer of array — the inner element type
-                    // is computed from the current AST type in the preamble and stored
-                    // in FlatMapInfo. Here we just mark that the type will change.
-                    // The actual type is set correctly during preamble when flat_map_info
-                    // is constructed. For pipeline_final_elem_type, we need to derive
-                    // it from the current LLVM array element type. Since arrays are
-                    // fat pointers { ptr, i64, i64 }, after flatten the element type
-                    // is whatever the inner array's element was. We rely on the
-                    // preamble to provide the correct type via FlatMapInfo.
-                    // For now, mark unchanged — the real type override happens in
-                    // emit_for_flat_pipeline / emit_flat_terminated_pipeline.
+                    // Flatten can't derive inner type from LLVM type alone (arrays are ptr).
+                    // Leave ty unchanged here — callers with FlatMapInfo should use
+                    // pipeline_final_elem_type_with_flat instead.
                 }
                 IterStep::Filter(_)
                 | IterStep::Take(_)
@@ -894,11 +886,32 @@ impl Codegen {
         // Start with source elem type.
         let mut ast_ty: Option<Type> = None;
 
-        // Determine base element type from source
-        if let ExprKind::Ident(ref name) = source.kind {
-            if let Some(Type::Array(ref inner)) = self.var_ast_types.get(name) {
-                ast_ty = Some(*inner.clone());
+        // Determine base element type from source — handle various expression forms
+        match &source.kind {
+            ExprKind::Ident(ref name) => {
+                if let Some(Type::Array(ref inner)) = self.var_ast_types.get(name) {
+                    ast_ty = Some(*inner.clone());
+                }
             }
+            ExprKind::Call(callee, _) => {
+                // Function call: look up return type
+                if let ExprKind::Ident(fn_name) = &callee.kind {
+                    if let Some(Type::Array(ref inner)) = self.fn_ret_types.get(fn_name) {
+                        ast_ty = Some(*inner.clone());
+                    }
+                }
+            }
+            ExprKind::FieldAccess(recv, field) => {
+                // Struct field access: look up field type
+                if let Ok(struct_name) = self.expr_struct_name(recv) {
+                    if let Ok((_, Type::Array(ref inner))) =
+                        self.struct_field_index(&struct_name, field)
+                    {
+                        ast_ty = Some(*inner.clone());
+                    }
+                }
+            }
+            _ => {}
         }
 
         // Walk steps and track type changes
@@ -1020,12 +1033,12 @@ impl Codegen {
 
         // 2. Determine final output type and build context
         let idx_ptr = self.emit_alloca_store("i64", "0");
-        let mut final_elem_ty = self.pipeline_final_elem_type(&src_elem_ty, &pipeline.steps);
-        // For Flatten, the pipeline_final_elem_type can't derive the inner type from LLVM types alone,
-        // so override with the info computed during preamble.
-        if let Some(ref fmi) = flat_map_info {
-            final_elem_ty = fmi.inner_elem_ty.clone();
-        }
+        let final_elem_ty = if let Some(ref fmi) = flat_map_info {
+            let post_steps = &pipeline.steps[fmi.step_index + 1..];
+            self.pipeline_final_elem_type(&fmi.inner_elem_ty, post_steps)
+        } else {
+            self.pipeline_final_elem_type(&src_elem_ty, &pipeline.steps)
+        };
         let ctx = PipelineContext {
             data_ptr,
             len_val,
@@ -1292,9 +1305,12 @@ impl Codegen {
                         self.emit_cond_branch(&result, &next_label, &outer_end);
                     }
                     _ => {
-                        if is_last {
-                            self.emit_line(&format!("br label %{}", next_label));
-                        }
+                        return Err(CodegenError {
+                            message: format!(
+                                "unsupported combinator after flat_map/flatten: {:?}",
+                                step.name()
+                            ),
+                        });
                     }
                 }
                 if !is_last && !matches!(step, IterStep::Filter(_) | IterStep::TakeWhile(_)) {
@@ -1561,9 +1577,12 @@ impl Codegen {
                         self.emit_cond_branch(&result, &next_label, &outer_end);
                     }
                     _ => {
-                        if is_last {
-                            self.emit_line(&format!("br label %{}", next_label));
-                        }
+                        return Err(CodegenError {
+                            message: format!(
+                                "unsupported combinator after flat_map/flatten: {:?}",
+                                step.name()
+                            ),
+                        });
                     }
                 }
                 if !is_last && !matches!(step, IterStep::Filter(_) | IterStep::TakeWhile(_)) {
@@ -1848,10 +1867,13 @@ impl Codegen {
         };
 
         // Determine element type after all pipeline steps (before terminator)
-        let mut final_elem_ty = self.pipeline_final_elem_type(&src_elem_ty, &pipeline.steps);
-        if let Some(ref fmi) = flat_map_info {
-            final_elem_ty = fmi.inner_elem_ty.clone();
-        }
+        let final_elem_ty = if let Some(ref fmi) = flat_map_info {
+            // Start from the flattened inner type, then walk post-flat steps
+            let post_steps = &pipeline.steps[fmi.step_index + 1..];
+            self.pipeline_final_elem_type(&fmi.inner_elem_ty, post_steps)
+        } else {
+            self.pipeline_final_elem_type(&src_elem_ty, &pipeline.steps)
+        };
 
         // 3. Alloca for index counter and build context
         let idx_ptr = self.emit_alloca_store("i64", "0");
@@ -2380,7 +2402,7 @@ impl Codegen {
             safe_len, len_over, max_safe_elems, ctx.len_val
         ));
 
-        // Allocate output array with capacity = safe_len
+        // Allocate output array with initial capacity = safe_len
         let out_bytes = self.fresh_temp();
         self.emit_line(&format!(
             "{} = mul i64 {}, {}",
@@ -2393,28 +2415,96 @@ impl Codegen {
         ));
         let out_idx_ptr = self.emit_alloca_store("i64", "0");
 
+        // For unbounded ranges, use dynamic grow-on-push (cap is just a hint)
+        let cap_ptr = if ctx.is_unbounded_range {
+            Some(self.emit_alloca_store("i64", &safe_len))
+        } else {
+            None
+        };
+        let data_ptr_ptr = if ctx.is_unbounded_range {
+            Some(self.emit_alloca_store("ptr", &out_data))
+        } else {
+            None
+        };
+
         let lp = self.emit_pipeline_loop_header("col", ctx, steps)?;
 
-        // Body: store element to output array (guard against exceeding safe_len)
+        // Body: store element to output array
         let out_idx = self.emit_load("i64", &out_idx_ptr);
-        let cap_ok = self.fresh_temp();
-        self.emit_line(&format!(
-            "{} = icmp slt i64 {}, {}",
-            cap_ok, out_idx, safe_len
-        ));
-        let store_label = self.fresh_label("col.store");
-        self.emit_cond_branch(&cap_ok, &store_label, &lp.end_label);
-        self.emit_label(&store_label);
-        self.block_terminated = false;
-        let out_gep = self.fresh_temp();
-        self.emit_line(&format!(
-            "{} = getelementptr {}, ptr {}, i64 {}",
-            out_gep, ctx.final_elem_ty, out_data, out_idx
-        ));
-        self.emit_line(&format!(
-            "store {} {}, ptr {}",
-            ctx.final_elem_ty, lp.current_val, out_gep
-        ));
+
+        if ctx.is_unbounded_range {
+            // Dynamic grow path: check len >= cap, realloc if needed
+            let cur_cap = self.emit_load("i64", cap_ptr.as_ref().unwrap());
+            let cur_data = self.emit_load("ptr", data_ptr_ptr.as_ref().unwrap());
+            let needs_grow = self.fresh_temp();
+            self.emit_line(&format!(
+                "{} = icmp sge i64 {}, {}",
+                needs_grow, out_idx, cur_cap
+            ));
+            let grow_label = self.fresh_label("col.grow");
+            let store_label = self.fresh_label("col.store");
+            self.emit_cond_branch(&needs_grow, &grow_label, &store_label);
+
+            self.emit_label(&grow_label);
+            self.block_terminated = false;
+            let new_cap = self.fresh_temp();
+            self.emit_line(&format!("{} = mul i64 {}, 2", new_cap, cur_cap));
+            let new_bytes = self.fresh_temp();
+            self.emit_line(&format!(
+                "{} = mul i64 {}, {}",
+                new_bytes, new_cap, elem_size
+            ));
+            let new_data = self.fresh_temp();
+            self.emit_line(&format!(
+                "{} = call ptr @realloc(ptr {}, i64 {})",
+                new_data, cur_data, new_bytes
+            ));
+            self.emit_line(&format!(
+                "store ptr {}, ptr {}",
+                new_data,
+                data_ptr_ptr.as_ref().unwrap()
+            ));
+            self.emit_line(&format!(
+                "store i64 {}, ptr {}",
+                new_cap,
+                cap_ptr.as_ref().unwrap()
+            ));
+            self.emit_line(&format!("br label %{}", store_label));
+
+            self.emit_label(&store_label);
+            self.block_terminated = false;
+            let data_final = self.emit_load("ptr", data_ptr_ptr.as_ref().unwrap());
+            let out_gep = self.fresh_temp();
+            self.emit_line(&format!(
+                "{} = getelementptr {}, ptr {}, i64 {}",
+                out_gep, ctx.final_elem_ty, data_final, out_idx
+            ));
+            self.emit_line(&format!(
+                "store {} {}, ptr {}",
+                ctx.final_elem_ty, lp.current_val, out_gep
+            ));
+        } else {
+            // Fixed-size path: guard against exceeding safe_len
+            let cap_ok = self.fresh_temp();
+            self.emit_line(&format!(
+                "{} = icmp slt i64 {}, {}",
+                cap_ok, out_idx, safe_len
+            ));
+            let store_label = self.fresh_label("col.store");
+            self.emit_cond_branch(&cap_ok, &store_label, &lp.end_label);
+            self.emit_label(&store_label);
+            self.block_terminated = false;
+            let out_gep = self.fresh_temp();
+            self.emit_line(&format!(
+                "{} = getelementptr {}, ptr {}, i64 {}",
+                out_gep, ctx.final_elem_ty, out_data, out_idx
+            ));
+            self.emit_line(&format!(
+                "store {} {}, ptr {}",
+                ctx.final_elem_ty, lp.current_val, out_gep
+            ));
+        }
+
         let next_out = self.fresh_temp();
         self.emit_line(&format!("{} = add i64 {}, 1", next_out, out_idx));
         self.emit_line(&format!("store i64 {}, ptr {}", next_out, out_idx_ptr));
@@ -2424,9 +2514,16 @@ impl Codegen {
         self.emit_label(&lp.end_label);
         self.block_terminated = false;
         let final_len = self.emit_load("i64", &out_idx_ptr);
+        let (final_data, final_cap) = if ctx.is_unbounded_range {
+            let d = self.emit_load("ptr", data_ptr_ptr.as_ref().unwrap());
+            let c = self.emit_load("i64", cap_ptr.as_ref().unwrap());
+            (d, c)
+        } else {
+            (out_data.clone(), safe_len.clone())
+        };
         let fat = self.fresh_temp();
         self.emit_line(&format!("{} = alloca {{ ptr, i64, i64 }}", fat));
-        self.emit_fat_ptr_init(&fat, &out_data, &final_len, &safe_len);
+        self.emit_fat_ptr_init(&fat, &final_data, &final_len, &final_cap);
         Ok(fat)
     }
 

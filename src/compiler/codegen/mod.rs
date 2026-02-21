@@ -72,6 +72,24 @@ pub(crate) enum IterStep<'a> {
     Flatten,
 }
 
+impl IterStep<'_> {
+    pub(crate) fn name(&self) -> &'static str {
+        match self {
+            IterStep::Map(_) => "map",
+            IterStep::Filter(_) => "filter",
+            IterStep::Enumerate => "enumerate",
+            IterStep::Zip(_) => "zip",
+            IterStep::Take(_) => "take",
+            IterStep::Skip(_) => "skip",
+            IterStep::Chain(_) => "chain",
+            IterStep::TakeWhile(_) => "take_while",
+            IterStep::Rev => "rev",
+            IterStep::FlatMap(_) => "flat_map",
+            IterStep::Flatten => "flatten",
+        }
+    }
+}
+
 /// Pre-emitted flat_map/flatten info for nested loop emission.
 pub(crate) struct FlatMapInfo {
     pub(crate) closure_info: Option<ClosureInfo>, // None for flatten

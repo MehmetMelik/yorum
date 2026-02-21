@@ -794,13 +794,41 @@ fn extract_chain_text(line: &str) -> Option<String> {
     if !trimmed.contains('(') {
         return None;
     }
-    // Scan backwards from end, tracking bracket depth
+    // Scan backwards from end, tracking bracket depth.
+    // Skip characters inside string and char literals to avoid
+    // corrupting depth counts on literal delimiters like '(' in strings.
     let chars: Vec<char> = trimmed.chars().collect();
     let mut depth_paren = 0i32;
     let mut depth_brace = 0i32;
     let mut depth_bracket = 0i32;
     let mut start = 0;
-    for i in (0..chars.len()).rev() {
+    let mut i = chars.len();
+    while i > 0 {
+        i -= 1;
+        // Skip char literals: scan backwards past 'x' or '\n' sequences
+        if chars[i] == '\'' && i >= 2 {
+            // Could be 'x' (len 3) or '\n' (len 4)
+            if chars[i - 2] == '\'' {
+                i -= 2;
+                continue;
+            } else if i >= 3 && chars[i - 3] == '\'' && chars[i - 2] == '\\' {
+                i -= 3;
+                continue;
+            }
+        }
+        // Skip string literals: scan backwards to the opening quote
+        if chars[i] == '"' {
+            if i > 0 {
+                i -= 1;
+                while i > 0 {
+                    if chars[i] == '"' && (i == 0 || chars[i - 1] != '\\') {
+                        break;
+                    }
+                    i -= 1;
+                }
+            }
+            continue;
+        }
         match chars[i] {
             ')' => depth_paren += 1,
             '(' => {
@@ -1069,18 +1097,34 @@ fn walk_chain_type(
                         is_iterator: false,
                     })
                 }
-                "fold" | "reduce" => {
+                "fold" => {
                     if !recv.is_iterator {
                         return None;
                     }
-                    // Result type depends on closure, hard to determine — use generic
+                    // Result type depends on init value and closure, use element type
                     Some(ChainType {
                         elem_type: recv.elem_type,
                         is_iterator: false,
                     })
                 }
+                "reduce" => {
+                    if !recv.is_iterator {
+                        return None;
+                    }
+                    Some(ChainType {
+                        elem_type: format!("Option<{}>", recv.elem_type),
+                        is_iterator: false,
+                    })
+                }
                 _ => None,
             }
+        }
+        ExprKind::Range(..) | ExprKind::RangeInclusive(..) | ExprKind::RangeFrom(..) => {
+            // Range expressions produce int sequences — not yet iterated
+            Some(ChainType {
+                elem_type: "[int]".to_string(),
+                is_iterator: false,
+            })
         }
         _ => None,
     }
@@ -1707,6 +1751,83 @@ mod tests {
         assert!(
             labels.contains(&"iter"),
             "Should contain iter: {:?}",
+            labels
+        );
+    }
+
+    #[test]
+    fn test_extract_chain_text_skips_string_literals() {
+        // Literal '(' inside a string should not corrupt depth tracking
+        let result =
+            extract_chain_text("    arr.iter().map(|x: int| -> string { return \"(\"; }).");
+        assert_eq!(
+            result,
+            Some("arr.iter().map(|x: int| -> string { return \"(\"; })".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_chain_text_skips_char_literals() {
+        let result = extract_chain_text("    arr.iter().map(|x: int| -> char { return '('; }).");
+        assert_eq!(
+            result,
+            Some("arr.iter().map(|x: int| -> char { return '('; })".to_string())
+        );
+    }
+
+    #[test]
+    fn test_chain_completion_range_pipeline() {
+        let source = "fn main() -> unit {\n    let x: int = 0;\n}\n";
+        let server = LspServer::new();
+        let line_text = "    (0..10).iter().";
+        let items = server.dot_completions(source, line_text);
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        assert!(labels.contains(&"map"), "Should contain map: {:?}", labels);
+        assert!(
+            labels.contains(&"collect"),
+            "Should contain collect: {:?}",
+            labels
+        );
+        let collect_item = items.iter().find(|i| i.label == "collect");
+        assert_eq!(collect_item.unwrap().detail.as_deref(), Some("() -> [int]"));
+    }
+
+    #[test]
+    fn test_chain_completion_range_map() {
+        let source = "fn main() -> unit {\n    let x: int = 0;\n}\n";
+        let server = LspServer::new();
+        let line_text = "    (0..10).iter().map(|x: int| -> string { return int_to_string(x); }).";
+        let items = server.dot_completions(source, line_text);
+        let collect_item = items.iter().find(|i| i.label == "collect");
+        assert!(collect_item.is_some(), "Should contain collect");
+        assert_eq!(
+            collect_item.unwrap().detail.as_deref(),
+            Some("() -> [string]")
+        );
+    }
+
+    #[test]
+    fn test_chain_completion_reduce_returns_option() {
+        let source =
+            "fn main() -> unit {\n    let arr: [int] = [1, 2, 3];\n    let x: int = 0;\n}\n";
+        let server = LspServer::new();
+        let line_text = "    arr.iter().reduce(|a: int, b: int| -> int { return a + b; }).";
+        let items = server.dot_completions(source, line_text);
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        // reduce returns Option<int>, so should show Option methods
+        assert!(
+            labels.contains(&"unwrap"),
+            "Should contain unwrap: {:?}",
+            labels
+        );
+        assert!(
+            labels.contains(&"is_some"),
+            "Should contain is_some: {:?}",
+            labels
+        );
+        assert!(
+            labels.contains(&"is_none"),
+            "Should contain is_none: {:?}",
             labels
         );
     }

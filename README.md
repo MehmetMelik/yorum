@@ -979,7 +979,7 @@ diff gen1.ll gen2.ll    # identical — fixed-point achieved
 ## Testing
 
 ```bash
-cargo test                    # 756 tests (68 unit + 688 integration)
+cargo test                    # 837 tests (81 unit + 756 integration)
 cargo test compiler::lexer    # tests in one module
 cargo test test_fibonacci     # single test by name
 ```
@@ -1026,6 +1026,7 @@ cargo test test_fibonacci     # single test by name
 | **v1.10** | Codegen refactor: fat pointer/struct helpers, pipeline deduplication, module extraction into 5 files | Done |
 | **v1.11** | Array repeat syntax `[value; count]`, bounds check elision for `for i in 0..len(arr)` loops | Done |
 | **v1.12** | Iterator ecosystem: `.chain()`, `.flat_map()`, `.flatten()`, `.take_while()`, `.chars()`, `.rev()`, `.sum()`, `.count()`, `.position()`, unbounded ranges, Set/Map `.iter()`, codegen hardening | Done |
+| **v1.12.1** | LSP chain-aware dot-completions with type propagation through iterator pipelines | Done |
 
 ## License
 

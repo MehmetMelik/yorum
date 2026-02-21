@@ -2,6 +2,33 @@
 
 All notable changes to the Yorum programming language compiler.
 
+## [1.12.1] - 2026-02-21
+
+**LSP Chain-Aware Completions** — Dot-completions now work after any point in an iterator pipeline chain, with accurate element types derived by walking the AST through `.map()`, `.filter()`, `.enumerate()`, `.zip()`, and all other combinators/terminators.
+
+### Added
+
+- **Chain-aware dot-completions:** typing `.` after `arr.iter()`, `arr.iter().map(|x: int| -> string { ... })`, or any pipeline chain now shows the correct iterator combinators and terminators with typed signatures. Element types are propagated through each pipeline step — e.g., after `.map(|x: int| -> string { ... })`, `.collect()` shows `() -> [string]`
+- **Chain text extraction:** `extract_chain_text()` scans backwards from the trailing dot, tracking `()`, `{}`, `[]` depth to extract the full method chain expression from the line text
+- **AST-based chain parsing:** `parse_chain_expr()` wraps the chain in a synthetic function, parses it with the real Yorum parser, and extracts the expression AST node for type-safe analysis
+- **Type propagation engine:** `walk_chain_type()` recursively walks nested `MethodCall` AST nodes, propagating element types through all 11 combinators and 9 terminators. Reads closure return type annotations directly from the AST (no type inference needed)
+- **Iterator completion list:** `iterator_methods()` returns typed completions for `map`, `filter`, `enumerate`, `zip`, `take`, `skip`, `chain`, `take_while`, `rev`, `flat_map`, `flatten`, `collect`, `fold`, `reduce`, `any`, `all`, `find`, `sum`, `count`, `position` — all parameterized by the resolved element type
+- **Non-iterator chain results:** `.collect().` on a pipeline correctly shows array methods (`len`, `push`, `iter`, etc.) since `collect()` returns `[T]`
+- 13 new unit tests for chain completion (extract_chain_text, parse_chain_expr, walk_chain_type, end-to-end scenarios)
+
+### Fixed
+
+- **LSP dot-completion for v1.12.0 features:** completions now correctly resolve types for `Set<T>`, `Map<K,V>`, `Task<T>`, `Chan<T>`, `Result<T,E>`, and other generic types introduced or expanded in v1.12.0
+
+### Changed
+
+- Expanded README iterator pipelines code example with comprehensive coverage of all combinators and terminators
+- Updated ROADMAP with iterator trait/protocol analysis and UTF-8/Unicode analysis
+
+**Stats:** 3 files changed, +771 -59 | Tests: 837 (81 unit + 756 integration)
+
+---
+
 ## [1.12.0] - 2026-02-21
 
 **Iterator Ecosystem** — Complete iterator pipeline expansion: `.chain()`, `.flat_map()`, `.flatten()`, `.take_while()`, `.chars()`, `.rev()`, `.sum()`, `.count()`, `.position()`, `.clear()`, unbounded ranges, `Set.iter()`, `Map.iter()`, and extensive codegen hardening.
@@ -771,6 +798,7 @@ The compiler written in Yorum itself (5,226 lines), achieving bootstrap fixed-po
 
 ---
 
+[1.12.1]: https://github.com/MehmetMelik/yorum/compare/v1.12.0...v1.12.1
 [1.12.0]: https://github.com/MehmetMelik/yorum/compare/v1.11.0...v1.12.0
 [1.11.0]: https://github.com/MehmetMelik/yorum/compare/v1.10.0...v1.11.0
 [1.10.0]: https://github.com/MehmetMelik/yorum/compare/v1.9.1...v1.10.0

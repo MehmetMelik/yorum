@@ -131,6 +131,15 @@ Rationale: No language ecosystem grows without a package manager. Prerequisite f
 
 ---
 
+## v1.12.1 — LSP Chain-Aware Completions (Done)
+
+- ~~**Chain-aware dot-completions:** `.` after any iterator pipeline chain shows correct combinators/terminators with typed signatures derived by walking the AST~~
+- ~~**Type propagation through pipelines:** element types tracked through `.map()` (closure return type), `.enumerate()` (wraps in tuple), `.zip()` (pairs types), `.filter()` (preserves type), `.collect()` (returns array), etc.~~
+- ~~**Non-iterator chain results:** `.collect().` shows array methods, enabling accurate completions after terminators~~
+- ~~**LSP dot-completion fixes:** generic types from v1.12.0 (Set, Map, Task, Chan, Result) now resolve correctly~~
+
+---
+
 ## Longer-term (v2.0+)
 
 | Feature | Notes |
@@ -201,3 +210,4 @@ The top 3 highest-impact releases:
 10. ~~**v1.10 (Codegen Refactor)** — fat pointer/struct helpers, pipeline deduplication, module extraction~~ **Done**
 11. ~~**v1.11 (Optimizations)** — array repeat `[value; count]`, bounds check elision~~ **Done**
 12. ~~**v1.12 (Iterator Ecosystem)** — `.chain()`, `.flat_map()`, `.flatten()`, `.take_while()`, `.chars()`, `.rev()`, `.sum()`, `.count()`, `.position()`, unbounded ranges, Set/Map `.iter()`~~ **Done**
+13. ~~**v1.12.1 (LSP Chain Completions)** — chain-aware dot-completions with type propagation through iterator pipelines~~ **Done**

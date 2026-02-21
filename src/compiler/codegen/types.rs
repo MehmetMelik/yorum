@@ -719,6 +719,40 @@ impl Codegen {
                 }
                 None
             }
+            ExprKind::Call(callee, _) => {
+                // Function calls: look up return type
+                if let ExprKind::Ident(name) = &callee.kind {
+                    if let Some(ret_ty) = self.fn_ret_types.get(name.as_str()) {
+                        let llvm_ty = self.llvm_type(ret_ty);
+                        if let Some(stripped) = llvm_ty.strip_prefix('%') {
+                            if self.enum_layouts.contains_key(stripped) {
+                                return Some(stripped.to_string());
+                            }
+                        }
+                    }
+                }
+                None
+            }
+            ExprKind::MethodCall(receiver, method, _) => {
+                // Pipeline terminators that return Option types.
+                // The enum layout may not exist yet (it gets created during codegen),
+                // so we return the name unconditionally for known terminators.
+                if Self::has_iter_base(receiver) {
+                    match method.as_str() {
+                        "position" => {
+                            return Some("Option__int".to_string());
+                        }
+                        "find" | "reduce" => {
+                            let llvm_ty = self.expr_llvm_type(expr);
+                            if let Some(stripped) = llvm_ty.strip_prefix('%') {
+                                return Some(stripped.to_string());
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                None
+            }
             _ => None,
         }
     }

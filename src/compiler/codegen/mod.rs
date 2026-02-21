@@ -470,7 +470,6 @@ impl Codegen {
             self.emit_debug_preamble();
         }
         self.register_types(program);
-        self.emit_type_defs();
         self.emit_builtin_decls();
         self.emit_builtin_helpers();
 
@@ -683,6 +682,10 @@ impl Codegen {
                 _ => {}
             }
         }
+
+        // Emit type definitions after all functions (some enum layouts are
+        // lazily registered during codegen, e.g. Option for pipeline terminators)
+        self.emit_type_defs();
 
         // Assemble final output
         let mut output = String::new();
@@ -2096,14 +2099,20 @@ impl Codegen {
             }
             _ => {
                 // For complex expressions that return aggregate types (e.g., function calls
-                // returning structs), store to a temp alloca and return the alloca pointer
+                // returning structs), store to a temp alloca and return the alloca pointer.
+                // If the expression already returns an alloca pointer (e.g., pipeline
+                // terminators like find/position/reduce), use it directly.
                 let val = self.emit_expr(expr)?;
-                let llvm_ty = self.expr_llvm_type(expr);
-                if Self::is_aggregate_type(&llvm_ty) {
-                    let tmp = self.emit_alloca_store(&llvm_ty, &val);
-                    Ok(tmp)
-                } else {
+                if self.expr_returns_ptr(expr) {
                     Ok(val)
+                } else {
+                    let llvm_ty = self.expr_llvm_type(expr);
+                    if Self::is_aggregate_type(&llvm_ty) {
+                        let tmp = self.emit_alloca_store(&llvm_ty, &val);
+                        Ok(tmp)
+                    } else {
+                        Ok(val)
+                    }
                 }
             }
         }
@@ -3288,6 +3297,35 @@ impl Codegen {
         let n = self.label_counter;
         self.label_counter += 1;
         format!("{}.{}", prefix, n)
+    }
+
+    /// Ensure an Option enum layout exists for the given LLVM element type.
+    /// Called by pipeline terminators (position, find, reduce) that construct
+    /// Option values at the codegen level, since the monomorphizer may not have
+    /// created the declaration if the result is never bound to a typed variable.
+    pub(crate) fn ensure_option_enum_for_llvm_type(&mut self, llvm_ty: &str) {
+        let option_name = self.yorum_type_to_option_name(llvm_ty);
+        if !self.enum_layouts.contains_key(&option_name) {
+            let inner_type = match llvm_ty {
+                "i64" => Type::Int,
+                "double" => Type::Float,
+                "i1" => Type::Bool,
+                "i8" => Type::Char,
+                "ptr" => Type::Str,
+                _ => Type::Int, // fallback
+            };
+            self.enum_layouts.insert(
+                option_name.clone(),
+                EnumLayout {
+                    name: option_name,
+                    variants: vec![
+                        ("Some".to_string(), vec![inner_type]),
+                        ("None".to_string(), vec![]),
+                    ],
+                    tag_count: 2,
+                },
+            );
+        }
     }
 
     /// GEP into a named struct field `%StructName`. Returns the GEP pointer temp.

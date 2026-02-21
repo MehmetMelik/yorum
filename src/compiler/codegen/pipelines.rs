@@ -1,6 +1,48 @@
 use super::*;
 
 impl Codegen {
+    /// Infer if an expression produces a Set or Map collection.
+    /// Returns the mangled type name (e.g., "Set__int", "Map__string__int") or None.
+    pub(crate) fn infer_collection_type(&self, expr: &Expr) -> Option<String> {
+        match &expr.kind {
+            ExprKind::Ident(name) => {
+                if let Some(Type::Named(ref mangled)) = self.var_ast_types.get(name) {
+                    if mangled.starts_with("Set__") || mangled.starts_with("Map__") {
+                        return Some(mangled.clone());
+                    }
+                }
+                None
+            }
+            ExprKind::Call(callee, _) => {
+                if let ExprKind::Ident(name) = &callee.kind {
+                    if let Some(Type::Named(ref mangled)) = self.fn_ret_types.get(name.as_str()) {
+                        if mangled.starts_with("Set__") || mangled.starts_with("Map__") {
+                            return Some(mangled.clone());
+                        }
+                    }
+                }
+                None
+            }
+            ExprKind::FieldAccess(obj, field) => {
+                if let ExprKind::Ident(obj_name) = &obj.kind {
+                    if let Some(slot) = self.lookup_var(obj_name) {
+                        if let Some(struct_name) = slot.llvm_ty.strip_prefix('%') {
+                            if let Ok((_, Type::Named(ref mangled))) =
+                                self.struct_field_index(struct_name, field)
+                            {
+                                if mangled.starts_with("Set__") || mangled.starts_with("Map__") {
+                                    return Some(mangled.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
     /// Try to extract an iterator pipeline from an expression.
     /// Walks a MethodCall chain right-to-left, recognizing .map(closure) and
     /// .filter(closure) steps. Base case: .iter() on a non-struct receiver.
@@ -323,12 +365,7 @@ impl Codegen {
         src_elem_ty: &str,
         steps: &[IterStep<'_>],
     ) -> String {
-        // For chars() source, the effective element type is i32 (char) after sext
-        let mut ty = if src_elem_ty == "i8" {
-            "i32".to_string()
-        } else {
-            src_elem_ty.to_string()
-        };
+        let mut ty = src_elem_ty.to_string();
         for step in steps {
             match step {
                 IterStep::Map(c) => {
@@ -476,20 +513,8 @@ impl Codegen {
                 (data_ptr, len_val, src_elem_ty, None, None)
             }
         } else {
-            // Check if source is a Set or Map variable (monomorphized to Type::Named)
-            let collection_mangled = if let ExprKind::Ident(ref name) = source.kind {
-                if let Some(Type::Named(ref mangled)) = self.var_ast_types.get(name) {
-                    if mangled.starts_with("Set__") || mangled.starts_with("Map__") {
-                        Some(mangled.clone())
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
+            // Check if source is a Set or Map (monomorphized to Type::Named)
+            let collection_mangled = self.infer_collection_type(source);
 
             if let Some(ref mangled) = collection_mangled {
                 if let Some(suffix) = mangled.strip_prefix("Set__") {
@@ -2085,13 +2110,6 @@ impl Codegen {
             self.emit_load(load_elem_ty, &elem_gep)
         };
 
-        // For chars() source, sext i8 → i32 so downstream closures see char type
-        if ctx.src_elem_ty == "i8" {
-            let char_val = self.fresh_temp();
-            self.emit_line(&format!("{} = sext i8 {} to i32", char_val, current_val));
-            current_val = char_val;
-        }
-
         // For Map.iter(): current_val is the key; load value and construct (K, V) tuple
         if let Some(ref mii) = ctx.map_iter_info {
             let val_gep = self.fresh_temp();
@@ -2125,12 +2143,8 @@ impl Codegen {
         self.emit_line(&format!("{} = add i64 {}, 1", next_idx, cur_idx));
         self.emit_line(&format!("store i64 {}, ptr {}", next_idx, ctx.idx_ptr));
 
-        // Apply each pipeline step — use i32 as the effective type for chars() pipelines
-        let mut current_ty = if ctx.src_elem_ty == "i8" {
-            "i32".to_string()
-        } else {
-            ctx.src_elem_ty.to_string()
-        };
+        // Apply each pipeline step
+        let mut current_ty = ctx.src_elem_ty.to_string();
         let step_count = steps.len();
         for (i, step) in steps.iter().enumerate() {
             let is_last = i + 1 == step_count;
@@ -2622,6 +2636,7 @@ impl Codegen {
         term_fn_ptr: &str,
         term_env_ptr: &str,
     ) -> Result<String, CodegenError> {
+        self.ensure_option_enum_for_llvm_type(&ctx.final_elem_ty);
         let option_name = self.yorum_type_to_option_name(&ctx.final_elem_ty);
         let option_llvm = format!("%{}", option_name);
 
@@ -2670,6 +2685,7 @@ impl Codegen {
         term_env_ptr: &str,
         ret_ty: &str,
     ) -> Result<String, CodegenError> {
+        self.ensure_option_enum_for_llvm_type(&ctx.final_elem_ty);
         let option_name = self.yorum_type_to_option_name(&ctx.final_elem_ty);
         let option_llvm = format!("%{}", option_name);
 
@@ -2834,6 +2850,7 @@ impl Codegen {
         term_fn_ptr: &str,
         term_env_ptr: &str,
     ) -> Result<String, CodegenError> {
+        self.ensure_option_enum_for_llvm_type("i64");
         let option_name = self.yorum_type_to_option_name("i64"); // Option<int>
         let option_llvm = format!("%{}", option_name);
 

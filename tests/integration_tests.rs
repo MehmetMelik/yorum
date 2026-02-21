@@ -10488,7 +10488,8 @@ fn test_for_chars_basic() {
          }\n",
     );
     assert!(ir.contains("@strlen"));
-    assert!(ir.contains("sext i8"));
+    // Loop variable is i8 (char), loaded directly without sext
+    assert!(ir.contains("load i8"));
 }
 
 #[test]
@@ -11321,5 +11322,68 @@ fn test_double_flat_map_error() {
         msg.contains("only one flat_map/flatten"),
         "expected single-flat error, got: {}",
         msg
+    );
+}
+
+// ── Fix: chars().collect() stores i8 elements consistently ──
+
+#[test]
+fn test_run_chars_collect_access() {
+    compile_run_and_check(
+        "fn main() -> int {\n\
+         \x20   let s: string = \"Hello\";\n\
+         \x20   let chars: [char] = s.chars().collect();\n\
+         \x20   let c: char = chars[1];\n\
+         \x20   if c == 'e' { return 42; }\n\
+         \x20   return 0;\n\
+         }\n",
+        42,
+    );
+}
+
+// ── Fix: for c in s.chars() uses i8 variable type ──
+
+#[test]
+fn test_run_for_chars_comparison() {
+    compile_run_and_check(
+        "fn main() -> int {\n\
+         \x20   let s: string = \"Hello\";\n\
+         \x20   let mut count: int = 0;\n\
+         \x20   for c in s.chars() {\n\
+         \x20       if c == 'l' { count += 1; }\n\
+         \x20   }\n\
+         \x20   return count;\n\
+         }\n",
+        2,
+    );
+}
+
+// ── Fix: position()/find() direct match without let binding ──
+
+#[test]
+fn test_run_position_direct_match() {
+    compile_run_and_check(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [10, 20, 30];\n\
+         \x20   match arr.iter().position(|x: int| -> bool { return x == 30; }) {\n\
+         \x20       Some(idx) => { return idx; }\n\
+         \x20       None => { return 99; }\n\
+         \x20   }\n\
+         }\n",
+        2,
+    );
+}
+
+#[test]
+fn test_run_find_direct_match() {
+    compile_run_and_check(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [10, 20, 30];\n\
+         \x20   match arr.iter().find(|x: int| -> bool { return x == 30; }) {\n\
+         \x20       Some(val) => { return val; }\n\
+         \x20       None => { return 99; }\n\
+         \x20   }\n\
+         }\n",
+        30,
     );
 }

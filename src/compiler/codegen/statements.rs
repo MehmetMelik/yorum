@@ -633,30 +633,23 @@ impl Codegen {
         // Bare Set.iter() or Map.iter() → materialize to array(s) and iterate
         if let ExprKind::MethodCall(ref receiver, ref method, ref args) = s.iterable.kind {
             if method == "iter" && args.is_empty() {
-                if let ExprKind::Ident(ref name) = receiver.kind {
-                    if let Some(Type::Named(ref mangled)) = self.var_ast_types.get(name).cloned() {
-                        if let Some(suffix) = mangled.strip_prefix("Set__") {
-                            let elem_type = Self::yorum_name_to_ast_type(suffix);
-                            return self.emit_for_set_iter(
+                if let Some(mangled) = self.infer_collection_type(receiver) {
+                    if let Some(suffix) = mangled.strip_prefix("Set__") {
+                        let elem_type = Self::yorum_name_to_ast_type(suffix);
+                        return self.emit_for_set_iter(&s.var_name, receiver, &elem_type, &s.body);
+                    }
+                    if let Some(suffix) = mangled.strip_prefix("Map__") {
+                        let parts: Vec<&str> = suffix.splitn(2, "__").collect();
+                        if parts.len() == 2 {
+                            let key_type = Self::yorum_name_to_ast_type(parts[0]);
+                            let val_type = Self::yorum_name_to_ast_type(parts[1]);
+                            return self.emit_for_map_iter(
                                 &s.var_name,
                                 receiver,
-                                &elem_type,
+                                &key_type,
+                                &val_type,
                                 &s.body,
                             );
-                        }
-                        if let Some(suffix) = mangled.strip_prefix("Map__") {
-                            let parts: Vec<&str> = suffix.splitn(2, "__").collect();
-                            if parts.len() == 2 {
-                                let key_type = Self::yorum_name_to_ast_type(parts[0]);
-                                let val_type = Self::yorum_name_to_ast_type(parts[1]);
-                                return self.emit_for_map_iter(
-                                    &s.var_name,
-                                    receiver,
-                                    &key_type,
-                                    &val_type,
-                                    &s.body,
-                                );
-                            }
                         }
                     }
                 }
@@ -840,7 +833,7 @@ impl Codegen {
         self.emit_indexed_for_loop(
             var_name,
             &str_len,
-            "i32",
+            "i8",
             body,
             |codegen, cur_idx, var_ptr| {
                 let byte_gep = codegen.fresh_temp();
@@ -849,9 +842,7 @@ impl Codegen {
                     byte_gep, str_val, cur_idx
                 ));
                 let byte_val = codegen.emit_load("i8", &byte_gep);
-                let char_val = codegen.fresh_temp();
-                codegen.emit_line(&format!("{} = sext i8 {} to i32", char_val, byte_val));
-                codegen.emit_line(&format!("store i32 {}, ptr {}", char_val, var_ptr));
+                codegen.emit_line(&format!("store i8 {}, ptr {}", byte_val, var_ptr));
                 Ok(())
             },
         )

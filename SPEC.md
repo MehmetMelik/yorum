@@ -1,6 +1,6 @@
 # Yorum Language Specification
 
-**Version:** 1.11.0
+**Version:** 1.12.0
 
 ## 1. Overview
 
@@ -419,6 +419,58 @@ while i < 100 {
 
 Using `break` or `continue` outside of a loop is a compile-time error.  In
 nested loops, `break` and `continue` apply to the innermost loop only.
+
+### 7.6.2 Iterator Pipelines (v1.9–v1.12)
+
+`.iter()` on an array, range, Set, or Map starts an iterator pipeline. Pipelines are
+fused into a single LLVM loop — no intermediate allocations (except `.collect()`),
+no iterator structs.
+
+**Sources:**
+
+| Source | Syntax | Element type |
+|---|---|---|
+| Array | `arr.iter()` | `T` (array element type) |
+| Exclusive range | `(start..end).iter()` | `int` |
+| Inclusive range | `(start..=end).iter()` | `int` |
+| Unbounded range | `(start..).iter()` | `int` (requires `.take(n)` or `.take_while(f)`) |
+| String chars | `s.chars()` | `char` |
+| Set | `set.iter()` | `T` (set element type) |
+| Map | `map.iter()` | `(K, V)` (key-value tuple) |
+
+**Combinators** (transform the stream, usable in for-loops):
+
+| Combinator | Signature | Description |
+|---|---|---|
+| `.map(f)` | `(T) -> U` | Transform each element |
+| `.filter(f)` | `(T) -> bool` | Keep elements where predicate is true |
+| `.enumerate()` | — | Yield `(int, T)` tuples with 0-based index |
+| `.zip(arr)` | — | Pair elements as `(T, U)` tuples, stop at shorter |
+| `.take(n)` | — | Yield only the first N elements |
+| `.skip(n)` | — | Skip the first N elements |
+| `.chain(arr)` | — | Concatenate with another iterable (must be first after `.iter()`) |
+| `.flat_map(f)` | `(T) -> [U]` | Map to arrays and flatten |
+| `.flatten()` | — | Flatten `[[T]]` to `[T]` |
+| `.take_while(f)` | `(T) -> bool` | Yield while predicate holds, then stop |
+| `.rev()` | — | Reverse iteration order (arrays only) |
+
+**Terminators** (consume the pipeline as standalone expressions):
+
+| Terminator | Return type | Description |
+|---|---|---|
+| `.collect()` | `[T]` | Materialize to array |
+| `.fold(init, f)` | `U` | Accumulate with initial value |
+| `.any(f)` | `bool` | Short-circuit on first true |
+| `.all(f)` | `bool` | Short-circuit on first false |
+| `.find(f)` | `Option<T>` | First match, or None |
+| `.reduce(f)` | `Option<T>` | Accumulate without initial value |
+| `.sum()` | `int` or `float` | Add all elements |
+| `.count()` | `int` | Count elements |
+| `.position(f)` | `Option<int>` | Index of first match |
+
+Combinators compose freely in any order (except `.chain()` which must be first).
+Closures must be inline — named closure variables are rejected. All pipelines compile
+to a single fused loop at the LLVM IR level.
 
 ### 7.7 String and Character Operations
 
@@ -930,6 +982,7 @@ All built-in functions are available without imports.
 | `contains_str(arr, val)` | `([string], string) -> bool` | yes | Linear search in string array |
 | `sort_int(arr)` | `([int]) -> [int]` | no | Return sorted copy of int array |
 | `sort_str(arr)` | `([string]) -> [string]` | no | Return sorted copy of string array |
+| `clear(arr)` | `([T]) -> unit` | no | Empty the array (set length to 0, preserve capacity) |
 
 **File I/O:**
 
@@ -1112,6 +1165,12 @@ HTTP/1.0 only (no TLS/HTTPS).
 - Array repeat syntax: `[value; count]` — bulk allocation with memset fast path for zero values
 - Bounds check elision: compiler skips bounds checks in `for i in 0..len(arr)` loops
 - LSP improvements: symbol tracking, type-aware dot completions, keyword fix
+
+### v1.12 (Done)
+- Iterator ecosystem: `.chain()`, `.flat_map()`, `.flatten()`, `.take_while()`, `.chars()`, `.rev()`, `.sum()`, `.count()`, `.position()`, `.clear()`
+- Unbounded ranges: `(0..).iter().take(n)` — compile-time enforcement of termination
+- Set/Map iteration: `set.iter()`, `map.iter()` yields `(K, V)` tuples
+- Codegen hardening: SIGBUS crash fixes for Set/Map return-by-value, flat-map pipeline fixes, array-of-arrays lifetime fix
 - 17 new integration tests (712 total: 68 unit + 644 integration)
 
 ## Appendix A: Application Binary Interface (ABI)

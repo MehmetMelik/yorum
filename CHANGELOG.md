@@ -2,6 +2,51 @@
 
 All notable changes to the Yorum programming language compiler.
 
+## [1.12.0] - 2026-02-21
+
+**Iterator Ecosystem** — Complete iterator pipeline expansion: `.chain()`, `.flat_map()`, `.flatten()`, `.take_while()`, `.chars()`, `.rev()`, `.sum()`, `.count()`, `.position()`, `.clear()`, unbounded ranges, `Set.iter()`, `Map.iter()`, and extensive codegen hardening.
+
+### Added
+
+- **`.chain(arr)` combinator:** concatenates two iterables in a fused pipeline. Must be the first combinator after `.iter()`. Works with array sources, range sources, all downstream combinators, and all terminators. Emits conditional source selection via `phi` nodes
+- **`.flat_map(f)` combinator:** maps each element to an array and flattens the results into a single stream. Fused into a single nested loop — no intermediate allocations
+- **`.flatten()` combinator:** flattens arrays of arrays into a single stream. Works with all downstream combinators and terminators
+- **`.take_while(f)` combinator:** yields elements while predicate returns true, then exits the loop
+- **`.chars()` source:** `"hello".chars()` iterates over string characters as `char` values. Works in for-loops and with all terminators
+- **`.rev()` combinator:** reverses iteration order for arrays (iterates from last to first element)
+- **`.sum()` terminator:** accumulates all elements with `+` (int or float), returns the sum
+- **`.count()` terminator:** counts elements in the pipeline, returns `int`
+- **`.position(f)` terminator:** finds index of first element matching predicate, returns `Option<int>`
+- **`.clear()` method:** empties an array by setting length to 0 (preserves capacity)
+- **Unbounded ranges:** `(start..).iter()` creates infinite ranges — must be bounded by `.take(n)` or `.take_while(f)`. Compile-time error if unbounded range has no limiter
+- **`Set.iter()` and `Map.iter()`:** iterate over Set elements and Map key-value pairs as `(K, V)` tuples. Work in for-loops and with all combinators/terminators
+- **`zip(range)` source:** `.zip((0..n))` pairs elements with range values
+- `examples/iterators.yrm` expanded with chain, flat_map, flatten, take_while, chars, rev, sum, count, position, Set/Map iteration demos
+- 112 new integration tests (756 total: 68 unit + 688 integration)
+
+### Fixed
+
+- **Set/Map return-by-value SIGBUS crash:** `infer_collection_type()` now handles `Type::Generic("Set"|"Map", args)` in addition to `Type::Named`, fixing crashes when calling `.iter()` on Set/Map values returned from functions or accessed via struct fields
+- **Set/Map parameter binding detection:** `emit_function` now inserts Set/Map parameter types into `var_ast_types` for both `Type::Named` and `Type::Generic` forms, fixing pipeline dispatch for function parameters
+- **Flat-map label emission for filter/take_while:** removed overly-restrictive guard that skipped label emission for non-final filter and take_while steps in flat-map pipelines
+- **Flat-map find Option registration:** `ensure_option_enum_for_llvm_type` now called before Find alloca in flat-map terminators, preventing missing Option type layout
+- **Flat-map find pointer return:** find terminator in flat-map now returns the result pointer directly instead of loading it (matching the expected pointer semantics)
+- **Map.iter().chain() type mismatch:** chain first-source branch now constructs (K,V) tuples inline for Map sources and uses correct element type for GEP operations
+- **Tuple array allocation size:** `ensure_pipeline_tuple_type` now called before `llvm_type_size` for TupleLit elements, fixing incorrect `malloc(8)` instead of `malloc(16)` for tuple arrays
+- **Array-of-arrays inner pointer lifetime:** inner array fat pointers are now heap-allocated via `malloc(24)` + `memcpy` instead of stack allocas, preventing dangling pointers when the enclosing function returns
+- **False-positive regression tests:** changed 3 test assertions from `ir.contains("@set_values__int")` to `ir.contains("call ptr @set_values__int")` to verify actual call sites, not just function definitions
+- **Collect truncation safety:** collect terminator now uses correct length tracking
+- **chars type consistency:** `.chars()` now consistently returns `i8` element type across all pipeline stages
+
+### Changed
+
+- Refactored codegen boilerplate in pipeline step emission and terminator loop setup
+- Extended `mangle_type_suffix` usage for Set/Map type mangling from Generic form
+
+**Stats:** 15 files changed, +5,102 -510 | Tests: 756 (68 unit + 688 integration)
+
+---
+
 ## [1.11.0] - 2026-02-21
 
 **Array Repeat Syntax & Bounds Check Elision** — Two codegen optimizations: bulk array allocation with `[value; count]` and automatic bounds check removal in provably safe loops.
@@ -726,6 +771,7 @@ The compiler written in Yorum itself (5,226 lines), achieving bootstrap fixed-po
 
 ---
 
+[1.12.0]: https://github.com/MehmetMelik/yorum/compare/v1.11.0...v1.12.0
 [1.11.0]: https://github.com/MehmetMelik/yorum/compare/v1.10.0...v1.11.0
 [1.10.0]: https://github.com/MehmetMelik/yorum/compare/v1.9.1...v1.10.0
 [1.9.1]: https://github.com/MehmetMelik/yorum/compare/v1.9.0...v1.9.1

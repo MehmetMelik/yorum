@@ -8795,6 +8795,303 @@ fn test_for_iter_zip_not_array() {
 }
 
 // ═══════════════════════════════════════════════════════════════
+//  Iterator chain tests
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn test_for_iter_chain_basic() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let a: [int] = [1, 2, 3];\n\
+         \x20   let b: [int] = [4, 5, 6];\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for x in a.iter().chain(b) {\n\
+         \x20       sum += x;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    assert!(ir.contains("chain.first"));
+    assert!(ir.contains("chain.second"));
+    assert!(ir.contains("chain.merge"));
+}
+
+#[test]
+fn test_for_iter_chain_with_map() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let a: [int] = [1, 2, 3];\n\
+         \x20   let b: [int] = [4, 5, 6];\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for x in a.iter().chain(b).map(|v: int| -> int { return v * 2; }) {\n\
+         \x20       sum += x;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    assert!(ir.contains("chain.first"));
+    assert!(ir.contains("chain.merge"));
+}
+
+#[test]
+fn test_for_iter_chain_with_filter() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let a: [int] = [1, 2, 3];\n\
+         \x20   let b: [int] = [4, 5, 6];\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for x in a.iter().chain(b).filter(|v: int| -> bool { return v > 2; }) {\n\
+         \x20       sum += x;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    assert!(ir.contains("chain.first"));
+    assert!(ir.contains("chain.merge"));
+}
+
+#[test]
+fn test_iter_chain_collect() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let a: [int] = [1, 2, 3];\n\
+         \x20   let b: [int] = [4, 5, 6];\n\
+         \x20   let c: [int] = a.iter().chain(b).collect();\n\
+         \x20   return len(c);\n\
+         }\n",
+    );
+    assert!(ir.contains("chain.first"));
+    assert!(ir.contains("chain.merge"));
+}
+
+#[test]
+fn test_iter_chain_fold() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let a: [int] = [1, 2, 3];\n\
+         \x20   let b: [int] = [4, 5, 6];\n\
+         \x20   let sum: int = a.iter().chain(b).fold(0, |acc: int, x: int| -> int { return acc + x; });\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    assert!(ir.contains("chain.first"));
+    assert!(ir.contains("chain.merge"));
+}
+
+#[test]
+fn test_iter_chain_type_mismatch() {
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20   let a: [int] = [1, 2, 3];\n\
+         \x20   let b: [string] = [\"a\", \"b\"];\n\
+         \x20   for x in a.iter().chain(b) {\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+    let msg = result.unwrap_err().to_string();
+    assert!(msg.contains("does not match"));
+}
+
+#[test]
+fn test_iter_chain_not_array() {
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20   let a: [int] = [1, 2, 3];\n\
+         \x20   for x in a.iter().chain(42) {\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+    let msg = result.unwrap_err().to_string();
+    assert!(msg.contains("must be an array"));
+}
+
+#[test]
+fn test_iter_chain_single_element_arrays() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let a: [int] = [1];\n\
+         \x20   let b: [int] = [2];\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for x in a.iter().chain(b) {\n\
+         \x20       sum += x;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    assert!(ir.contains("chain.first"));
+    assert!(ir.contains("chain.merge"));
+}
+
+#[test]
+fn test_iter_chain_range_source() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let b: [int] = [10, 20, 30];\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for x in (0..3).iter().chain(b) {\n\
+         \x20       sum += x;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    assert!(ir.contains("chain.first"));
+    assert!(ir.contains("chain.merge"));
+}
+
+#[test]
+fn test_iter_chain_not_first_combinator() {
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20   let a: [int] = [1, 2, 3];\n\
+         \x20   let b: [int] = [4, 5, 6];\n\
+         \x20   for x in a.iter().map(|v: int| -> int { return v * 2; }).chain(b) {\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+    let msg = result.unwrap_err().to_string();
+    assert!(msg.contains("must be the first combinator"));
+}
+
+#[test]
+fn test_iter_chain_after_filter() {
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20   let a: [int] = [1, 2, 3];\n\
+         \x20   let b: [int] = [4, 5, 6];\n\
+         \x20   for x in a.iter().filter(|v: int| -> bool { return v > 1; }).chain(b) {\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+    let msg = result.unwrap_err().to_string();
+    assert!(msg.contains("must be the first combinator"));
+}
+
+#[test]
+fn test_for_iter_chain_with_enumerate() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let a: [int] = [10, 20];\n\
+         \x20   let b: [int] = [30, 40];\n\
+         \x20   for pair in a.iter().chain(b).enumerate() {\n\
+         \x20       let (i, v): (int, int) = pair;\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("chain.first"));
+    assert!(ir.contains("chain.merge"));
+    assert!(ir.contains("tuple.int.int"));
+}
+
+#[test]
+fn test_for_iter_chain_with_take() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let a: [int] = [1, 2, 3];\n\
+         \x20   let b: [int] = [4, 5, 6];\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for x in a.iter().chain(b).take(4) {\n\
+         \x20       sum += x;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    assert!(ir.contains("chain.first"));
+    assert!(ir.contains("chain.merge"));
+    assert!(ir.contains("for.take.cont"));
+}
+
+#[test]
+fn test_for_iter_chain_with_skip() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let a: [int] = [1, 2, 3];\n\
+         \x20   let b: [int] = [4, 5, 6];\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for x in a.iter().chain(b).skip(2) {\n\
+         \x20       sum += x;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    assert!(ir.contains("chain.first"));
+    assert!(ir.contains("chain.merge"));
+    assert!(ir.contains("for.skip.do"));
+}
+
+#[test]
+fn test_iter_chain_any() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let a: [int] = [1, 2, 3];\n\
+         \x20   let b: [int] = [4, 5, 6];\n\
+         \x20   let found: bool = a.iter().chain(b).any(|v: int| -> bool { return v > 5; });\n\
+         \x20   if found { return 1; }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("chain.first"));
+    assert!(ir.contains("chain.merge"));
+}
+
+#[test]
+fn test_iter_chain_all() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let a: [int] = [1, 2, 3];\n\
+         \x20   let b: [int] = [4, 5, 6];\n\
+         \x20   let ok: bool = a.iter().chain(b).all(|v: int| -> bool { return v > 0; });\n\
+         \x20   if ok { return 1; }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("chain.first"));
+    assert!(ir.contains("chain.merge"));
+}
+
+#[test]
+fn test_iter_chain_find() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let a: [int] = [1, 2, 3];\n\
+         \x20   let b: [int] = [4, 5, 6];\n\
+         \x20   let r: Option<int> = a.iter().chain(b).find(|v: int| -> bool { return v > 4; });\n\
+         \x20   match r {\n\
+         \x20       Some(v) => { return v; }\n\
+         \x20       None => { return 0; }\n\
+         \x20   }\n\
+         }\n",
+    );
+    assert!(ir.contains("chain.first"));
+    assert!(ir.contains("chain.merge"));
+}
+
+#[test]
+fn test_iter_chain_reduce() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let a: [int] = [1, 2, 3];\n\
+         \x20   let b: [int] = [4, 5, 6];\n\
+         \x20   let r: Option<int> = a.iter().chain(b).reduce(|acc: int, x: int| -> int { return acc + x; });\n\
+         \x20   match r {\n\
+         \x20       Some(v) => { return v; }\n\
+         \x20       None => { return 0; }\n\
+         \x20   }\n\
+         }\n",
+    );
+    assert!(ir.contains("chain.first"));
+    assert!(ir.contains("chain.merge"));
+}
+
+// ═══════════════════════════════════════════════════════════════
 //  Iterator terminator tests (collect, fold, any, all, find, reduce)
 // ═══════════════════════════════════════════════════════════════
 
@@ -9964,4 +10261,1489 @@ fn test_bounds_check_elision_nested_loops() {
     assert!(!main_ir.contains("call void @__yorum_bounds_check"));
     // But both array accesses should still be present
     assert!(main_ir.contains("getelementptr i64"));
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  Phase 1: clear(), sum(), count()
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn test_array_clear_basic() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let mut arr: [int] = [1, 2, 3];\n\
+         \x20   arr.clear();\n\
+         \x20   return len(arr);\n\
+         }\n",
+    );
+    // clear sets length field to 0
+    assert!(ir.contains("store i64 0"));
+}
+
+#[test]
+fn test_array_clear_then_push() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let mut arr: [int] = [1, 2, 3];\n\
+         \x20   arr.clear();\n\
+         \x20   push(arr, 42);\n\
+         \x20   return len(arr);\n\
+         }\n",
+    );
+    assert!(ir.contains("store i64 0"));
+    assert!(ir.contains("@main"));
+}
+
+#[test]
+fn test_iter_sum_int() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3, 4, 5];\n\
+         \x20   let s: int = arr.iter().sum();\n\
+         \x20   return s;\n\
+         }\n",
+    );
+    assert!(ir.contains("sum.cond"));
+    assert!(ir.contains("add i64"));
+}
+
+#[test]
+fn test_iter_sum_float() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [float] = [1.0, 2.0, 3.0];\n\
+         \x20   let s: float = arr.iter().sum();\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("sum.cond"));
+    assert!(ir.contains("fadd double"));
+}
+
+#[test]
+fn test_iter_sum_with_map() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let s: int = arr.iter().map(|x: int| -> int { return x * 2; }).sum();\n\
+         \x20   return s;\n\
+         }\n",
+    );
+    assert!(ir.contains("sum.cond"));
+}
+
+#[test]
+fn test_iter_sum_with_filter() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3, 4, 5];\n\
+         \x20   let s: int = arr.iter().filter(|x: int| -> bool { return x > 2; }).sum();\n\
+         \x20   return s;\n\
+         }\n",
+    );
+    assert!(ir.contains("sum.cond"));
+}
+
+#[test]
+fn test_iter_sum_wrong_type() {
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20   let arr: [string] = [\"a\", \"b\"];\n\
+         \x20   let s: string = arr.iter().sum();\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+    let msg = result.unwrap_err().to_string();
+    assert!(msg.contains("sum() requires int or float"));
+}
+
+#[test]
+fn test_iter_count_basic() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3, 4, 5];\n\
+         \x20   let c: int = arr.iter().count();\n\
+         \x20   return c;\n\
+         }\n",
+    );
+    assert!(ir.contains("cnt.cond"));
+}
+
+#[test]
+fn test_iter_count_with_filter() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3, 4, 5];\n\
+         \x20   let c: int = arr.iter().filter(|x: int| -> bool { return x > 3; }).count();\n\
+         \x20   return c;\n\
+         }\n",
+    );
+    assert!(ir.contains("cnt.cond"));
+}
+
+#[test]
+fn test_iter_count_with_map() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let c: int = arr.iter().map(|x: int| -> int { return x * 2; }).count();\n\
+         \x20   return c;\n\
+         }\n",
+    );
+    assert!(ir.contains("cnt.cond"));
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  Phase 2: position(), take_while(), chars(), rev()
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn test_iter_position_found() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [10, 20, 30, 40];\n\
+         \x20   let p: Option<int> = arr.iter().position(|x: int| -> bool { return x == 30; });\n\
+         \x20   return p.unwrap();\n\
+         }\n",
+    );
+    assert!(ir.contains("pos.cond"));
+    assert!(ir.contains("pos.found"));
+}
+
+#[test]
+fn test_iter_position_not_found() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [10, 20, 30];\n\
+         \x20   let p: Option<int> = arr.iter().position(|x: int| -> bool { return x == 99; });\n\
+         \x20   if p.is_none() { return 1; }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("pos.cond"));
+}
+
+#[test]
+fn test_iter_position_with_filter() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3, 4, 5];\n\
+         \x20   let p: Option<int> = arr.iter().filter(|x: int| -> bool { return x > 2; }).position(|x: int| -> bool { return x == 4; });\n\
+         \x20   return p.unwrap();\n\
+         }\n",
+    );
+    assert!(ir.contains("pos.cond"));
+}
+
+#[test]
+fn test_iter_take_while_basic() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3, 4, 5];\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for x in arr.iter().take_while(|v: int| -> bool { return v < 4; }) {\n\
+         \x20       sum += x;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    assert!(ir.contains("@main"));
+}
+
+#[test]
+fn test_iter_take_while_collect() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3, 4, 5];\n\
+         \x20   let b: [int] = arr.iter().take_while(|v: int| -> bool { return v < 4; }).collect();\n\
+         \x20   return len(b);\n\
+         }\n",
+    );
+    assert!(ir.contains("col.cond"));
+}
+
+#[test]
+fn test_iter_take_while_all_pass() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let b: [int] = arr.iter().take_while(|v: int| -> bool { return v < 100; }).collect();\n\
+         \x20   return len(b);\n\
+         }\n",
+    );
+    assert!(ir.contains("col.cond"));
+}
+
+#[test]
+fn test_for_chars_basic() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let s: string = \"hello\";\n\
+         \x20   let mut count: int = 0;\n\
+         \x20   for c in s.chars() {\n\
+         \x20       count += 1;\n\
+         \x20   }\n\
+         \x20   return count;\n\
+         }\n",
+    );
+    assert!(ir.contains("@strlen"));
+    // Loop variable is i8 (char), loaded directly without sext
+    assert!(ir.contains("load i8"));
+}
+
+#[test]
+fn test_chars_with_filter() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let s: string = \"hello world\";\n\
+         \x20   let mut count: int = 0;\n\
+         \x20   for c in s.chars().filter(|c: char| -> bool { return c != ' '; }) {\n\
+         \x20       count += 1;\n\
+         \x20   }\n\
+         \x20   return count;\n\
+         }\n",
+    );
+    assert!(ir.contains("@strlen"));
+}
+
+#[test]
+fn test_chars_collect() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let s: string = \"abc\";\n\
+         \x20   let chars: [char] = s.chars().collect();\n\
+         \x20   return len(chars);\n\
+         }\n",
+    );
+    assert!(ir.contains("@strlen"));
+    assert!(ir.contains("col.cond"));
+}
+
+#[test]
+fn test_chars_empty_string() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let s: string = \"\";\n\
+         \x20   let mut count: int = 0;\n\
+         \x20   for c in s.chars() {\n\
+         \x20       count += 1;\n\
+         \x20   }\n\
+         \x20   return count;\n\
+         }\n",
+    );
+    assert!(ir.contains("@strlen"));
+}
+
+#[test]
+fn test_iter_rev_basic() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let mut last: int = 0;\n\
+         \x20   for x in arr.iter().rev() {\n\
+         \x20       last = x;\n\
+         \x20       break;\n\
+         \x20   }\n\
+         \x20   return last;\n\
+         }\n",
+    );
+    // Rev should compute reversed index: len-1-idx
+    assert!(ir.contains("sub i64"));
+}
+
+#[test]
+fn test_iter_rev_with_map() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let result: [int] = arr.iter().rev().map(|x: int| -> int { return x * 2; }).collect();\n\
+         \x20   return len(result);\n\
+         }\n",
+    );
+    assert!(ir.contains("col.cond"));
+}
+
+#[test]
+fn test_iter_rev_collect() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let reversed: [int] = arr.iter().rev().collect();\n\
+         \x20   return len(reversed);\n\
+         }\n",
+    );
+    assert!(ir.contains("col.cond"));
+}
+
+#[test]
+fn test_iter_rev_position_error() {
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   for x in arr.iter().map(|v: int| -> int { return v; }).rev() {\n\
+         \x20       print_int(x);\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+    let msg = result.unwrap_err().to_string();
+    assert!(msg.contains("rev() must be the first combinator"));
+}
+
+// ── zip(range) tests ──────────────────────────────────────────
+
+#[test]
+fn test_zip_with_exclusive_range() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [10, 20, 30];\n\
+         \x20   let result: [(int, int)] = arr.iter().zip(0..3).collect();\n\
+         \x20   return len(result);\n\
+         }\n",
+    );
+    assert!(ir.contains("col.cond"));
+}
+
+#[test]
+fn test_zip_with_inclusive_range() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [10, 20, 30];\n\
+         \x20   let result: [(int, int)] = arr.iter().zip(0..=2).collect();\n\
+         \x20   return len(result);\n\
+         }\n",
+    );
+    assert!(ir.contains("col.cond"));
+}
+
+#[test]
+fn test_zip_range_with_map() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [10, 20, 30];\n\
+         \x20   let result: [int] = arr.iter().zip(0..3).map(|pair: (int, int)| -> int { return pair.0 + pair.1; }).collect();\n\
+         \x20   return len(result);\n\
+         }\n",
+    );
+    assert!(ir.contains("col.cond"));
+}
+
+// ── Set.iter() tests ──────────────────────────────────────────
+
+#[test]
+fn test_set_iter_basic() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let s: Set<int> = set_new();\n\
+         \x20   set_add(s, 1);\n\
+         \x20   set_add(s, 2);\n\
+         \x20   set_add(s, 3);\n\
+         \x20   let mut total: int = 0;\n\
+         \x20   for x in s.iter() {\n\
+         \x20       total = total + x;\n\
+         \x20   }\n\
+         \x20   return total;\n\
+         }\n",
+    );
+    assert!(ir.contains("@set_values__int"));
+}
+
+#[test]
+fn test_set_iter_with_filter() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let s: Set<int> = set_new();\n\
+         \x20   set_add(s, 1);\n\
+         \x20   set_add(s, 2);\n\
+         \x20   set_add(s, 3);\n\
+         \x20   let evens: [int] = s.iter().filter(|x: int| -> bool { return x % 2 == 0; }).collect();\n\
+         \x20   return len(evens);\n\
+         }\n",
+    );
+    assert!(ir.contains("@set_values__int"));
+    assert!(ir.contains("col.cond"));
+}
+
+#[test]
+fn test_set_iter_count() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let s: Set<int> = set_new();\n\
+         \x20   set_add(s, 10);\n\
+         \x20   set_add(s, 20);\n\
+         \x20   let n: int = s.iter().count();\n\
+         \x20   return n;\n\
+         }\n",
+    );
+    assert!(ir.contains("@set_values__int"));
+    assert!(ir.contains("cnt.cond"));
+}
+
+// ── Map.iter() tests ──────────────────────────────────────────
+
+#[test]
+fn test_map_iter_basic() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let m: Map<string, int> = map_new();\n\
+         \x20   map_set(m, \"a\", 1);\n\
+         \x20   map_set(m, \"b\", 2);\n\
+         \x20   let mut total: int = 0;\n\
+         \x20   for pair in m.iter() {\n\
+         \x20       total = total + pair.1;\n\
+         \x20   }\n\
+         \x20   return total;\n\
+         }\n",
+    );
+    assert!(ir.contains("@map_keys__string__int"));
+    assert!(ir.contains("@map_values__string__int"));
+}
+
+#[test]
+fn test_map_iter_with_filter() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let m: Map<string, int> = map_new();\n\
+         \x20   map_set(m, \"a\", 1);\n\
+         \x20   map_set(m, \"b\", 2);\n\
+         \x20   let filtered: [(string, int)] = m.iter().filter(|p: (string, int)| -> bool { return p.1 > 1; }).collect();\n\
+         \x20   return len(filtered);\n\
+         }\n",
+    );
+    assert!(ir.contains("@map_keys__string__int"));
+    assert!(ir.contains("col.cond"));
+}
+
+#[test]
+fn test_map_iter_count() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let m: Map<string, int> = map_new();\n\
+         \x20   map_set(m, \"a\", 1);\n\
+         \x20   map_set(m, \"b\", 2);\n\
+         \x20   let n: int = m.iter().count();\n\
+         \x20   return n;\n\
+         }\n",
+    );
+    assert!(ir.contains("@map_keys__string__int"));
+    assert!(ir.contains("cnt.cond"));
+}
+
+#[test]
+fn test_map_iter_tuple_access() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let m: Map<string, int> = map_new();\n\
+         \x20   map_set(m, \"x\", 42);\n\
+         \x20   let mut result: int = 0;\n\
+         \x20   for pair in m.iter() {\n\
+         \x20       let k: string = pair.0;\n\
+         \x20       let v: int = pair.1;\n\
+         \x20       result = result + v;\n\
+         \x20   }\n\
+         \x20   return result;\n\
+         }\n",
+    );
+    assert!(ir.contains("@map_keys__string__int"));
+    assert!(ir.contains("@map_values__string__int"));
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  rev + chain mutual exclusion tests
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn test_iter_rev_then_chain_error() {
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20   let a: [int] = [1, 2, 3];\n\
+         \x20   let b: [int] = [4, 5, 6];\n\
+         \x20   for x in a.iter().rev().chain(b) {\n\
+         \x20       print_int(x);\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+    let msg = result.unwrap_err().to_string();
+    assert!(msg.contains("must be the first combinator"));
+}
+
+#[test]
+fn test_iter_chain_then_rev_error() {
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20   let a: [int] = [1, 2, 3];\n\
+         \x20   let b: [int] = [4, 5, 6];\n\
+         \x20   for x in a.iter().chain(b).rev() {\n\
+         \x20       print_int(x);\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+    let msg = result.unwrap_err().to_string();
+    assert!(msg.contains("must be the first combinator"));
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  Runtime validation tests (compile + link + execute)
+// ═══════════════════════════════════════════════════════════════
+
+/// Compile and run a .yrm source, returning the exit code.
+fn compile_run_and_check(source: &str, expected_exit: i32) {
+    // Skip on Windows (platform-specific linker symbols)
+    if cfg!(target_os = "windows") {
+        eprintln!("skipping runtime test on Windows");
+        return;
+    }
+
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let src_path = dir.path().join("test.yrm");
+    std::fs::write(&src_path, source).expect("failed to write source");
+
+    let output = std::process::Command::new("cargo")
+        .args(["run", "--", "run", src_path.to_str().unwrap()])
+        .output();
+
+    match output {
+        Ok(o) => {
+            let code = o.status.code().unwrap_or(-1);
+            if code != expected_exit {
+                let stderr = String::from_utf8_lossy(&o.stderr);
+                let stdout = String::from_utf8_lossy(&o.stdout);
+                panic!(
+                    "expected exit code {}, got {}.\nstdout: {}\nstderr: {}",
+                    expected_exit, code, stdout, stderr
+                );
+            }
+        }
+        Err(e) => {
+            eprintln!("skipping runtime test: {}", e);
+        }
+    }
+}
+
+#[test]
+fn test_run_sum() {
+    compile_run_and_check(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3, 4, 5];\n\
+         \x20   let s: int = arr.iter().sum();\n\
+         \x20   return s;\n\
+         }\n",
+        15,
+    );
+}
+
+#[test]
+fn test_run_count() {
+    compile_run_and_check(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let c: int = arr.iter().filter(|x: int| -> bool { return x > 1; }).count();\n\
+         \x20   return c;\n\
+         }\n",
+        2,
+    );
+}
+
+#[test]
+fn test_run_chain() {
+    compile_run_and_check(
+        "fn main() -> int {\n\
+         \x20   let a: [int] = [1, 2, 3];\n\
+         \x20   let b: [int] = [4, 5, 6];\n\
+         \x20   let s: int = a.iter().chain(b).fold(0, |acc: int, x: int| -> int { return acc + x; });\n\
+         \x20   return s;\n\
+         }\n",
+        21,
+    );
+}
+
+#[test]
+fn test_run_rev() {
+    compile_run_and_check(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let result: [int] = arr.iter().rev().collect();\n\
+         \x20   return result[0];\n\
+         }\n",
+        3,
+    );
+}
+
+#[test]
+fn test_run_take_while() {
+    compile_run_and_check(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3, 4, 5];\n\
+         \x20   let c: int = arr.iter().take_while(|v: int| -> bool { return v < 4; }).count();\n\
+         \x20   return c;\n\
+         }\n",
+        3,
+    );
+}
+
+#[test]
+fn test_run_position() {
+    compile_run_and_check(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [10, 20, 30];\n\
+         \x20   let pos: Option<int> = arr.iter().position(|x: int| -> bool { return x == 20; });\n\
+         \x20   return pos.unwrap();\n\
+         }\n",
+        1,
+    );
+}
+
+#[test]
+fn test_run_zip_range() {
+    compile_run_and_check(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [10, 20, 30];\n\
+         \x20   let s: int = arr.iter().zip(0..3).fold(0, |acc: int, pair: (int, int)| -> int { return acc + pair.1; });\n\
+         \x20   return s;\n\
+         }\n",
+        3,
+    );
+}
+
+#[test]
+fn test_run_clear() {
+    compile_run_and_check(
+        "fn main() -> int {\n\
+         \x20   let mut arr: [int] = [1, 2, 3];\n\
+         \x20   arr.clear();\n\
+         \x20   return len(arr);\n\
+         }\n",
+        0,
+    );
+}
+
+#[test]
+fn test_run_chars() {
+    compile_run_and_check(
+        "fn main() -> int {\n\
+         \x20   let s: string = \"hello\";\n\
+         \x20   let mut count: int = 0;\n\
+         \x20   for c in s.chars() {\n\
+         \x20       count += 1;\n\
+         \x20   }\n\
+         \x20   return count;\n\
+         }\n",
+        5,
+    );
+}
+
+#[test]
+fn test_run_position_match() {
+    compile_run_and_check(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [10, 20, 30];\n\
+         \x20   let pos: Option<int> = arr.iter().position(|x: int| -> bool { return x == 30; });\n\
+         \x20   match pos {\n\
+         \x20       Some(idx) => { return idx; }\n\
+         \x20       None => { return 99; }\n\
+         \x20   }\n\
+         }\n",
+        2,
+    );
+}
+
+// ── Unbounded ranges ────────────────────────────────────────
+
+#[test]
+fn test_unbounded_range_take_sum() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let s: int = (0..).iter().take(5).sum();\n\
+         \x20   return s;\n\
+         }\n",
+    );
+    assert!(ir.contains("label"));
+}
+
+#[test]
+fn test_unbounded_range_take_while_count() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let c: int = (1..).iter().take_while(|x: int| -> bool { return x < 5; }).count();\n\
+         \x20   return c;\n\
+         }\n",
+    );
+    assert!(ir.contains("label"));
+}
+
+#[test]
+fn test_unbounded_range_find() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let found: Option<int> = (1..).iter().find(|x: int| -> bool { return x > 5; });\n\
+         \x20   match found {\n\
+         \x20       Some(v) => { return v; }\n\
+         \x20       None => { return 0; }\n\
+         \x20   }\n\
+         }\n",
+    );
+    assert!(ir.contains("label"));
+}
+
+#[test]
+fn test_unbounded_range_collect_requires_take() {
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = (0..).iter().collect();\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+    let msg = result.unwrap_err().to_string();
+    assert!(
+        msg.contains("unbounded"),
+        "expected unbounded range error, got: {}",
+        msg
+    );
+}
+
+#[test]
+fn test_unbounded_range_for_loop() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for x in (0..).iter().take(5) {\n\
+         \x20       sum += x;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    assert!(ir.contains("label"));
+}
+
+#[test]
+fn test_run_unbounded_take_sum() {
+    compile_run_and_check(
+        "fn main() -> int {\n\
+         \x20   let s: int = (0..).iter().take(5).sum();\n\
+         \x20   return s;\n\
+         }\n",
+        10,
+    );
+}
+
+#[test]
+fn test_run_unbounded_take_while_count() {
+    compile_run_and_check(
+        "fn main() -> int {\n\
+         \x20   let c: int = (1..).iter().take_while(|x: int| -> bool { return x < 5; }).count();\n\
+         \x20   return c;\n\
+         }\n",
+        4,
+    );
+}
+
+#[test]
+fn test_run_unbounded_find() {
+    compile_run_and_check(
+        "fn main() -> int {\n\
+         \x20   let found: Option<int> = (1..).iter().find(|x: int| -> bool { return x > 5; });\n\
+         \x20   match found {\n\
+         \x20       Some(v) => { return v; }\n\
+         \x20       None => { return 0; }\n\
+         \x20   }\n\
+         }\n",
+        6,
+    );
+}
+
+// ── flat_map ────────────────────────────────────────────────
+
+#[test]
+fn test_iter_flat_map_collect() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let expanded: [int] = arr.iter()\n\
+         \x20       .flat_map(|x: int| -> [int] { return [x, x * 10]; })\n\
+         \x20       .collect();\n\
+         \x20   return len(expanded);\n\
+         }\n",
+    );
+    assert!(ir.contains("flat."));
+}
+
+#[test]
+fn test_iter_flat_map_sum() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let s: int = arr.iter()\n\
+         \x20       .flat_map(|x: int| -> [int] { return [x, x * 10]; })\n\
+         \x20       .sum();\n\
+         \x20   return s;\n\
+         }\n",
+    );
+    assert!(ir.contains("flat."));
+}
+
+#[test]
+fn test_iter_flat_map_filter_sum() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let s: int = arr.iter()\n\
+         \x20       .flat_map(|x: int| -> [int] { return [x, x * 10]; })\n\
+         \x20       .filter(|v: int| -> bool { return v > 5; })\n\
+         \x20       .sum();\n\
+         \x20   return s;\n\
+         }\n",
+    );
+    assert!(ir.contains("flat."));
+}
+
+#[test]
+fn test_iter_flat_map_non_array_return_error() {
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let s: int = arr.iter()\n\
+         \x20       .flat_map(|x: int| -> int { return x * 2; })\n\
+         \x20       .sum();\n\
+         \x20   return s;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+    let msg = result.unwrap_err().to_string();
+    assert!(
+        msg.contains("must return an array"),
+        "expected array return error, got: {}",
+        msg
+    );
+}
+
+#[test]
+fn test_run_flat_map_collect() {
+    compile_run_and_check(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let expanded: [int] = arr.iter()\n\
+         \x20       .flat_map(|x: int| -> [int] { return [x, x * 10]; })\n\
+         \x20       .collect();\n\
+         \x20   return len(expanded);\n\
+         }\n",
+        6,
+    );
+}
+
+#[test]
+fn test_run_flat_map_sum() {
+    compile_run_and_check(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let s: int = arr.iter()\n\
+         \x20       .flat_map(|x: int| -> [int] { return [x, x * 10]; })\n\
+         \x20       .sum();\n\
+         \x20   return s;\n\
+         }\n",
+        66,
+    );
+}
+
+#[test]
+fn test_run_flat_map_filter_sum() {
+    compile_run_and_check(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let s: int = arr.iter()\n\
+         \x20       .flat_map(|x: int| -> [int] { return [x, x * 10]; })\n\
+         \x20       .filter(|v: int| -> bool { return v > 5; })\n\
+         \x20       .sum();\n\
+         \x20   return s;\n\
+         }\n",
+        60,
+    );
+}
+
+// ── flatten ─────────────────────────────────────────────────
+
+#[test]
+fn test_iter_flatten_collect() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let grid: [[int]] = [[1, 2], [3, 4], [5, 6]];\n\
+         \x20   let flat: [int] = grid.iter().flatten().collect();\n\
+         \x20   return len(flat);\n\
+         }\n",
+    );
+    assert!(ir.contains("flat."));
+}
+
+#[test]
+fn test_iter_flatten_sum() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let grid: [[int]] = [[1, 2], [3, 4], [5, 6]];\n\
+         \x20   let s: int = grid.iter().flatten().sum();\n\
+         \x20   return s;\n\
+         }\n",
+    );
+    assert!(ir.contains("flat."));
+}
+
+#[test]
+fn test_iter_flatten_non_array_elements_error() {
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let s: int = arr.iter().flatten().sum();\n\
+         \x20   return s;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+    let msg = result.unwrap_err().to_string();
+    assert!(
+        msg.contains("flatten()") && msg.contains("array elements"),
+        "expected flatten array elements error, got: {}",
+        msg
+    );
+}
+
+#[test]
+fn test_run_flatten_collect() {
+    compile_run_and_check(
+        "fn main() -> int {\n\
+         \x20   let grid: [[int]] = [[1, 2], [3, 4], [5, 6]];\n\
+         \x20   let flat: [int] = grid.iter().flatten().collect();\n\
+         \x20   return len(flat);\n\
+         }\n",
+        6,
+    );
+}
+
+#[test]
+fn test_run_flatten_sum() {
+    compile_run_and_check(
+        "fn main() -> int {\n\
+         \x20   let grid: [[int]] = [[1, 2], [3, 4], [5, 6]];\n\
+         \x20   let s: int = grid.iter().flatten().sum();\n\
+         \x20   return s;\n\
+         }\n",
+        21,
+    );
+}
+
+// ── Review fix: unbounded range collect dynamic grow ────────
+
+#[test]
+fn test_run_unbounded_take20_collect() {
+    compile_run_and_check(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = (0..).iter().take(20).collect();\n\
+         \x20   return len(arr);\n\
+         }\n",
+        20,
+    );
+}
+
+// ── Review fix: post-flat_map type tracking ─────────────────
+
+#[test]
+fn test_run_flat_map_map_collect() {
+    compile_run_and_check(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let result: [int] = arr.iter()\n\
+         \x20       .flat_map(|x: int| -> [int] { return [x, x * 10]; })\n\
+         \x20       .map(|v: int| -> int { return v + 100; })\n\
+         \x20       .collect();\n\
+         \x20   return len(result);\n\
+         }\n",
+        6,
+    );
+}
+
+// ── Review fix: reject unsupported post-flat steps ──────────
+
+#[test]
+fn test_skip_after_flat_map_error() {
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let s: int = arr.iter().flat_map(|x: int| -> [int] { return [x]; }).skip(1).sum();\n\
+         \x20   return s;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+    let msg = result.unwrap_err().to_string();
+    assert!(
+        msg.contains("not supported after flat_map"),
+        "expected unsupported error, got: {}",
+        msg
+    );
+}
+
+#[test]
+fn test_enumerate_after_flatten_error() {
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20   let grid: [[int]] = [[1, 2], [3, 4]];\n\
+         \x20   let s: int = grid.iter().flatten().enumerate().count();\n\
+         \x20   return s;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+    let msg = result.unwrap_err().to_string();
+    assert!(
+        msg.contains("not supported after flat_map"),
+        "expected unsupported error, got: {}",
+        msg
+    );
+}
+
+// ── Review fix: reject multiple flat stages ─────────────────
+
+#[test]
+fn test_double_flat_map_error() {
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let s: int = arr.iter()\n\
+         \x20       .flat_map(|x: int| -> [int] { return [x]; })\n\
+         \x20       .flat_map(|x: int| -> [int] { return [x]; })\n\
+         \x20       .sum();\n\
+         \x20   return s;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+    let msg = result.unwrap_err().to_string();
+    assert!(
+        msg.contains("only one flat_map/flatten"),
+        "expected single-flat error, got: {}",
+        msg
+    );
+}
+
+// ── Fix: chars().collect() stores i8 elements consistently ──
+
+#[test]
+fn test_run_chars_collect_access() {
+    compile_run_and_check(
+        "fn main() -> int {\n\
+         \x20   let s: string = \"Hello\";\n\
+         \x20   let chars: [char] = s.chars().collect();\n\
+         \x20   let c: char = chars[1];\n\
+         \x20   if c == 'e' { return 42; }\n\
+         \x20   return 0;\n\
+         }\n",
+        42,
+    );
+}
+
+// ── Fix: for c in s.chars() uses i8 variable type ──
+
+#[test]
+fn test_run_for_chars_comparison() {
+    compile_run_and_check(
+        "fn main() -> int {\n\
+         \x20   let s: string = \"Hello\";\n\
+         \x20   let mut count: int = 0;\n\
+         \x20   for c in s.chars() {\n\
+         \x20       if c == 'l' { count += 1; }\n\
+         \x20   }\n\
+         \x20   return count;\n\
+         }\n",
+        2,
+    );
+}
+
+// ── Fix: position()/find() direct match without let binding ──
+
+#[test]
+fn test_run_position_direct_match() {
+    compile_run_and_check(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [10, 20, 30];\n\
+         \x20   match arr.iter().position(|x: int| -> bool { return x == 30; }) {\n\
+         \x20       Some(idx) => { return idx; }\n\
+         \x20       None => { return 99; }\n\
+         \x20   }\n\
+         }\n",
+        2,
+    );
+}
+
+#[test]
+fn test_run_find_direct_match() {
+    compile_run_and_check(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [10, 20, 30];\n\
+         \x20   match arr.iter().find(|x: int| -> bool { return x == 30; }) {\n\
+         \x20       Some(val) => { return val; }\n\
+         \x20       None => { return 99; }\n\
+         \x20   }\n\
+         }\n",
+        30,
+    );
+}
+
+// ── Fix: Map/Set iter for non-local-ident receivers ──
+
+#[test]
+fn test_set_iter_from_function_return() {
+    let ir = compile(
+        "fn make_set() -> Set<int> {\n\
+         \x20   let s: Set<int> = set_new();\n\
+         \x20   set_add(s, 10);\n\
+         \x20   return s;\n\
+         }\n\
+         fn main() -> int {\n\
+         \x20   let n: int = make_set().iter().count();\n\
+         \x20   return n;\n\
+         }\n",
+    );
+    // Should use set_values__int for the function return receiver (call site, not just definition)
+    assert!(
+        ir.contains("call ptr @set_values__int"),
+        "expected set_values__int call for function return receiver"
+    );
+}
+
+#[test]
+fn test_map_iter_from_function_return() {
+    let ir = compile(
+        "fn make_map() -> Map<string, int> {\n\
+         \x20   let m: Map<string, int> = map_new();\n\
+         \x20   map_set(m, \"a\", 1);\n\
+         \x20   return m;\n\
+         }\n\
+         fn main() -> int {\n\
+         \x20   let n: int = make_map().iter().count();\n\
+         \x20   return n;\n\
+         }\n",
+    );
+    // Should use map_keys for the function return receiver (call site, not just definition)
+    assert!(
+        ir.contains("call ptr @map_keys"),
+        "expected map_keys call for function return receiver"
+    );
+}
+
+#[test]
+fn test_set_for_iter_from_function_return() {
+    let ir = compile(
+        "fn make_set() -> Set<int> {\n\
+         \x20   let s: Set<int> = set_new();\n\
+         \x20   set_add(s, 10);\n\
+         \x20   return s;\n\
+         }\n\
+         fn main() -> int {\n\
+         \x20   let mut total: int = 0;\n\
+         \x20   for x in make_set().iter() {\n\
+         \x20       total += x;\n\
+         \x20   }\n\
+         \x20   return total;\n\
+         }\n",
+    );
+    // Should use set_values__int for the function return receiver in for-loop (call site, not just definition)
+    assert!(
+        ir.contains("call ptr @set_values__int"),
+        "expected set_values__int call for function return receiver in for-loop"
+    );
+}
+
+// ── Additional iterator regression tests (review follow-up) ──
+
+#[test]
+fn test_run_flat_map_map_bool_collect() {
+    // Post-flat_map type should remain bool after downstream map().
+    compile_run_and_check(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let flags: [bool] = arr.iter()\n\
+         \x20       .flat_map(|x: int| -> [int] { return [x, x * 10]; })\n\
+         \x20       .map(|v: int| -> bool { return v > 5; })\n\
+         \x20       .collect();\n\
+         \x20   if flags[1] { return 11; }\n\
+         \x20   return 0;\n\
+         }\n",
+        11,
+    );
+}
+
+#[test]
+fn test_run_flatten_from_call_receiver_bool() {
+    // flatten() should infer inner type from non-identifier receiver expression.
+    compile_run_and_check(
+        "fn mk() -> [[bool]] {\n\
+         \x20   return [[true, false], [true]];\n\
+         }\n\
+         fn main() -> int {\n\
+         \x20   let flat: [bool] = mk().iter().flatten().collect();\n\
+         \x20   if len(flat) != 3 { return 0; }\n\
+         \x20   if flat[0] and (not flat[1]) and flat[2] { return 7; }\n\
+         \x20   return 0;\n\
+         }\n",
+        7,
+    );
+}
+
+#[test]
+fn test_run_flat_map_filter_then_map_collect() {
+    // Non-final filter after flat_map must emit continuation labels.
+    compile_run_and_check(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let out: [int] = arr.iter()\n\
+         \x20       .flat_map(|x: int| -> [int] { return [x, x + 1]; })\n\
+         \x20       .filter(|v: int| -> bool { return v % 2 == 0; })\n\
+         \x20       .map(|v: int| -> int { return v * 10; })\n\
+         \x20       .collect();\n\
+         \x20   return out[2];\n\
+         }\n",
+        40,
+    );
+}
+
+#[test]
+fn test_run_flat_map_take_while_then_map_sum() {
+    // Non-final take_while after flat_map must emit continuation labels.
+    compile_run_and_check(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let s: int = arr.iter()\n\
+         \x20       .flat_map(|x: int| -> [int] { return [x, x + 1]; })\n\
+         \x20       .take_while(|v: int| -> bool { return v < 3; })\n\
+         \x20       .map(|v: int| -> int { return v + 1; })\n\
+         \x20       .sum();\n\
+         \x20   return s;\n\
+         }\n",
+        8,
+    );
+}
+
+#[test]
+fn test_run_flat_map_find_unwrap() {
+    // flat_map(...).find(...) result should be a usable pointer-backed Option.
+    compile_run_and_check(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let found: Option<int> = arr.iter()\n\
+         \x20       .flat_map(|x: int| -> [int] { return [x, x * 10]; })\n\
+         \x20       .find(|v: int| -> bool { return v == 30; });\n\
+         \x20   return found.unwrap();\n\
+         }\n",
+        30,
+    );
+}
+
+#[test]
+fn test_run_flat_map_find_direct_match_again() {
+    // flat_map(...).find(...) should also work in direct match expressions.
+    compile_run_and_check(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   match arr.iter()\n\
+         \x20       .flat_map(|x: int| -> [int] { return [x, x * 10]; })\n\
+         \x20       .find(|v: int| -> bool { return v == 20; }) {\n\
+         \x20       Some(v) => { return v; }\n\
+         \x20       None => { return 0; }\n\
+         \x20   }\n\
+         }\n",
+        20,
+    );
+}
+
+#[test]
+fn test_run_for_chars_push_into_char_array() {
+    // for c in s.chars() loop var must have char/i8 storage.
+    compile_run_and_check(
+        "fn main() -> int {\n\
+         \x20   let s: string = \"hello\";\n\
+         \x20   let mut out: [char] = ['x'];\n\
+         \x20   out.clear();\n\
+         \x20   for c in s.chars() {\n\
+         \x20       push(out, c);\n\
+         \x20   }\n\
+         \x20   if out[1] == 'e' { return 9; }\n\
+         \x20   return 0;\n\
+         }\n",
+        9,
+    );
+}
+
+#[test]
+fn test_run_set_iter_count_parameter_receiver() {
+    // Set.iter() on function parameters should not fall back to array path.
+    compile_run_and_check(
+        "fn count_set(s: Set<int>) -> int {\n\
+         \x20   return s.iter().count();\n\
+         }\n\
+         fn main() -> int {\n\
+         \x20   let s: Set<int> = set_new();\n\
+         \x20   set_add(s, 10);\n\
+         \x20   set_add(s, 20);\n\
+         \x20   return count_set(s);\n\
+         }\n",
+        2,
+    );
+}
+
+#[test]
+fn test_run_map_iter_count_parameter_receiver() {
+    // Map.iter() on function parameters should not fall back to array path.
+    compile_run_and_check(
+        "fn count_map(m: Map<string, int>) -> int {\n\
+         \x20   return m.iter().count();\n\
+         }\n\
+         fn main() -> int {\n\
+         \x20   let m: Map<string, int> = map_new();\n\
+         \x20   map_set(m, \"a\", 1);\n\
+         \x20   map_set(m, \"b\", 2);\n\
+         \x20   return count_map(m);\n\
+         }\n",
+        2,
+    );
+}
+
+#[test]
+fn test_run_set_iter_for_loop_parameter_receiver() {
+    // for ... in s.iter() should work when s is a function parameter.
+    compile_run_and_check(
+        "fn sum_set(s: Set<int>) -> int {\n\
+         \x20   let mut total: int = 0;\n\
+         \x20   for x in s.iter() {\n\
+         \x20       total += x;\n\
+         \x20   }\n\
+         \x20   return total;\n\
+         }\n\
+         fn main() -> int {\n\
+         \x20   let s: Set<int> = set_new();\n\
+         \x20   set_add(s, 2);\n\
+         \x20   set_add(s, 4);\n\
+         \x20   return sum_set(s);\n\
+         }\n",
+        6,
+    );
+}
+
+#[test]
+fn test_run_map_iter_for_loop_parameter_receiver() {
+    // for ... in m.iter() should work when m is a function parameter.
+    compile_run_and_check(
+        "fn sum_values(m: Map<string, int>) -> int {\n\
+         \x20   let mut total: int = 0;\n\
+         \x20   for p in m.iter() {\n\
+         \x20       total += p.1;\n\
+         \x20   }\n\
+         \x20   return total;\n\
+         }\n\
+         fn main() -> int {\n\
+         \x20   let m: Map<string, int> = map_new();\n\
+         \x20   map_set(m, \"a\", 3);\n\
+         \x20   map_set(m, \"b\", 4);\n\
+         \x20   return sum_values(m);\n\
+         }\n",
+        7,
+    );
+}
+
+#[test]
+fn test_run_map_iter_chain_tuple_fold() {
+    // Map.iter().chain(...) should keep map-source load typing consistent.
+    compile_run_and_check(
+        "fn main() -> int {\n\
+         \x20   let m: Map<string, int> = map_new();\n\
+         \x20   map_set(m, \"a\", 1);\n\
+         \x20   map_set(m, \"b\", 2);\n\
+         \x20   let extra: [(string, int)] = [(\"c\", 5)];\n\
+         \x20   let total: int = m.iter().chain(extra).fold(0, |acc: int, p: (string, int)| -> int { return acc + p.1; });\n\
+         \x20   return total;\n\
+         }\n",
+        8,
+    );
+}
+
+// ── Fix: Set/Map return-by-value SIGBUS crash ──
+
+#[test]
+fn test_run_set_iter_from_function_return() {
+    // Set returned from function, iter pipeline — should not SIGBUS
+    compile_run_and_check(
+        "fn make_set() -> Set<int> {\n\
+         \x20   let s: Set<int> = set_new();\n\
+         \x20   set_add(s, 10);\n\
+         \x20   set_add(s, 20);\n\
+         \x20   set_add(s, 30);\n\
+         \x20   return s;\n\
+         }\n\
+         fn main() -> int {\n\
+         \x20   let n: int = make_set().iter().count();\n\
+         \x20   return n;\n\
+         }\n",
+        3,
+    );
+}
+
+#[test]
+fn test_run_set_for_iter_from_function_return() {
+    // Set returned from function, for-loop — should not SIGBUS
+    compile_run_and_check(
+        "fn make_set() -> Set<int> {\n\
+         \x20   let s: Set<int> = set_new();\n\
+         \x20   set_add(s, 10);\n\
+         \x20   set_add(s, 20);\n\
+         \x20   set_add(s, 30);\n\
+         \x20   return s;\n\
+         }\n\
+         fn main() -> int {\n\
+         \x20   let mut total: int = 0;\n\
+         \x20   for x in make_set().iter() {\n\
+         \x20       total += x;\n\
+         \x20   }\n\
+         \x20   return total;\n\
+         }\n",
+        60,
+    );
+}
+
+#[test]
+fn test_run_map_iter_from_function_return() {
+    // Map returned from function, iter pipeline — should not SIGBUS
+    compile_run_and_check(
+        "fn make_map() -> Map<string, int> {\n\
+         \x20   let m: Map<string, int> = map_new();\n\
+         \x20   map_set(m, \"a\", 1);\n\
+         \x20   map_set(m, \"b\", 2);\n\
+         \x20   return m;\n\
+         }\n\
+         fn main() -> int {\n\
+         \x20   let n: int = make_map().iter().count();\n\
+         \x20   return n;\n\
+         }\n",
+        2,
+    );
+}
+
+#[test]
+fn test_run_set_field_iter() {
+    // Field access on struct containing Set, iter pipeline — should not SIGBUS
+    compile_run_and_check(
+        "struct Container {\n\
+         \x20   data: Set<int>,\n\
+         }\n\
+         fn main() -> int {\n\
+         \x20   let s: Set<int> = set_new();\n\
+         \x20   set_add(s, 5);\n\
+         \x20   set_add(s, 10);\n\
+         \x20   let c: Container = Container { data: s };\n\
+         \x20   let mut total: int = 0;\n\
+         \x20   for x in c.data.iter() {\n\
+         \x20       total += x;\n\
+         \x20   }\n\
+         \x20   return total;\n\
+         }\n",
+        15,
+    );
 }

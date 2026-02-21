@@ -711,6 +711,9 @@ impl Formatter {
             self.emit_expr(start);
             self.write("..=");
             self.emit_expr(end);
+        } else if let ExprKind::RangeFrom(ref start) = f.iterable.kind {
+            self.emit_expr(start);
+            self.write("..");
         } else {
             self.emit_expr(&f.iterable);
         }
@@ -904,6 +907,10 @@ impl Formatter {
                 self.emit_expr(start);
                 self.write("..=");
                 self.emit_expr(end);
+            }
+            ExprKind::RangeFrom(start) => {
+                self.emit_expr(start);
+                self.write("..");
             }
             ExprKind::Try(inner) => {
                 self.emit_expr(inner);

@@ -302,12 +302,17 @@ fn main() -> int {
 
 `.iter()` on an array or range starts an iterator pipeline. **Combinators** transform the stream inside
 for-loops: `.map(f)` transforms elements, `.filter(f)` keeps matching elements, `.enumerate()` adds
-indices, `.zip(arr2)` pairs elements, `.take(n)` limits count, `.skip(n)` skips elements.
+indices, `.zip(arr2)` pairs elements, `.take(n)` limits count, `.skip(n)` skips elements,
+`.chain(arr2)` concatenates two iterables, `.flat_map(f)` maps and flattens, `.flatten()` flattens
+nested arrays, `.take_while(f)` yields while predicate holds, `.rev()` reverses iteration order.
 **Terminators** consume the pipeline as standalone expressions: `.collect()` materializes to an array,
 `.fold(init, f)` accumulates a value, `.any(f)`/`.all(f)` test predicates, `.find(f)` returns
-`Option<T>`, `.reduce(f)` accumulates without an initial value. **Range sources** (`(0..n).iter()` and
-`(0..=n).iter()`) work with all combinators and terminators. All pipelines are fused into a single
-loop — no intermediate allocations (except `.collect()`), no iterator structs. Closures must be inline.
+`Option<T>`, `.reduce(f)` accumulates without an initial value, `.sum()` adds all elements,
+`.count()` counts elements, `.position(f)` finds the index of the first match.
+**Sources:** arrays (`.iter()`), ranges (`(0..n).iter()`, `(0..=n).iter()`), unbounded ranges
+(`(0..).iter()` with `.take(n)` or `.take_while(f)`), strings (`.chars()`), Sets (`set.iter()`),
+and Maps (`map.iter()` yields `(K, V)` tuples). All pipelines are fused into a single loop — no
+intermediate allocations (except `.collect()`), no iterator structs. Closures must be inline.
 
 ### String Interpolation
 
@@ -460,7 +465,7 @@ let idx: int = str_index_of("hello", "ll");      // 2
 
 **Collection operations:** `slice`, `concat_arrays`, `reverse`, `contains_int`,
 `contains_str`, `sort_int`, `sort_str`, `map_keys`, `map_values`, `map_size`,
-`map_remove`.
+`map_remove`, `clear`.
 
 ```
 let arr: [int] = [3, 1, 2];
@@ -942,7 +947,7 @@ diff gen1.ll gen2.ll    # identical — fixed-point achieved
 ## Testing
 
 ```bash
-cargo test                    # 712 tests (68 unit + 644 integration)
+cargo test                    # 756 tests (68 unit + 688 integration)
 cargo test compiler::lexer    # tests in one module
 cargo test test_fibonacci     # single test by name
 ```
@@ -988,6 +993,7 @@ cargo test test_fibonacci     # single test by name
 | **v1.9.1** | Range pipeline sources, aggregate codegen fixes, overflow hardening, tuple mangle bug fix, codegen cleanup | Done |
 | **v1.10** | Codegen refactor: fat pointer/struct helpers, pipeline deduplication, module extraction into 5 files | Done |
 | **v1.11** | Array repeat syntax `[value; count]`, bounds check elision for `for i in 0..len(arr)` loops | Done |
+| **v1.12** | Iterator ecosystem: `.chain()`, `.flat_map()`, `.flatten()`, `.take_while()`, `.chars()`, `.rev()`, `.sum()`, `.count()`, `.position()`, unbounded ranges, Set/Map `.iter()`, codegen hardening | Done |
 
 ## License
 

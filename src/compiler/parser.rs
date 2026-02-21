@@ -917,6 +917,15 @@ impl Parser {
                 }
                 let is_inclusive = self.check(&TokenKind::DotDotEq);
                 self.advance();
+                // Unbounded range: `expr..` with no RHS
+                if !is_inclusive && !self.can_start_expr() {
+                    let span = lhs.span.merge(self.prev_span());
+                    lhs = Expr {
+                        kind: ExprKind::RangeFrom(Box::new(lhs)),
+                        span,
+                    };
+                    continue;
+                }
                 let rhs = self.parse_expr_bp(2)?;
                 let span = lhs.span.merge(rhs.span);
                 lhs = Expr {
@@ -1405,6 +1414,28 @@ impl Parser {
             .get(self.pos)
             .map(|t| t.kind.clone())
             .unwrap_or(TokenKind::EOF)
+    }
+
+    /// Check whether the current token can start an expression.
+    /// Used to distinguish `expr..` (RangeFrom) from `expr..expr` (Range).
+    fn can_start_expr(&self) -> bool {
+        matches!(
+            self.peek_kind(),
+            TokenKind::IntLit(_)
+                | TokenKind::FloatLit(_)
+                | TokenKind::StringLit(_)
+                | TokenKind::InterpStringLit(_)
+                | TokenKind::CharLit(_)
+                | TokenKind::Ident(_)
+                | TokenKind::LParen
+                | TokenKind::LBracket
+                | TokenKind::Minus
+                | TokenKind::Not
+                | TokenKind::True
+                | TokenKind::False
+                | TokenKind::Pipe
+                | TokenKind::Spawn
+        )
     }
 
     fn current_span(&self) -> Span {

@@ -115,6 +115,21 @@ Rationale: No language ecosystem grows without a package manager. Prerequisite f
 
 ---
 
+## v1.12 — Iterator Ecosystem (Done)
+
+- ~~**`.chain(arr)` combinator:** concatenates two iterables in a fused pipeline, conditional source selection via `phi` nodes~~
+- ~~**`.flat_map(f)` and `.flatten()` combinators:** map-and-flatten and flatten nested arrays into single stream~~
+- ~~**`.take_while(f)` combinator:** yield elements while predicate holds, then exit~~
+- ~~**`.chars()` source:** iterate over string characters as `char` values~~
+- ~~**`.rev()` combinator:** reverse iteration order for arrays~~
+- ~~**`.sum()`, `.count()`, `.position(f)` terminators:** arithmetic sum, element count, and index-of-first-match~~
+- ~~**`.clear()` method:** empty an array (set length to 0, preserve capacity)~~
+- ~~**Unbounded ranges:** `(start..).iter()` with compile-time enforcement of `.take(n)` or `.take_while(f)`~~
+- ~~**Set/Map iteration:** `set.iter()` yields elements, `map.iter()` yields `(K, V)` tuples~~
+- ~~**Codegen hardening:** SIGBUS crash fix for Set/Map return-by-value, flat-map pipeline fixes, array-of-arrays lifetime fix, tuple allocation size fix~~
+
+---
+
 ## Longer-term (v2.0+)
 
 | Feature | Notes |
@@ -145,3 +160,4 @@ The top 3 highest-impact releases:
 9. ~~**v1.9 (Iterators)** — iterator combinators, terminators, range pipeline sources, fused codegen~~ **Done**
 10. ~~**v1.10 (Codegen Refactor)** — fat pointer/struct helpers, pipeline deduplication, module extraction~~ **Done**
 11. ~~**v1.11 (Optimizations)** — array repeat `[value; count]`, bounds check elision~~ **Done**
+12. ~~**v1.12 (Iterator Ecosystem)** — `.chain()`, `.flat_map()`, `.flatten()`, `.take_while()`, `.chars()`, `.rev()`, `.sum()`, `.count()`, `.position()`, unbounded ranges, Set/Map `.iter()`~~ **Done**

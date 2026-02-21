@@ -362,6 +362,7 @@ pub enum ExprKind {
     Spawn(Block),
     Range(Box<Expr>, Box<Expr>),
     RangeInclusive(Box<Expr>, Box<Expr>),
+    RangeFrom(Box<Expr>),
     Try(Box<Expr>),
 }
 

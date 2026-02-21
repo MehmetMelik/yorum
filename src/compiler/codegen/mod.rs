@@ -65,13 +65,44 @@ pub(crate) enum IterStep<'a> {
     Zip(&'a Expr),
     Take(&'a Expr),
     Skip(&'a Expr),
+    Chain(&'a Expr),
+    TakeWhile(&'a ClosureExpr),
+    Rev,
+    FlatMap(&'a ClosureExpr),
+    Flatten,
+}
+
+impl IterStep<'_> {
+    pub(crate) fn name(&self) -> &'static str {
+        match self {
+            IterStep::Map(_) => "map",
+            IterStep::Filter(_) => "filter",
+            IterStep::Enumerate => "enumerate",
+            IterStep::Zip(_) => "zip",
+            IterStep::Take(_) => "take",
+            IterStep::Skip(_) => "skip",
+            IterStep::Chain(_) => "chain",
+            IterStep::TakeWhile(_) => "take_while",
+            IterStep::Rev => "rev",
+            IterStep::FlatMap(_) => "flat_map",
+            IterStep::Flatten => "flatten",
+        }
+    }
+}
+
+/// Pre-emitted flat_map/flatten info for nested loop emission.
+pub(crate) struct FlatMapInfo {
+    pub(crate) closure_info: Option<ClosureInfo>, // None for flatten
+    pub(crate) inner_elem_ty: String,             // LLVM type of flattened elements
+    pub(crate) step_index: usize,                 // position in steps array
 }
 
 /// A fully extracted iterator pipeline: array/range source + ordered steps.
 pub(crate) struct IterPipeline<'a> {
     pub(crate) source: &'a Expr, // source expression (receiver of .iter())
     pub(crate) steps: Vec<IterStep<'a>>, // ordered pipeline steps
-    pub(crate) is_range_source: bool, // true if source is Range/RangeInclusive
+    pub(crate) is_range_source: bool, // true if source is Range/RangeInclusive/RangeFrom
+    pub(crate) is_unbounded_range: bool, // true if source is RangeFrom
 }
 
 /// A terminator at the end of a pipeline (standalone expression, not for-loop).
@@ -82,6 +113,9 @@ pub(crate) enum PipelineTerminator<'a> {
     Find(&'a ClosureExpr),
     Any(&'a ClosureExpr),
     All(&'a ClosureExpr),
+    Sum,
+    Count,
+    Position(&'a ClosureExpr),
 }
 
 /// A fully extracted terminated pipeline: array/range source + steps + terminator.
@@ -89,7 +123,8 @@ pub(crate) struct TerminatedPipeline<'a> {
     pub(crate) source: &'a Expr,
     pub(crate) steps: Vec<IterStep<'a>>,
     pub(crate) terminator: PipelineTerminator<'a>,
-    pub(crate) is_range_source: bool, // true if source is Range/RangeInclusive
+    pub(crate) is_range_source: bool, // true if source is Range/RangeInclusive/RangeFrom
+    pub(crate) is_unbounded_range: bool, // true if source is RangeFrom
 }
 
 /// Pre-emitted closure info for a pipeline step.
@@ -105,6 +140,23 @@ pub(crate) struct ZipInfo {
     pub(crate) len_val: String,
     pub(crate) idx_ptr: String,
     pub(crate) elem_ty: String,
+    /// For range-based zip: (start_val, end_val, inclusive)
+    pub(crate) range_zip: Option<(String, bool)>,
+}
+
+/// Pre-emitted chain data source info.
+pub(crate) struct ChainInfo {
+    pub(crate) data_ptr: String,  // data pointer of second array
+    pub(crate) first_len: String, // length of first source (for conditional load)
+    pub(crate) elem_ty: String,   // element LLVM type
+}
+
+/// Info for Map.iter() — values array for implicit zip with keys.
+pub(crate) struct MapIterInfo {
+    pub(crate) val_data_ptr: String, // data pointer of values array
+    pub(crate) val_elem_ty: String,  // LLVM type of value elements
+    pub(crate) key_elem_ty: String,  // LLVM type of key elements
+    pub(crate) tuple_name: String,   // tuple type name (e.g., "tuple.string.int")
 }
 
 /// Shared state returned by `emit_pipeline_loop_header`.
@@ -113,6 +165,26 @@ pub(crate) struct PipelineLoopParts {
     pub(crate) cond_label: String,
     pub(crate) end_label: String,
     pub(crate) current_val: String,
+}
+
+/// Shared context for pipeline code generation, produced by the preamble and consumed
+/// by loop header, steps, and terminators.
+pub(crate) struct PipelineContext {
+    pub data_ptr: String,
+    pub len_val: String,
+    pub idx_ptr: String,
+    pub src_elem_ty: String,
+    pub final_elem_ty: String,
+    pub closure_infos: Vec<Option<ClosureInfo>>,
+    pub zip_infos: Vec<Option<ZipInfo>>,
+    pub take_skip_ptrs: Vec<Option<String>>,
+    pub enumerate_ptrs: Vec<Option<String>>,
+    pub is_range_source: bool,
+    pub is_unbounded_range: bool,
+    pub range_end: Option<(String, bool)>,
+    pub chain_infos: Vec<Option<ChainInfo>>,
+    pub map_iter_info: Option<MapIterInfo>,
+    pub flat_map_info: Option<FlatMapInfo>,
 }
 
 /// Tracks per-variable string buffer metadata for capacity-aware str_concat.
@@ -398,7 +470,6 @@ impl Codegen {
             self.emit_debug_preamble();
         }
         self.register_types(program);
-        self.emit_type_defs();
         self.emit_builtin_decls();
         self.emit_builtin_helpers();
 
@@ -611,6 +682,10 @@ impl Codegen {
                 _ => {}
             }
         }
+
+        // Emit type definitions after all functions (some enum layouts are
+        // lazily registered during codegen, e.g. Option for pipeline terminators)
+        self.emit_type_defs();
 
         // Assemble final output
         let mut output = String::new();
@@ -846,6 +921,22 @@ impl Codegen {
             if let Type::Tuple(_) = &param.ty {
                 self.var_ast_types
                     .insert(param.name.clone(), param.ty.clone());
+            }
+            // Track Set/Map-typed params for collection iteration inference
+            match &param.ty {
+                Type::Named(ref name) if name.starts_with("Set__") || name.starts_with("Map__") => {
+                    self.var_ast_types
+                        .insert(param.name.clone(), param.ty.clone());
+                }
+                Type::Generic(ref gname, ref args) if gname == "Set" || gname == "Map" => {
+                    // Monomorphizer doesn't rewrite Set/Map param types to Named;
+                    // store as Named with mangled name for pipeline detection
+                    let suffixes: Vec<String> = args.iter().map(Self::mangle_type_suffix).collect();
+                    let mangled = format!("{}__{}", gname, suffixes.join("__"));
+                    self.var_ast_types
+                        .insert(param.name.clone(), Type::Named(mangled));
+                }
+                _ => {}
             }
         }
 
@@ -1707,6 +1798,16 @@ impl Codegen {
                     return self.emit_expr(receiver);
                 }
 
+                // Handle .clear() on arrays: set length to 0 without deallocating
+                if method_name == "clear"
+                    && args.is_empty()
+                    && self.expr_struct_name(receiver).is_err()
+                {
+                    let arr_ptr = self.emit_expr(receiver)?;
+                    self.emit_fat_ptr_field_store(&arr_ptr, 1, "i64", "0");
+                    return Ok("void".to_string());
+                }
+
                 let struct_name = self.expr_struct_name(receiver)?;
                 let recv_ptr = self.emit_expr_ptr(receiver)?;
                 let mangled = format!("{}_{}", struct_name, method_name);
@@ -1747,9 +1848,11 @@ impl Codegen {
 
             ExprKind::TupleLit(elements) => self.emit_tuple_lit(elements),
 
-            ExprKind::Range(_, _) | ExprKind::RangeInclusive(_, _) => Err(CodegenError {
-                message: "range expression is only valid in for loops".to_string(),
-            })?,
+            ExprKind::Range(_, _) | ExprKind::RangeInclusive(_, _) | ExprKind::RangeFrom(_) => {
+                Err(CodegenError {
+                    message: "range expression is only valid in for loops".to_string(),
+                })?
+            }
 
             ExprKind::Try(inner) => self.emit_try_expr(inner),
 
@@ -1785,7 +1888,23 @@ impl Codegen {
                     return Ok(ptr);
                 }
                 // Determine element type from first element
-                let elem_ty = self.expr_llvm_type(&elements[0]);
+                // Arrays use reference semantics (ptr to fat pointer), so when
+                // elements are arrays, use ptr as the element type.
+                let raw_elem_ty = self.expr_llvm_type(&elements[0]);
+                let is_array_of_arrays = raw_elem_ty == "{ ptr, i64, i64 }";
+                let elem_ty = if is_array_of_arrays {
+                    "ptr".to_string()
+                } else {
+                    raw_elem_ty
+                };
+                // Ensure tuple type is registered before size computation;
+                // expr_llvm_type infers the name but doesn't register it.
+                if let ExprKind::TupleLit(ref tuple_elems) = elements[0].kind {
+                    let tuple_llvm_types: Vec<String> =
+                        tuple_elems.iter().map(|e| self.expr_llvm_type(e)).collect();
+                    let tuple_name = elem_ty.trim_start_matches('%');
+                    self.ensure_pipeline_tuple_type(tuple_name, &tuple_llvm_types);
+                }
                 let elem_size = self.llvm_type_size(&elem_ty);
                 let total_size = elem_size * count;
 
@@ -1811,6 +1930,13 @@ impl Codegen {
                     ));
                     if is_aggregate {
                         self.emit_memcpy(&gep, &val, &elem_size.to_string());
+                    } else if is_array_of_arrays {
+                        // Inner array fat pointers are stack allocas; heap-copy so
+                        // they survive if the outer array escapes the current frame.
+                        let heap_fp = self.fresh_temp();
+                        self.emit_line(&format!("{} = call ptr @malloc(i64 24)", heap_fp));
+                        self.emit_memcpy(&heap_fp, &val, "24");
+                        self.emit_line(&format!("store ptr {}, ptr {}", heap_fp, gep));
                     } else {
                         self.emit_line(&format!("store {} {}, ptr {}", elem_ty, val, gep));
                     }
@@ -2005,14 +2131,20 @@ impl Codegen {
             }
             _ => {
                 // For complex expressions that return aggregate types (e.g., function calls
-                // returning structs), store to a temp alloca and return the alloca pointer
+                // returning structs), store to a temp alloca and return the alloca pointer.
+                // If the expression already returns an alloca pointer (e.g., pipeline
+                // terminators like find/position/reduce), use it directly.
                 let val = self.emit_expr(expr)?;
-                let llvm_ty = self.expr_llvm_type(expr);
-                if Self::is_aggregate_type(&llvm_ty) {
-                    let tmp = self.emit_alloca_store(&llvm_ty, &val);
-                    Ok(tmp)
-                } else {
+                if self.expr_returns_ptr(expr) {
                     Ok(val)
+                } else {
+                    let llvm_ty = self.expr_llvm_type(expr);
+                    if Self::is_aggregate_type(&llvm_ty) {
+                        let tmp = self.emit_alloca_store(&llvm_ty, &val);
+                        Ok(tmp)
+                    } else {
+                        Ok(val)
+                    }
                 }
             }
         }
@@ -2995,6 +3127,9 @@ impl Codegen {
                 Self::collect_idents_from_expr(start, locals, names);
                 Self::collect_idents_from_expr(end, locals, names);
             }
+            ExprKind::RangeFrom(start) => {
+                Self::collect_idents_from_expr(start, locals, names);
+            }
             ExprKind::Try(inner) => {
                 Self::collect_idents_from_expr(inner, locals, names);
             }
@@ -3128,6 +3263,7 @@ impl Codegen {
             ExprKind::Range(s, e) | ExprKind::RangeInclusive(s, e) => {
                 Self::expr_mutates_array(s, array_name) || Self::expr_mutates_array(e, array_name)
             }
+            ExprKind::RangeFrom(s) => Self::expr_mutates_array(s, array_name),
             ExprKind::Try(inner) => Self::expr_mutates_array(inner, array_name),
             ExprKind::Literal(_) | ExprKind::Ident(_) => false,
         }
@@ -3193,6 +3329,35 @@ impl Codegen {
         let n = self.label_counter;
         self.label_counter += 1;
         format!("{}.{}", prefix, n)
+    }
+
+    /// Ensure an Option enum layout exists for the given LLVM element type.
+    /// Called by pipeline terminators (position, find, reduce) that construct
+    /// Option values at the codegen level, since the monomorphizer may not have
+    /// created the declaration if the result is never bound to a typed variable.
+    pub(crate) fn ensure_option_enum_for_llvm_type(&mut self, llvm_ty: &str) {
+        let option_name = self.yorum_type_to_option_name(llvm_ty);
+        if !self.enum_layouts.contains_key(&option_name) {
+            let inner_type = match llvm_ty {
+                "i64" => Type::Int,
+                "double" => Type::Float,
+                "i1" => Type::Bool,
+                "i8" => Type::Char,
+                "ptr" => Type::Str,
+                _ => Type::Int, // fallback
+            };
+            self.enum_layouts.insert(
+                option_name.clone(),
+                EnumLayout {
+                    name: option_name,
+                    variants: vec![
+                        ("Some".to_string(), vec![inner_type]),
+                        ("None".to_string(), vec![]),
+                    ],
+                    tag_count: 2,
+                },
+            );
+        }
     }
 
     /// GEP into a named struct field `%StructName`. Returns the GEP pointer temp.

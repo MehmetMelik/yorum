@@ -20,6 +20,14 @@ impl Codegen {
                         return elem_types.iter().map(|t| self.llvm_type_size(t)).sum();
                     }
                 }
+                // Handle anonymous struct types like { ptr, i64, i64 }
+                if llvm_ty.starts_with('{') && llvm_ty.ends_with('}') {
+                    let inner = &llvm_ty[1..llvm_ty.len() - 1];
+                    return inner
+                        .split(',')
+                        .map(|field| self.llvm_type_size(field.trim()))
+                        .sum();
+                }
                 8
             }
         }
@@ -532,7 +540,9 @@ impl Codegen {
                 format!("%tuple.{}", semantic_name)
             }
             ExprKind::Spawn(_) => "ptr".to_string(),
-            ExprKind::Range(_, _) | ExprKind::RangeInclusive(_, _) => "i64".to_string(),
+            ExprKind::Range(_, _) | ExprKind::RangeInclusive(_, _) | ExprKind::RangeFrom(_) => {
+                "i64".to_string()
+            }
             ExprKind::Try(inner) => {
                 // The result type of ? is T from Option<T> or T from Result<T, E>
                 let inner_ty = self.expr_llvm_type(inner);
@@ -709,6 +719,40 @@ impl Codegen {
                 }
                 None
             }
+            ExprKind::Call(callee, _) => {
+                // Function calls: look up return type
+                if let ExprKind::Ident(name) = &callee.kind {
+                    if let Some(ret_ty) = self.fn_ret_types.get(name.as_str()) {
+                        let llvm_ty = self.llvm_type(ret_ty);
+                        if let Some(stripped) = llvm_ty.strip_prefix('%') {
+                            if self.enum_layouts.contains_key(stripped) {
+                                return Some(stripped.to_string());
+                            }
+                        }
+                    }
+                }
+                None
+            }
+            ExprKind::MethodCall(receiver, method, _) => {
+                // Pipeline terminators that return Option types.
+                // The enum layout may not exist yet (it gets created during codegen),
+                // so we return the name unconditionally for known terminators.
+                if Self::has_iter_base(receiver) {
+                    match method.as_str() {
+                        "position" => {
+                            return Some("Option__int".to_string());
+                        }
+                        "find" | "reduce" => {
+                            let llvm_ty = self.expr_llvm_type(expr);
+                            if let Some(stripped) = llvm_ty.strip_prefix('%') {
+                                return Some(stripped.to_string());
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                None
+            }
             _ => None,
         }
     }
@@ -748,7 +792,7 @@ impl Codegen {
             ExprKind::MethodCall(receiver, method, _) => {
                 // Pipeline terminators that return aggregate pointers
                 if Self::has_iter_base(receiver) {
-                    matches!(method.as_str(), "find" | "reduce")
+                    matches!(method.as_str(), "find" | "reduce" | "position")
                 } else {
                     false
                 }
@@ -768,5 +812,23 @@ impl Codegen {
         Err(CodegenError {
             message: format!("unknown variant '{}'", variant_name),
         })
+    }
+
+    /// Convert an AST Type to its mangled suffix (matching monomorphizer conventions).
+    pub(crate) fn mangle_type_suffix(ty: &Type) -> String {
+        match ty {
+            Type::Int => "int".to_string(),
+            Type::Float => "float".to_string(),
+            Type::Bool => "bool".to_string(),
+            Type::Char => "char".to_string(),
+            Type::Str => "string".to_string(),
+            Type::Named(n) => n.clone(),
+            Type::Tuple(inner) => {
+                let parts: Vec<String> = inner.iter().map(Self::mangle_type_suffix).collect();
+                format!("tuple.{}", parts.join("."))
+            }
+            Type::Array(inner) => format!("array.{}", Self::mangle_type_suffix(inner)),
+            _ => format!("{}", ty),
+        }
     }
 }

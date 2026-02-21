@@ -292,6 +292,9 @@ impl Monomorphizer {
                 self.collect_from_expr(start);
                 self.collect_from_expr(end);
             }
+            ExprKind::RangeFrom(start) => {
+                self.collect_from_expr(start);
+            }
             ExprKind::Try(inner) => {
                 self.collect_from_expr(inner);
             }
@@ -518,10 +521,9 @@ impl Monomorphizer {
 fn has_iter_base_static(expr: &Expr) -> bool {
     if let ExprKind::MethodCall(ref receiver, ref method, _) = expr.kind {
         match method.as_str() {
-            "iter" => true,
-            "map" | "filter" | "enumerate" | "zip" | "take" | "skip" => {
-                has_iter_base_static(receiver)
-            }
+            "iter" | "chars" => true,
+            "map" | "filter" | "enumerate" | "zip" | "take" | "skip" | "chain" | "take_while"
+            | "rev" => has_iter_base_static(receiver),
             _ => false,
         }
     } else {
@@ -770,6 +772,7 @@ fn substitute_expr(expr: &Expr, subst: &HashMap<String, Type>) -> Expr {
             Box::new(substitute_expr(start, subst)),
             Box::new(substitute_expr(end, subst)),
         ),
+        ExprKind::RangeFrom(start) => ExprKind::RangeFrom(Box::new(substitute_expr(start, subst))),
         ExprKind::Try(inner) => ExprKind::Try(Box::new(substitute_expr(inner, subst))),
         other => other.clone(),
     };
@@ -1053,6 +1056,15 @@ fn rewrite_expr(
                 _struct_insts,
             );
             rewrite_expr(end, generic_fns, _generic_structs, fn_insts, _struct_insts);
+        }
+        ExprKind::RangeFrom(start) => {
+            rewrite_expr(
+                start,
+                generic_fns,
+                _generic_structs,
+                fn_insts,
+                _struct_insts,
+            );
         }
         ExprKind::Try(inner) => {
             rewrite_expr(

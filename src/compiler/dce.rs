@@ -341,6 +341,9 @@ fn collect_expr_refs(expr: &Expr, refs: &mut References) {
             collect_expr_refs(start, refs);
             collect_expr_refs(end, refs);
         }
+        ExprKind::RangeFrom(start) => {
+            collect_expr_refs(start, refs);
+        }
         ExprKind::Try(inner) => {
             collect_expr_refs(inner, refs);
         }

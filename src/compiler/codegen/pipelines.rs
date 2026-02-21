@@ -1568,10 +1568,33 @@ impl Codegen {
         self.push_scope();
         self.define_var(var_name, &var_ptr, "i64");
 
+        // Bounds check elision: detect `for i in 0..len(arr)` pattern
+        let elide_arr_name = if !inclusive {
+            Self::detect_bounded_loop(start_expr, end_expr, body)
+        } else {
+            None
+        };
+        // Save previous binding (handles nested loops with same var name)
+        let prev_binding = if let Some(ref arr_name) = elide_arr_name {
+            self.bounded_loop_vars
+                .insert(var_name.to_string(), arr_name.clone())
+        } else {
+            None
+        };
+
         self.loop_labels
             .push((inc_label.clone(), end_label.clone()));
         self.emit_block(body)?;
         self.loop_labels.pop();
+
+        // Restore previous bounded loop var binding (or remove if none)
+        if elide_arr_name.is_some() {
+            if let Some(prev) = prev_binding {
+                self.bounded_loop_vars.insert(var_name.to_string(), prev);
+            } else {
+                self.bounded_loop_vars.remove(var_name);
+            }
+        }
 
         if !self.block_terminated {
             self.emit_line(&format!("br label %{}", inc_label));
@@ -1605,5 +1628,41 @@ impl Codegen {
         self.emit_label(&end_label);
         self.block_terminated = false;
         Ok(())
+    }
+
+    /// Detect `for i in 0..len(arr)` pattern for bounds check elision.
+    /// Returns `Some(arr_name)` if the pattern matches and body doesn't mutate the array.
+    fn detect_bounded_loop(start_expr: &Expr, end_expr: &Expr, body: &Block) -> Option<String> {
+        // start must be literal 0
+        let is_zero_start = matches!(&start_expr.kind, ExprKind::Literal(Literal::Int(0)));
+        if !is_zero_start {
+            return None;
+        }
+
+        // end must be Call(Ident("len"), [Ident(arr_name)])
+        let arr_name = if let ExprKind::Call(callee, args) = &end_expr.kind {
+            if let ExprKind::Ident(fn_name) = &callee.kind {
+                if fn_name == "len" && args.len() == 1 {
+                    if let ExprKind::Ident(name) = &args[0].kind {
+                        Some(name.clone())
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        }?;
+
+        // Body must not mutate the array (no push/pop/reassignment)
+        if Self::body_mutates_array(body, &arr_name) {
+            return None;
+        }
+
+        Some(arr_name)
     }
 }

@@ -1,0 +1,31 @@
+// array_repeat.yrm — Array repeat syntax [value; count].
+//
+// Demonstrates: zero-initialized arrays, non-zero fill, runtime count.
+
+module array_repeat;
+
+fn main() -> int {
+    // Zero-initialized array of 5 elements
+    let zeros: [int] = [0; 5];
+    print_int(len(zeros));   // 5
+    print_int(zeros[0]);     // 0
+    print_int(zeros[4]);     // 0
+
+    // Non-zero fill
+    let ones: [int] = [42; 3];
+    print_int(len(ones));    // 3
+    print_int(ones[0]);      // 42
+    print_int(ones[2]);      // 42
+
+    // Runtime count
+    let n: int = 4;
+    let arr: [int] = [7; n];
+    print_int(len(arr));     // 4
+    print_int(arr[3]);       // 7
+
+    // Empty array via zero count
+    let empty: [int] = [0; 0];
+    print_int(len(empty));   // 0
+
+    return 0;
+}

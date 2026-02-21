@@ -1159,11 +1159,25 @@ impl Parser {
                 }
             }
             TokenKind::LBracket => {
-                // Array literal: [expr, expr, ...]
+                // Array literal: [expr, expr, ...] or array repeat: [expr; count]
                 self.advance();
                 let mut elements = Vec::new();
                 if !self.check(&TokenKind::RBracket) {
                     elements.push(self.parse_expr()?);
+                    // Check for [value; count] syntax
+                    if self.check(&TokenKind::Semicolon) {
+                        self.advance();
+                        let count_expr = self.parse_expr()?;
+                        self.expect(&TokenKind::RBracket)?;
+                        let span = start.merge(self.prev_span());
+                        return Ok(Expr {
+                            kind: ExprKind::ArrayRepeat(
+                                Box::new(elements.remove(0)),
+                                Box::new(count_expr),
+                            ),
+                            span,
+                        });
+                    }
                     while self.check(&TokenKind::Comma) {
                         self.advance();
                         if self.check(&TokenKind::RBracket) {

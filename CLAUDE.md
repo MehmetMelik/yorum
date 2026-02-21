@@ -4,7 +4,7 @@
 
 ```bash
 cargo build                          # dev build
-cargo test                           # all tests (695: 68 unit + 627 integration)
+cargo test                           # all tests (712: 68 unit + 644 integration)
 cargo test compiler::lexer           # one module
 cargo test test_fibonacci_compiles   # single test
 ```

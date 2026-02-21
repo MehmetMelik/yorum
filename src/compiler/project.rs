@@ -682,6 +682,10 @@ fn rewrite_expr_calls(expr: &mut Expr, name_map: &HashMap<String, String>) {
                 rewrite_expr_calls(elem, name_map);
             }
         }
+        ExprKind::ArrayRepeat(val, count) => {
+            rewrite_expr_calls(val, name_map);
+            rewrite_expr_calls(count, name_map);
+        }
         ExprKind::Closure(c) => {
             rewrite_block_calls(&mut c.body, name_map);
         }

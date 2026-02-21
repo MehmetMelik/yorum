@@ -217,6 +217,11 @@ pub struct Codegen {
     // String buffer optimization: per-variable {len, cap} tracking
     string_buf_vars: HashMap<String, StringBufInfo>,
 
+    /// Loop vars provably bounded: var_name -> array_name
+    /// When `for i in 0..len(arr)` is detected and body doesn't mutate arr,
+    /// bounds checks for `arr[i]` can be safely elided.
+    bounded_loop_vars: HashMap<String, String>,
+
     // Debug info (DWARF)
     debug_enabled: bool,
     debug_filename: String,
@@ -271,6 +276,7 @@ impl Codegen {
             has_inline_fns: false,
             tail_call_hint: false,
             string_buf_vars: HashMap::new(),
+            bounded_loop_vars: HashMap::new(),
             debug_enabled: false,
             debug_filename: String::new(),
             debug_directory: String::new(),
@@ -753,6 +759,7 @@ impl Codegen {
         self.current_fn_contracts = f.contracts.clone();
         self.current_fn_name = f.name.clone();
         self.string_buf_vars.clear();
+        self.bounded_loop_vars.clear();
 
         // Ensure tuple type definitions exist for params and return type
         if let Type::Tuple(ref types) = f.return_type {
@@ -1818,6 +1825,97 @@ impl Codegen {
                 Ok(fat_ptr)
             }
 
+            ExprKind::ArrayRepeat(value_expr, count_expr) => {
+                // Evaluate count (runtime i64)
+                let count_val = self.emit_expr(count_expr)?;
+
+                // Determine element type
+                let elem_ty = self.expr_llvm_type(value_expr);
+                let elem_size = self.llvm_type_size(&elem_ty);
+
+                // Compute total bytes = count * elem_size
+                let total_bytes = self.fresh_temp();
+                self.emit_line(&format!(
+                    "{} = mul i64 {}, {}",
+                    total_bytes, count_val, elem_size
+                ));
+
+                // malloc(total_bytes)
+                let data_ptr = self.fresh_temp();
+                self.emit_line(&format!(
+                    "{} = call ptr @malloc(i64 {})",
+                    data_ptr, total_bytes
+                ));
+
+                // Check for zero-fill fast path: literal 0, 0.0, or false
+                let is_zero_fill = match &value_expr.kind {
+                    ExprKind::Literal(Literal::Int(0)) => true,
+                    ExprKind::Literal(Literal::Float(f)) => *f == 0.0,
+                    ExprKind::Literal(Literal::Bool(false)) => true,
+                    _ => false,
+                };
+
+                if is_zero_fill {
+                    // memset to zero
+                    self.emit_line(&format!(
+                        "call ptr @memset(ptr {}, i32 0, i64 {})",
+                        data_ptr, total_bytes
+                    ));
+                } else {
+                    // Fill loop: evaluate value once, then loop storing it
+                    let is_aggregate = Self::is_aggregate_type(&elem_ty);
+                    let val = if is_aggregate {
+                        self.emit_expr_ptr(value_expr)?
+                    } else {
+                        self.emit_expr(value_expr)?
+                    };
+
+                    let loop_var = self.fresh_temp();
+                    self.emit_line(&format!("{} = alloca i64", loop_var));
+                    self.emit_line(&format!("store i64 0, ptr {}", loop_var));
+
+                    let cond_label = self.fresh_label("repeat.cond");
+                    let body_label = self.fresh_label("repeat.body");
+                    let end_label = self.fresh_label("repeat.end");
+
+                    self.emit_line(&format!("br label %{}", cond_label));
+
+                    self.emit_label(&cond_label);
+                    self.block_terminated = false;
+                    let idx = self.emit_load("i64", &loop_var);
+                    let cmp = self.fresh_temp();
+                    self.emit_line(&format!("{} = icmp slt i64 {}, {}", cmp, idx, count_val));
+                    self.emit_cond_branch(&cmp, &body_label, &end_label);
+
+                    self.emit_label(&body_label);
+                    self.block_terminated = false;
+                    let gep = self.fresh_temp();
+                    self.emit_line(&format!(
+                        "{} = getelementptr {}, ptr {}, i64 {}",
+                        gep, elem_ty, data_ptr, idx
+                    ));
+                    if is_aggregate {
+                        self.emit_memcpy(&gep, &val, &elem_size.to_string());
+                    } else {
+                        self.emit_line(&format!("store {} {}, ptr {}", elem_ty, val, gep));
+                    }
+                    let next_idx = self.fresh_temp();
+                    self.emit_line(&format!("{} = add i64 {}, 1", next_idx, idx));
+                    self.emit_line(&format!("store i64 {}, ptr {}", next_idx, loop_var));
+                    self.emit_line(&format!("br label %{}", cond_label));
+
+                    self.emit_label(&end_label);
+                    self.block_terminated = false;
+                }
+
+                // Build fat pointer with len = count, cap = count
+                let fat_ptr = self.fresh_temp();
+                self.emit_line(&format!("{} = alloca {{ ptr, i64, i64 }}", fat_ptr));
+                self.emit_fat_ptr_init(&fat_ptr, &data_ptr, &count_val, &count_val);
+
+                Ok(fat_ptr)
+            }
+
             ExprKind::Index(arr_expr, idx_expr) => {
                 // Determine element type
                 let elem_ty = if let ExprKind::Ident(name) = &arr_expr.kind {
@@ -1836,11 +1934,26 @@ impl Codegen {
 
                 let idx_val = self.emit_expr(idx_expr)?;
 
-                // Bounds check
-                self.emit_line(&format!(
-                    "call void @__yorum_bounds_check(i64 {}, i64 {})",
-                    idx_val, len_val
-                ));
+                // Bounds check (elide if index is a provably bounded loop var)
+                let elide = if let ExprKind::Ident(idx_name) = &idx_expr.kind {
+                    if let Some(bounded_arr) = self.bounded_loop_vars.get(idx_name) {
+                        if let ExprKind::Ident(arr_name) = &arr_expr.kind {
+                            bounded_arr == arr_name
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+                if !elide {
+                    self.emit_line(&format!(
+                        "call void @__yorum_bounds_check(i64 {}, i64 {})",
+                        idx_val, len_val
+                    ));
+                }
 
                 // GEP to element and load
                 let elem_gep = self.fresh_temp();
@@ -2864,6 +2977,10 @@ impl Codegen {
                     Self::collect_idents_from_expr(elem, locals, names);
                 }
             }
+            ExprKind::ArrayRepeat(val, count) => {
+                Self::collect_idents_from_expr(val, locals, names);
+                Self::collect_idents_from_expr(count, locals, names);
+            }
             ExprKind::Closure(c) => {
                 let mut inner_locals = locals.clone();
                 for p in &c.params {
@@ -2882,6 +2999,137 @@ impl Codegen {
                 Self::collect_idents_from_expr(inner, locals, names);
             }
             ExprKind::Literal(_) => {}
+        }
+    }
+
+    // ── Bounds check elision helpers ────────────────────────
+
+    /// Check whether a loop body mutates the given array (push/pop/reassignment).
+    /// Index assignment (`arr[i] = val`) does NOT count as mutation since it
+    /// doesn't change length.
+    pub(crate) fn body_mutates_array(body: &Block, array_name: &str) -> bool {
+        for stmt in &body.stmts {
+            if Self::stmt_mutates_array(stmt, array_name) {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn stmt_mutates_array(stmt: &Stmt, array_name: &str) -> bool {
+        match stmt {
+            Stmt::Let(s) => {
+                // Shadowing the array name
+                if s.name == array_name {
+                    return true;
+                }
+                Self::expr_mutates_array(&s.value, array_name)
+            }
+            Stmt::Assign(s) => {
+                // Direct reassignment: `arr = ...`
+                if let ExprKind::Ident(name) = &s.target.kind {
+                    if name == array_name {
+                        return true;
+                    }
+                }
+                // Index assignment (arr[i] = val) is safe — doesn't change length
+                Self::expr_mutates_array(&s.target, array_name)
+                    || Self::expr_mutates_array(&s.value, array_name)
+            }
+            Stmt::Expr(s) => Self::expr_mutates_array(&s.expr, array_name),
+            Stmt::Return(s) => Self::expr_mutates_array(&s.value, array_name),
+            Stmt::If(s) => {
+                Self::expr_mutates_array(&s.condition, array_name)
+                    || Self::block_mutates_array(&s.then_block, array_name)
+                    || s.else_branch
+                        .as_ref()
+                        .is_some_and(|branch| Self::else_branch_mutates_array(branch, array_name))
+            }
+            Stmt::While(s) => {
+                Self::expr_mutates_array(&s.condition, array_name)
+                    || Self::block_mutates_array(&s.body, array_name)
+            }
+            Stmt::For(s) => {
+                Self::expr_mutates_array(&s.iterable, array_name)
+                    || Self::block_mutates_array(&s.body, array_name)
+            }
+            Stmt::Match(s) => {
+                Self::expr_mutates_array(&s.subject, array_name)
+                    || s.arms
+                        .iter()
+                        .any(|arm| Self::block_mutates_array(&arm.body, array_name))
+            }
+            Stmt::Break(_) | Stmt::Continue(_) => false,
+        }
+    }
+
+    fn block_mutates_array(block: &Block, array_name: &str) -> bool {
+        block
+            .stmts
+            .iter()
+            .any(|s| Self::stmt_mutates_array(s, array_name))
+    }
+
+    fn else_branch_mutates_array(branch: &ElseBranch, array_name: &str) -> bool {
+        match branch {
+            ElseBranch::Else(block) => Self::block_mutates_array(block, array_name),
+            ElseBranch::ElseIf(if_stmt) => {
+                Self::expr_mutates_array(&if_stmt.condition, array_name)
+                    || Self::block_mutates_array(&if_stmt.then_block, array_name)
+                    || if_stmt
+                        .else_branch
+                        .as_ref()
+                        .is_some_and(|b| Self::else_branch_mutates_array(b, array_name))
+            }
+        }
+    }
+
+    fn expr_mutates_array(expr: &Expr, array_name: &str) -> bool {
+        match &expr.kind {
+            ExprKind::Call(callee, args) => {
+                // push(arr, val) or pop(arr)
+                if let ExprKind::Ident(fn_name) = &callee.kind {
+                    if (fn_name == "push" || fn_name == "pop") && !args.is_empty() {
+                        if let ExprKind::Ident(arg_name) = &args[0].kind {
+                            if arg_name == array_name {
+                                return true;
+                            }
+                        }
+                    }
+                }
+                Self::expr_mutates_array(callee, array_name)
+                    || args.iter().any(|a| Self::expr_mutates_array(a, array_name))
+            }
+            ExprKind::Binary(l, _, r) => {
+                Self::expr_mutates_array(l, array_name) || Self::expr_mutates_array(r, array_name)
+            }
+            ExprKind::Unary(_, inner) => Self::expr_mutates_array(inner, array_name),
+            ExprKind::FieldAccess(obj, _) => Self::expr_mutates_array(obj, array_name),
+            ExprKind::MethodCall(recv, _, args) => {
+                Self::expr_mutates_array(recv, array_name)
+                    || args.iter().any(|a| Self::expr_mutates_array(a, array_name))
+            }
+            ExprKind::Index(arr, idx) => {
+                Self::expr_mutates_array(arr, array_name)
+                    || Self::expr_mutates_array(idx, array_name)
+            }
+            ExprKind::StructInit(_, fields) => fields
+                .iter()
+                .any(|f| Self::expr_mutates_array(&f.value, array_name)),
+            ExprKind::ArrayLit(elems) | ExprKind::TupleLit(elems) => elems
+                .iter()
+                .any(|e| Self::expr_mutates_array(e, array_name)),
+            ExprKind::ArrayRepeat(val, count) => {
+                Self::expr_mutates_array(val, array_name)
+                    || Self::expr_mutates_array(count, array_name)
+            }
+            ExprKind::Closure(_) => false, // Closure captures don't mutate in this context
+            ExprKind::Spawn(block) => Self::block_mutates_array(block, array_name),
+            ExprKind::Range(s, e) | ExprKind::RangeInclusive(s, e) => {
+                Self::expr_mutates_array(s, array_name) || Self::expr_mutates_array(e, array_name)
+            }
+            ExprKind::Try(inner) => Self::expr_mutates_array(inner, array_name),
+            ExprKind::Literal(_) | ExprKind::Ident(_) => false,
         }
     }
 

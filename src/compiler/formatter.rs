@@ -868,6 +868,13 @@ impl Formatter {
                 }
                 self.write("]");
             }
+            ExprKind::ArrayRepeat(val, count) => {
+                self.write("[");
+                self.emit_expr(val);
+                self.write("; ");
+                self.emit_expr(count);
+                self.write("]");
+            }
             ExprKind::TupleLit(elems) => {
                 self.write("(");
                 for (i, elem) in elems.iter().enumerate() {

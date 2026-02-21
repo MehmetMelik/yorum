@@ -323,6 +323,10 @@ fn collect_expr_refs(expr: &Expr, refs: &mut References) {
                 collect_expr_refs(elem, refs);
             }
         }
+        ExprKind::ArrayRepeat(val, count) => {
+            collect_expr_refs(val, refs);
+            collect_expr_refs(count, refs);
+        }
         ExprKind::Closure(c) => {
             for p in &c.params {
                 refs.referenced_types.push(p.ty.clone());

@@ -14,6 +14,18 @@ fn parse_to_json(source: &str) -> String {
     yorum::source_to_ast_json(source).expect("AST export failed")
 }
 
+/// Extract the body of @main from IR (everything between `define ... @main(` and the next `define` or end).
+fn extract_main_ir(ir: &str) -> &str {
+    let start = ir.find("@main(").expect("@main not found in IR");
+    let rest = &ir[start..];
+    // Find next `define` after the first line
+    let end = rest[1..]
+        .find("\ndefine ")
+        .map(|i| i + 1)
+        .unwrap_or(rest.len());
+    &rest[..end]
+}
+
 // ═══════════════════════════════════════════════════════════════
 //  End-to-end compilation tests
 // ═══════════════════════════════════════════════════════════════
@@ -9647,4 +9659,309 @@ fn test_iter_reduce_wrong_closure_type() {
     assert!(result.is_err());
     let msg = result.unwrap_err().to_string();
     assert!(msg.contains("must both match element type"));
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  Array repeat [value; count]
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn test_array_repeat_basic() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [0; 5];\n\
+         \x20   print_int(len(arr));\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    let main_ir = extract_main_ir(&ir);
+    assert!(main_ir.contains("call ptr @malloc"));
+    assert!(main_ir.contains("call ptr @memset"));
+}
+
+#[test]
+fn test_array_repeat_nonzero() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [42; 3];\n\
+         \x20   print_int(arr[0]);\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    let main_ir = extract_main_ir(&ir);
+    assert!(main_ir.contains("call ptr @malloc"));
+    // Non-zero fill uses a loop, not memset
+    assert!(!main_ir.contains("call ptr @memset"));
+    assert!(main_ir.contains("repeat.cond"));
+    assert!(main_ir.contains("repeat.body"));
+}
+
+#[test]
+fn test_array_repeat_zero_count() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [0; 0];\n\
+         \x20   print_int(len(arr));\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    let main_ir = extract_main_ir(&ir);
+    // Should still emit malloc and memset (memset on 0 bytes is a no-op)
+    assert!(main_ir.contains("call ptr @malloc"));
+    assert!(main_ir.contains("call ptr @memset"));
+}
+
+#[test]
+fn test_array_repeat_runtime_count() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let n: int = 10;\n\
+         \x20   let arr: [int] = [0; n];\n\
+         \x20   print_int(len(arr));\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    let main_ir = extract_main_ir(&ir);
+    // Runtime count: must multiply count by elem_size dynamically
+    assert!(main_ir.contains("mul i64"));
+    assert!(main_ir.contains("call ptr @malloc"));
+    assert!(main_ir.contains("call ptr @memset"));
+}
+
+#[test]
+fn test_array_repeat_typecheck_count_not_int() {
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [0; true];\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+    let msg = result.unwrap_err().to_string();
+    assert!(msg.contains("array repeat count must be 'int'"));
+}
+
+#[test]
+fn test_array_repeat_index_has_bounds_check() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [7; 3];\n\
+         \x20   let x: int = arr[1];\n\
+         \x20   print_int(x);\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    let main_ir = extract_main_ir(&ir);
+    // Indexing into an array-repeat result should still have a bounds check
+    assert!(main_ir.contains("call void @__yorum_bounds_check"));
+    assert!(main_ir.contains("getelementptr i64"));
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  Bounds check elision
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn test_bounds_check_elision_basic() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for i in 0..len(arr) {\n\
+         \x20       sum += arr[i];\n\
+         \x20   }\n\
+         \x20   print_int(sum);\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    let main_ir = extract_main_ir(&ir);
+    // Bounds check should be elided for arr[i] in 0..len(arr)
+    assert!(!main_ir.contains("call void @__yorum_bounds_check"));
+    // But the array access itself must still be present
+    assert!(main_ir.contains("getelementptr i64"));
+}
+
+#[test]
+fn test_bounds_check_no_elision_nonzero_start() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for i in 1..len(arr) {\n\
+         \x20       sum += arr[i];\n\
+         \x20   }\n\
+         \x20   print_int(sum);\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    let main_ir = extract_main_ir(&ir);
+    // Non-zero start: bounds check must remain
+    assert!(main_ir.contains("call void @__yorum_bounds_check"));
+}
+
+#[test]
+fn test_bounds_check_no_elision_different_array() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let brr: [int] = [4, 5, 6];\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for i in 0..len(arr) {\n\
+         \x20       sum += brr[i];\n\
+         \x20   }\n\
+         \x20   print_int(sum);\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    let main_ir = extract_main_ir(&ir);
+    // Indexing brr with loop bounded by len(arr): bounds check must remain
+    assert!(main_ir.contains("call void @__yorum_bounds_check"));
+}
+
+#[test]
+fn test_bounds_check_no_elision_mutation() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let mut arr: [int] = [1, 2, 3];\n\
+         \x20   for i in 0..len(arr) {\n\
+         \x20       push(arr, arr[i]);\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    let main_ir = extract_main_ir(&ir);
+    // push(arr, ...) in body: bounds check must remain
+    assert!(main_ir.contains("call void @__yorum_bounds_check"));
+}
+
+#[test]
+fn test_bounds_check_elision_index_write() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let mut arr: [int] = [1, 2, 3];\n\
+         \x20   for i in 0..len(arr) {\n\
+         \x20       arr[i] = i;\n\
+         \x20   }\n\
+         \x20   print_int(arr[0]);\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    let main_ir = extract_main_ir(&ir);
+    // Index write doesn't change length, so elision is safe.
+    // The arr[0] outside the loop will still have a bounds check.
+    // But the arr[i] inside the loop should be elided.
+    // Count bounds checks: should be exactly 1 (for arr[0] outside loop)
+    let count = main_ir.matches("call void @__yorum_bounds_check").count();
+    assert_eq!(
+        count, 1,
+        "expected 1 bounds check (only for arr[0] outside loop), found {}",
+        count
+    );
+}
+
+#[test]
+fn test_bounds_check_no_elision_expr_index() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for i in 0..len(arr) {\n\
+         \x20       sum += arr[i + 1];\n\
+         \x20   }\n\
+         \x20   print_int(sum);\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    let main_ir = extract_main_ir(&ir);
+    // i+1 is not a simple Ident, so bounds check must remain
+    assert!(main_ir.contains("call void @__yorum_bounds_check"));
+}
+
+#[test]
+fn test_bounds_check_no_elision_inclusive_range() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for i in 0..=len(arr) - 1 {\n\
+         \x20       sum += arr[i];\n\
+         \x20   }\n\
+         \x20   print_int(sum);\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    let main_ir = extract_main_ir(&ir);
+    // Inclusive range must NOT elide bounds checks — the implementation
+    // only elides for exclusive ranges.
+    assert!(main_ir.contains("call void @__yorum_bounds_check"));
+}
+
+#[test]
+fn test_bounds_check_no_elision_pop() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let mut arr: [int] = [1, 2, 3];\n\
+         \x20   for i in 0..len(arr) {\n\
+         \x20       let x: int = arr[i];\n\
+         \x20       pop(arr);\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    let main_ir = extract_main_ir(&ir);
+    // pop(arr) in body changes length: bounds check must remain
+    assert!(main_ir.contains("call void @__yorum_bounds_check"));
+}
+
+#[test]
+fn test_array_repeat_nonzero_stores_correct_value() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [42; 3];\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    let main_ir = extract_main_ir(&ir);
+    // The fill loop must store the actual value 42
+    assert!(main_ir.contains("store i64 42"));
+}
+
+#[test]
+fn test_array_repeat_struct_value() {
+    let ir = compile(
+        "struct Point { x: int, y: int }\n\
+         fn main() -> int {\n\
+         \x20   let pts: [Point] = [Point { x: 1, y: 2 }; 3];\n\
+         \x20   print_int(pts[0].x);\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    let main_ir = extract_main_ir(&ir);
+    // Struct values use memcpy in the fill loop, not scalar store
+    assert!(main_ir.contains("repeat.cond"));
+    assert!(main_ir.contains("call ptr @memcpy"));
+}
+
+#[test]
+fn test_bounds_check_elision_nested_loops() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let brr: [int] = [4, 5];\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for i in 0..len(arr) {\n\
+         \x20       for i in 0..len(brr) {\n\
+         \x20           sum += brr[i];\n\
+         \x20       }\n\
+         \x20       sum += arr[i];\n\
+         \x20   }\n\
+         \x20   print_int(sum);\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    let main_ir = extract_main_ir(&ir);
+    // Both accesses are provably in-bounds — no bounds checks in main
+    assert!(!main_ir.contains("call void @__yorum_bounds_check"));
+    // But both array accesses should still be present
+    assert!(main_ir.contains("getelementptr i64"));
 }

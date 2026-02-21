@@ -117,7 +117,7 @@ impl LspServer {
                 text_document_sync: 1, // Full sync
                 hover_provider: Some(true),
                 definition_provider: Some(true),
-                position_encoding: Some("utf-32".to_string()),
+                position_encoding: Some("utf-16".to_string()),
                 completion_provider: Some(CompletionOptions {
                     trigger_characters: vec![".".to_string()],
                 }),
@@ -363,70 +363,56 @@ impl LspServer {
 
         let (_, symbols) = crate::check_with_symbols(source);
         if let Some(sym) = symbols {
-            // Find the type of the identifier
-            for d in &sym.definitions {
-                if d.name == ident {
-                    // If it looks like a struct type, offer fields
-                    let type_desc = &d.type_desc;
-                    // Try to extract struct fields from the type info
-                    if let Some(struct_name) = extract_struct_name(type_desc) {
-                        // Find struct definition in symbol table
-                        for sd in &sym.definitions {
-                            if sd.name == struct_name
-                                && matches!(
-                                    sd.kind,
-                                    crate::compiler::typechecker::SymbolKind::Struct
-                                )
-                            {
-                                // Parse fields from struct type_desc
-                                for field in extract_fields_from_struct_desc(&sd.type_desc) {
-                                    items.push(CompletionItem {
-                                        label: field.0.clone(),
-                                        kind: COMPLETION_KIND_FIELD,
-                                        detail: Some(field.1.clone()),
-                                        insert_text: None,
-                                    });
+            // Resolve the type of the identifier
+            let resolved_type = resolve_ident_type(&ident, &sym);
+
+            if let Some(ref type_str) = resolved_type {
+                // Struct fields
+                if let Some(struct_name) = extract_struct_name(type_str) {
+                    for sd in &sym.definitions {
+                        if sd.name == struct_name
+                            && matches!(sd.kind, crate::compiler::typechecker::SymbolKind::Struct)
+                        {
+                            for field in extract_fields_from_struct_desc(&sd.type_desc) {
+                                items.push(CompletionItem {
+                                    label: field.0.clone(),
+                                    kind: COMPLETION_KIND_FIELD,
+                                    detail: Some(field.1.clone()),
+                                    insert_text: None,
+                                });
+                            }
+                            // User-defined struct methods (mangled as StructName_method)
+                            let prefix = format!("{}_", struct_name);
+                            for fd in &sym.definitions {
+                                if matches!(
+                                    fd.kind,
+                                    crate::compiler::typechecker::SymbolKind::Function
+                                ) {
+                                    if let Some(method_name) = fd.name.strip_prefix(&prefix) {
+                                        items.push(CompletionItem {
+                                            label: method_name.to_string(),
+                                            kind: COMPLETION_KIND_FUNCTION,
+                                            detail: Some(fd.type_desc.clone()),
+                                            insert_text: Some(format!("{}()", method_name)),
+                                        });
+                                    }
                                 }
                             }
                         }
                     }
-                    break;
                 }
-            }
-            // Also check references for type info
-            for r in &sym.references {
-                if r.def_name == ident {
-                    if let Some(struct_name) = extract_struct_name(&r.resolved_type) {
-                        for sd in &sym.definitions {
-                            if sd.name == struct_name
-                                && matches!(
-                                    sd.kind,
-                                    crate::compiler::typechecker::SymbolKind::Struct
-                                )
-                            {
-                                for field in extract_fields_from_struct_desc(&sd.type_desc) {
-                                    items.push(CompletionItem {
-                                        label: field.0.clone(),
-                                        kind: COMPLETION_KIND_FIELD,
-                                        detail: Some(field.1.clone()),
-                                        insert_text: None,
-                                    });
-                                }
-                            }
-                        }
-                    }
-                    break;
+
+                // Type-based method completions
+                for (name, sig) in methods_for_type(type_str) {
+                    items.push(CompletionItem {
+                        label: name.to_string(),
+                        kind: COMPLETION_KIND_FUNCTION,
+                        detail: Some(sig.to_string()),
+                        insert_text: Some(format!("{}()", name)),
+                    });
                 }
             }
         }
-
-        // Always offer common methods
-        items.push(CompletionItem {
-            label: "join".to_string(),
-            kind: COMPLETION_KIND_FUNCTION,
-            detail: Some("method".to_string()),
-            insert_text: Some("join()".to_string()),
-        });
 
         items
     }
@@ -479,8 +465,8 @@ impl LspServer {
         // Keywords
         let keywords = [
             "fn", "let", "mut", "if", "else", "while", "for", "in", "return", "struct", "enum",
-            "match", "true", "false", "and", "or", "not", "pure", "pub", "module", "import",
-            "spawn", "break", "continue", "impl", "trait", "effects", "requires", "ensures",
+            "match", "true", "false", "and", "or", "not", "pure", "pub", "module", "use", "spawn",
+            "break", "continue", "impl", "trait", "effects", "requires", "ensures",
         ];
         for kw in &keywords {
             if kw.starts_with(prefix) && seen.insert(kw.to_string()) {
@@ -789,6 +775,84 @@ fn extract_fields_from_struct_desc(type_desc: &str) -> Vec<(String, String)> {
         }
     }
     fields
+}
+
+/// Resolve the type of an identifier from the symbol table.
+/// Checks definitions first (extracts type after ": "), then references.
+fn resolve_ident_type(
+    ident: &str,
+    sym: &crate::compiler::typechecker::SymbolTable,
+) -> Option<String> {
+    // Check definitions: type_desc is like "let x: Type" or "x: Type" or "for x: Type"
+    for d in &sym.definitions {
+        if d.name == ident
+            && matches!(
+                d.kind,
+                crate::compiler::typechecker::SymbolKind::Variable
+                    | crate::compiler::typechecker::SymbolKind::Parameter
+            )
+        {
+            if let Some(colon_pos) = d.type_desc.rfind(": ") {
+                return Some(d.type_desc[colon_pos + 2..].to_string());
+            }
+        }
+    }
+    // Check references
+    for r in &sym.references {
+        if r.def_name == ident {
+            return Some(r.resolved_type.clone());
+        }
+    }
+    None
+}
+
+/// Return method completions appropriate for a given type string.
+fn methods_for_type(type_str: &str) -> Vec<(&'static str, &'static str)> {
+    if type_str.starts_with("Option<") {
+        vec![
+            ("unwrap", "() -> T"),
+            ("is_some", "() -> bool"),
+            ("is_none", "() -> bool"),
+        ]
+    } else if type_str.starts_with("Result<") {
+        vec![
+            ("unwrap", "() -> T"),
+            ("unwrap_err", "() -> E"),
+            ("is_ok", "() -> bool"),
+            ("is_err", "() -> bool"),
+        ]
+    } else if type_str.starts_with("Task<") {
+        vec![("join", "() -> T")]
+    } else if type_str.starts_with('[') {
+        vec![
+            ("len", "() -> int"),
+            ("push", "(elem) -> unit"),
+            ("pop", "() -> T"),
+            ("iter", "() -> Iterator"),
+            ("sort_int", "() -> [int]"),
+            ("contains", "(elem) -> bool"),
+        ]
+    } else if type_str.starts_with("Map<") {
+        vec![
+            ("map_get", "(key) -> V"),
+            ("map_set", "(key, val) -> unit"),
+            ("map_has", "(key) -> bool"),
+            ("map_remove", "(key) -> unit"),
+            ("map_size", "() -> int"),
+            ("map_keys", "() -> [K]"),
+            ("map_values", "() -> [V]"),
+        ]
+    } else if type_str.starts_with("Set<") {
+        vec![
+            ("set_add", "(elem) -> unit"),
+            ("set_has", "(elem) -> bool"),
+            ("set_remove", "(elem) -> unit"),
+            ("set_size", "() -> int"),
+            ("set_values", "() -> [T]"),
+        ]
+    } else {
+        vec![]
+    }
 }
 
 /// Extract a quoted name from an error message like "undefined variable 'foo'".

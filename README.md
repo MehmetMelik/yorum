@@ -256,6 +256,11 @@ fn main() -> int {
     let last: int = pop(arr);     // 4, arr is [1, 2, 3]
     arr[0] = 100;
     print_int(arr[0]);             // 100
+
+    // Array repeat: allocate and fill in one shot
+    let zeros: [int] = [0; 100];   // 100 zero-initialized ints
+    let ones: [int] = [1; 50];     // 50 ones
+
     return 0;
 }
 ```
@@ -263,7 +268,10 @@ fn main() -> int {
 Arrays are heap-allocated fat pointers (`{ ptr, i64, i64 }` — data pointer +
 length + capacity). `len(arr)` returns the length. `push(arr, val)` appends an
 element (growing the buffer via `realloc` when needed). `pop(arr)` removes and
-returns the last element. Index access includes runtime bounds checking.
+returns the last element. `[value; count]` creates an array of `count` copies of `value` in one allocation (zero values use `memset`, non-zero values use a fill loop).
+
+Index access includes runtime bounds checking. The compiler elides bounds checks inside `for i in 0..len(arr)` loops when `i` is provably in-bounds (no array mutation in the loop body).
+
 `for x in arr { ... }` iterates over array elements. `for x in arr.iter() { ... }` is equivalent. `for i in 0..n { ... }` iterates with a counter from 0 to n-1. `for i in 0..=n { ... }` iterates inclusively from 0 to n.
 
 ### Iterator Pipelines
@@ -300,6 +308,113 @@ indices, `.zip(arr2)` pairs elements, `.take(n)` limits count, `.skip(n)` skips 
 `Option<T>`, `.reduce(f)` accumulates without an initial value. **Range sources** (`(0..n).iter()` and
 `(0..=n).iter()`) work with all combinators and terminators. All pipelines are fused into a single
 loop — no intermediate allocations (except `.collect()`), no iterator structs. Closures must be inline.
+
+### String Interpolation
+
+```
+fn main() -> int {
+    let name: string = "Alice";
+    let age: int = 30;
+
+    // Embed variables and expressions in strings with {expr}
+    print_str("Hello, {name}! You are {age} years old.");
+    print_str("{10 + 32} is the answer.");
+
+    // Any expression works: function calls, arithmetic, array ops
+    let arr: [int] = [1, 2, 3];
+    print_str("Array has {len(arr)} elements.");
+
+    // Escape braces with {{ and }}
+    print_str("Use {{expr}} for interpolation.");
+    return 0;
+}
+```
+
+String interpolation with `{expr}` syntax is desugared by the parser into
+`str_concat` chains with `to_str` conversions. `int`, `float`, `bool`, and
+`char` values are automatically converted. Literal braces are escaped with
+`{{` and `}}`.
+
+### Tuples
+
+```
+fn swap(a: int, b: int) -> (int, int) {
+    return (b, a);
+}
+
+fn main() -> int {
+    // Tuple literal and field access
+    let pair: (int, string) = (42, "hello");
+    print_int(pair.0);       // 42
+    print_str(pair.1);       // hello
+
+    // Tuple destructuring in let bindings
+    let (a, b): (int, int) = swap(1, 2);
+    print_int(a);            // 2
+    print_int(b);            // 1
+
+    // Multi-element tuples
+    let triple: (int, int, int) = (10, 20, 30);
+    print_int(triple.0 + triple.1 + triple.2);   // 60
+    return 0;
+}
+```
+
+Tuples group values of different types. Fields are accessed by index (`t.0`,
+`t.1`). Destructuring binds tuple elements to individual variables. Tuples
+compile to LLVM struct types (e.g., `%tuple.int.string`).
+
+### Option and Result
+
+```
+fn find(arr: [int], target: int) -> Option<int> {
+    let mut i: int = 0;
+    while i < len(arr) {
+        if arr[i] == target {
+            return Some(i);
+        }
+        i += 1;
+    }
+    return None;
+}
+
+fn divide(a: int, b: int) -> Result<int, string> {
+    if b == 0 {
+        return Err("division by zero");
+    }
+    return Ok(a / b);
+}
+
+fn main() -> int {
+    // Option methods
+    let idx: Option<int> = find([10, 20, 30], 20);
+    print_int(idx.unwrap());         // 1
+    print_bool(idx.is_some());       // true
+    print_bool(idx.is_none());       // false
+
+    // Result methods
+    let res: Result<int, string> = divide(42, 7);
+    print_int(res.unwrap());         // 6
+    print_bool(res.is_ok());         // true
+
+    let err: Result<int, string> = divide(1, 0);
+    print_bool(err.is_err());        // true
+    let msg: string = err.unwrap_err();
+    print_str(msg);                  // division by zero
+
+    // Pattern matching on Option/Result
+    match idx {
+        Some(i) => { print_int(i); }
+        None => { print_str("not found"); }
+    }
+    return 0;
+}
+```
+
+`Option<T>` and `Result<T, E>` are prelude types — available without declaration.
+Construct with `Some(val)`/`None` and `Ok(val)`/`Err(e)`. Methods: `.unwrap()`
+(aborts on wrong variant), `.is_some()`/`.is_none()`, `.is_ok()`/`.is_err()`,
+`.unwrap_err()`. Use `?` for early return (see [Error Handling with ? Operator](#error-handling-with--operator)).
 
 ### Char Type and String Operations
 
@@ -827,7 +942,7 @@ diff gen1.ll gen2.ll    # identical — fixed-point achieved
 ## Testing
 
 ```bash
-cargo test                    # 695 tests (68 unit + 627 integration)
+cargo test                    # 712 tests (68 unit + 644 integration)
 cargo test compiler::lexer    # tests in one module
 cargo test test_fibonacci     # single test by name
 ```
@@ -872,6 +987,7 @@ cargo test test_fibonacci     # single test by name
 | **v1.9** | Iterator combinators (`.enumerate()`, `.zip()`, `.take()`, `.skip()`) and terminators (`.collect()`, `.fold()`, `.any()`, `.all()`, `.find()`, `.reduce()`) | Done |
 | **v1.9.1** | Range pipeline sources, aggregate codegen fixes, overflow hardening, tuple mangle bug fix, codegen cleanup | Done |
 | **v1.10** | Codegen refactor: fat pointer/struct helpers, pipeline deduplication, module extraction into 5 files | Done |
+| **v1.11** | Array repeat syntax `[value; count]`, bounds check elision for `for i in 0..len(arr)` loops | Done |
 
 ## License
 

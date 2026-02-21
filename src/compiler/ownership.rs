@@ -316,6 +316,10 @@ impl OwnershipChecker {
                     self.check_expr_use(elem);
                 }
             }
+            ExprKind::ArrayRepeat(val, count) => {
+                self.check_expr_use(val);
+                self.check_expr_use(count);
+            }
             ExprKind::Closure(closure) => {
                 self.push_scope();
                 for param in &closure.params {

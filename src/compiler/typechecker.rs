@@ -2075,6 +2075,22 @@ impl TypeChecker {
                     return Some(input_ty);
                 }
                 "chain" => {
+                    // chain() must be the first combinator after .iter() —
+                    // if it appeared after map/filter/etc., the conditional
+                    // source selection would process garbage for indices
+                    // beyond the first array's length.
+                    let is_iter_base = matches!(
+                        receiver.kind,
+                        ExprKind::MethodCall(_, ref m, _) if m == "iter"
+                    );
+                    if !is_iter_base {
+                        self.errors.push(TypeError {
+                            message: "chain() must be the first combinator after .iter()"
+                                .to_string(),
+                            span: expr.span,
+                        });
+                        return None;
+                    }
                     let input_ty = self.infer_pipeline_elem_type(receiver)?;
                     if args.len() != 1 {
                         self.errors.push(TypeError {

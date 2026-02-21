@@ -8942,6 +8942,155 @@ fn test_iter_chain_range_source() {
     assert!(ir.contains("chain.merge"));
 }
 
+#[test]
+fn test_iter_chain_not_first_combinator() {
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20   let a: [int] = [1, 2, 3];\n\
+         \x20   let b: [int] = [4, 5, 6];\n\
+         \x20   for x in a.iter().map(|v: int| -> int { return v * 2; }).chain(b) {\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+    let msg = result.unwrap_err().to_string();
+    assert!(msg.contains("must be the first combinator"));
+}
+
+#[test]
+fn test_iter_chain_after_filter() {
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20   let a: [int] = [1, 2, 3];\n\
+         \x20   let b: [int] = [4, 5, 6];\n\
+         \x20   for x in a.iter().filter(|v: int| -> bool { return v > 1; }).chain(b) {\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+    let msg = result.unwrap_err().to_string();
+    assert!(msg.contains("must be the first combinator"));
+}
+
+#[test]
+fn test_for_iter_chain_with_enumerate() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let a: [int] = [10, 20];\n\
+         \x20   let b: [int] = [30, 40];\n\
+         \x20   for pair in a.iter().chain(b).enumerate() {\n\
+         \x20       let (i, v): (int, int) = pair;\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("chain.first"));
+    assert!(ir.contains("chain.merge"));
+    assert!(ir.contains("tuple.int.int"));
+}
+
+#[test]
+fn test_for_iter_chain_with_take() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let a: [int] = [1, 2, 3];\n\
+         \x20   let b: [int] = [4, 5, 6];\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for x in a.iter().chain(b).take(4) {\n\
+         \x20       sum += x;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    assert!(ir.contains("chain.first"));
+    assert!(ir.contains("chain.merge"));
+    assert!(ir.contains("for.take.cont"));
+}
+
+#[test]
+fn test_for_iter_chain_with_skip() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let a: [int] = [1, 2, 3];\n\
+         \x20   let b: [int] = [4, 5, 6];\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   for x in a.iter().chain(b).skip(2) {\n\
+         \x20       sum += x;\n\
+         \x20   }\n\
+         \x20   return sum;\n\
+         }\n",
+    );
+    assert!(ir.contains("chain.first"));
+    assert!(ir.contains("chain.merge"));
+    assert!(ir.contains("for.skip.do"));
+}
+
+#[test]
+fn test_iter_chain_any() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let a: [int] = [1, 2, 3];\n\
+         \x20   let b: [int] = [4, 5, 6];\n\
+         \x20   let found: bool = a.iter().chain(b).any(|v: int| -> bool { return v > 5; });\n\
+         \x20   if found { return 1; }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("chain.first"));
+    assert!(ir.contains("chain.merge"));
+}
+
+#[test]
+fn test_iter_chain_all() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let a: [int] = [1, 2, 3];\n\
+         \x20   let b: [int] = [4, 5, 6];\n\
+         \x20   let ok: bool = a.iter().chain(b).all(|v: int| -> bool { return v > 0; });\n\
+         \x20   if ok { return 1; }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(ir.contains("chain.first"));
+    assert!(ir.contains("chain.merge"));
+}
+
+#[test]
+fn test_iter_chain_find() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let a: [int] = [1, 2, 3];\n\
+         \x20   let b: [int] = [4, 5, 6];\n\
+         \x20   let r: Option<int> = a.iter().chain(b).find(|v: int| -> bool { return v > 4; });\n\
+         \x20   match r {\n\
+         \x20       Some(v) => { return v; }\n\
+         \x20       None => { return 0; }\n\
+         \x20   }\n\
+         }\n",
+    );
+    assert!(ir.contains("chain.first"));
+    assert!(ir.contains("chain.merge"));
+}
+
+#[test]
+fn test_iter_chain_reduce() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let a: [int] = [1, 2, 3];\n\
+         \x20   let b: [int] = [4, 5, 6];\n\
+         \x20   let r: Option<int> = a.iter().chain(b).reduce(|acc: int, x: int| -> int { return acc + x; });\n\
+         \x20   match r {\n\
+         \x20       Some(v) => { return v; }\n\
+         \x20       None => { return 0; }\n\
+         \x20   }\n\
+         }\n",
+    );
+    assert!(ir.contains("chain.first"));
+    assert!(ir.contains("chain.merge"));
+}
+
 // ═══════════════════════════════════════════════════════════════
 //  Iterator terminator tests (collect, fold, any, all, find, reduce)
 // ═══════════════════════════════════════════════════════════════

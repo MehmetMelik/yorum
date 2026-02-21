@@ -11387,3 +11387,68 @@ fn test_run_find_direct_match() {
         30,
     );
 }
+
+// ── Fix: Map/Set iter for non-local-ident receivers ──
+
+#[test]
+fn test_set_iter_from_function_return() {
+    let ir = compile(
+        "fn make_set() -> Set<int> {\n\
+         \x20   let s: Set<int> = set_new();\n\
+         \x20   set_add(s, 10);\n\
+         \x20   return s;\n\
+         }\n\
+         fn main() -> int {\n\
+         \x20   let n: int = make_set().iter().count();\n\
+         \x20   return n;\n\
+         }\n",
+    );
+    // Should use set_values__int for the function return receiver
+    assert!(
+        ir.contains("@set_values__int"),
+        "expected set_values__int call for function return receiver"
+    );
+}
+
+#[test]
+fn test_map_iter_from_function_return() {
+    let ir = compile(
+        "fn make_map() -> Map<string, int> {\n\
+         \x20   let m: Map<string, int> = map_new();\n\
+         \x20   map_set(m, \"a\", 1);\n\
+         \x20   return m;\n\
+         }\n\
+         fn main() -> int {\n\
+         \x20   let n: int = make_map().iter().count();\n\
+         \x20   return n;\n\
+         }\n",
+    );
+    // Should use map_keys for the function return receiver
+    assert!(
+        ir.contains("map_keys"),
+        "expected map_keys call for function return receiver"
+    );
+}
+
+#[test]
+fn test_set_for_iter_from_function_return() {
+    let ir = compile(
+        "fn make_set() -> Set<int> {\n\
+         \x20   let s: Set<int> = set_new();\n\
+         \x20   set_add(s, 10);\n\
+         \x20   return s;\n\
+         }\n\
+         fn main() -> int {\n\
+         \x20   let mut total: int = 0;\n\
+         \x20   for x in make_set().iter() {\n\
+         \x20       total += x;\n\
+         \x20   }\n\
+         \x20   return total;\n\
+         }\n",
+    );
+    // Should use set_values__int for the function return receiver in for-loop
+    assert!(
+        ir.contains("@set_values__int"),
+        "expected set_values__int call for function return receiver in for-loop"
+    );
+}

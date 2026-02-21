@@ -3784,6 +3784,22 @@ impl TypeChecker {
                 Some(Type::Array(Box::new(first_ty)))
             }
 
+            ExprKind::ArrayRepeat(value_expr, count_expr) => {
+                let value_ty = self.infer_expr(value_expr)?;
+                if let Some(count_ty) = self.infer_expr(count_expr) {
+                    if count_ty != Type::Int {
+                        self.errors.push(TypeError {
+                            message: format!(
+                                "array repeat count must be 'int', found '{}'",
+                                count_ty
+                            ),
+                            span: count_expr.span,
+                        });
+                    }
+                }
+                Some(Type::Array(Box::new(value_ty)))
+            }
+
             ExprKind::TupleLit(elements) => {
                 if elements.is_empty() {
                     return Some(Type::Unit);
@@ -4301,6 +4317,10 @@ impl TypeChecker {
                 for e in elems {
                     Self::collect_calls_in_expr(e, out);
                 }
+            }
+            ExprKind::ArrayRepeat(val, count) => {
+                Self::collect_calls_in_expr(val, out);
+                Self::collect_calls_in_expr(count, out);
             }
             ExprKind::Closure(c) => Self::collect_calls_in_block(&c.body, out),
             ExprKind::Spawn(block) => {

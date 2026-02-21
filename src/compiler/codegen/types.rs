@@ -348,7 +348,7 @@ impl Codegen {
                 }
                 false
             }
-            ExprKind::ArrayLit(_) => false,
+            ExprKind::ArrayLit(_) | ExprKind::ArrayRepeat(_, _) => false,
             ExprKind::Index(arr_expr, _) => {
                 if let ExprKind::Ident(name) = &arr_expr.kind {
                     if let Some(elem_ty) = self.array_elem_types.get(name) {
@@ -508,7 +508,7 @@ impl Codegen {
                 }
                 "i64".to_string()
             }
-            ExprKind::ArrayLit(_) => "{ ptr, i64, i64 }".to_string(),
+            ExprKind::ArrayLit(_) | ExprKind::ArrayRepeat(_, _) => "{ ptr, i64, i64 }".to_string(),
             ExprKind::Index(arr_expr, _) => {
                 if let ExprKind::Ident(name) = &arr_expr.kind {
                     if let Some(elem_ty) = self.array_elem_types.get(name) {

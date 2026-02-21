@@ -357,6 +357,7 @@ pub enum ExprKind {
     StructInit(String, Vec<FieldInit>),
     Closure(ClosureExpr),
     ArrayLit(Vec<Expr>),
+    ArrayRepeat(Box<Expr>, Box<Expr>), // [value; count]
     TupleLit(Vec<Expr>),
     Spawn(Block),
     Range(Box<Expr>, Box<Expr>),

@@ -278,6 +278,10 @@ impl Monomorphizer {
                     self.collect_from_expr(elem);
                 }
             }
+            ExprKind::ArrayRepeat(val, count) => {
+                self.collect_from_expr(val);
+                self.collect_from_expr(count);
+            }
             ExprKind::Closure(c) => {
                 self.collect_from_block(&c.body);
             }
@@ -736,6 +740,10 @@ fn substitute_expr(expr: &Expr, subst: &HashMap<String, Type>) -> Expr {
         ExprKind::ArrayLit(elements) => {
             ExprKind::ArrayLit(elements.iter().map(|e| substitute_expr(e, subst)).collect())
         }
+        ExprKind::ArrayRepeat(val, count) => ExprKind::ArrayRepeat(
+            Box::new(substitute_expr(val, subst)),
+            Box::new(substitute_expr(count, subst)),
+        ),
         ExprKind::TupleLit(elements) => {
             ExprKind::TupleLit(elements.iter().map(|e| substitute_expr(e, subst)).collect())
         }
@@ -1008,6 +1016,16 @@ fn rewrite_expr(
                 rewrite_expr(elem, generic_fns, _generic_structs, fn_insts, _struct_insts);
             }
         }
+        ExprKind::ArrayRepeat(val, count) => {
+            rewrite_expr(val, generic_fns, _generic_structs, fn_insts, _struct_insts);
+            rewrite_expr(
+                count,
+                generic_fns,
+                _generic_structs,
+                fn_insts,
+                _struct_insts,
+            );
+        }
         ExprKind::Closure(c) => {
             rewrite_block(
                 &mut c.body,
@@ -1274,6 +1292,10 @@ fn rewrite_collection_calls_in_expr(expr: &mut Expr, var_types: &HashMap<String,
             for elem in elements {
                 rewrite_collection_calls_in_expr(elem, var_types);
             }
+        }
+        ExprKind::ArrayRepeat(val, count) => {
+            rewrite_collection_calls_in_expr(val, var_types);
+            rewrite_collection_calls_in_expr(count, var_types);
         }
         ExprKind::Try(inner) => {
             rewrite_collection_calls_in_expr(inner, var_types);

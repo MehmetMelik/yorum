@@ -215,10 +215,23 @@ impl Codegen {
                 let (data_ptr, len_val) = self.emit_fat_ptr_load(&arr_ptr);
 
                 let idx_val = self.emit_expr(idx_expr)?;
-                self.emit_line(&format!(
-                    "call void @__yorum_bounds_check(i64 {}, i64 {})",
-                    idx_val, len_val
-                ));
+
+                // Bounds check (elide if index is a provably bounded loop var)
+                let elide = if let ExprKind::Ident(idx_name) = &idx_expr.kind {
+                    if let Some(bounded_arr) = self.bounded_loop_vars.get(idx_name) {
+                        bounded_arr == &arr_name
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+                if !elide {
+                    self.emit_line(&format!(
+                        "call void @__yorum_bounds_check(i64 {}, i64 {})",
+                        idx_val, len_val
+                    ));
+                }
 
                 let elem_gep = self.fresh_temp();
                 self.emit_line(&format!(

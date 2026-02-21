@@ -92,10 +92,11 @@ Rationale: No language ecosystem grows without a package manager. Prerequisite f
 
 ## v1.9 — Iterators & Functional Patterns (Done)
 
-- ~~**Iterator trait/protocol** — `for x in expr` works with any type implementing `Iterator`~~
+- ~~**Structural iterator pipelines** — `.iter()` recognized by compiler for arrays, ranges, Sets, Maps; fused into single LLVM loops with no iterator structs~~
 - ~~**Lazy iterator combinators** — `map`, `filter`, `fold`, `take`, `skip`, `zip`, `enumerate`, `chain`~~
 - ~~**Range types as iterators** — `0..n`, `0..=n`~~
 - ~~**`collect()`** — materialize an iterator into an array~~
+- **User-definable Iterator trait/protocol** — not implemented; see Longer-term section
 
 ---
 
@@ -142,6 +143,26 @@ Rationale: No language ecosystem grows without a package manager. Prerequisite f
 | **Cross-compilation** | Emit LLVM IR for different targets. Platform-specific logic already exists |
 | **Self-hosted compiler parity** | Bring Yorum-in-Yorum up to full-feature parity (generics, closures, traits, multi-file) |
 | **JSON/Regex builtins** | Commonly needed for scripting and web use cases |
+| **Iterator trait/protocol** | User-definable `Iterator` trait so custom types can be iterable. See analysis below |
+
+### Iterator Trait/Protocol — Analysis
+
+Currently, iterator pipelines are **structural**: the compiler recognizes `.iter()` on built-in types (arrays, ranges, Sets, Maps) and `.chars()` on strings, then fuses the entire pipeline into a single LLVM loop. There are no iterator structs, no `next()` method, no vtables.
+
+**Pros of adding Iterator trait:**
+- Custom types become iterable in for-loops (e.g., `for node in tree { ... }`)
+- User-defined data structures can participate in the full pipeline ecosystem (map, filter, collect, etc.)
+- Closer to Rust/Python/Java convention — familiar mental model for users
+- Enables library authors to provide iterable APIs
+
+**Cons of adding Iterator trait:**
+- **Performance regression:** the current approach emits a single fused loop with zero overhead. A trait-based `next()` protocol requires either virtual dispatch (vtables, indirect calls) or monomorphization of every pipeline combination — both are slower or more complex than structural fusion
+- **Complexity explosion:** the codegen currently pattern-matches pipeline shapes at compile time. A trait-based system would need to compose arbitrary combinator chains generically, requiring either a lazy iterator state machine (like Rust) or runtime dispatch
+- **Closures can't implement traits:** Yorum closures are `{ fn_ptr, env_ptr }` pairs with no trait impl mechanism. Adapting combinators like `.map(f)` to work on trait-based iterators would require either trait objects or a different closure model
+- **Limited benefit today:** the 6 built-in sources (array, range, unbounded range, string, Set, Map) cover the vast majority of iteration use cases. Custom iterables are rare in practice
+- **Breaks the "no hidden behavior" principle:** an Iterator trait with `next()` introduces hidden state mutation on each call, which goes against Yorum's deterministic/explicit design
+
+**Recommendation:** keep the structural approach. If user-defined iteration is needed, a simpler alternative is allowing `impl` blocks to define a `to_array()` or `iter()` method that returns `[T]`, which then participates in the existing pipeline system without adding trait-based iteration machinery
 
 ---
 

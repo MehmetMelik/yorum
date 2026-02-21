@@ -748,7 +748,7 @@ impl Codegen {
             ExprKind::MethodCall(receiver, method, _) => {
                 // Pipeline terminators that return aggregate pointers
                 if Self::has_iter_base(receiver) {
-                    matches!(method.as_str(), "find" | "reduce")
+                    matches!(method.as_str(), "find" | "reduce" | "position")
                 } else {
                     false
                 }

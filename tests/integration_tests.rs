@@ -10748,3 +10748,206 @@ fn test_map_iter_tuple_access() {
     assert!(ir.contains("@map_keys__string__int"));
     assert!(ir.contains("@map_values__string__int"));
 }
+
+// ═══════════════════════════════════════════════════════════════
+//  rev + chain mutual exclusion tests
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn test_iter_rev_then_chain_error() {
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20   let a: [int] = [1, 2, 3];\n\
+         \x20   let b: [int] = [4, 5, 6];\n\
+         \x20   for x in a.iter().rev().chain(b) {\n\
+         \x20       print_int(x);\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+    let msg = result.unwrap_err().to_string();
+    assert!(msg.contains("must be the first combinator"));
+}
+
+#[test]
+fn test_iter_chain_then_rev_error() {
+    let result = yorum::typecheck(
+        "fn main() -> int {\n\
+         \x20   let a: [int] = [1, 2, 3];\n\
+         \x20   let b: [int] = [4, 5, 6];\n\
+         \x20   for x in a.iter().chain(b).rev() {\n\
+         \x20       print_int(x);\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    assert!(result.is_err());
+    let msg = result.unwrap_err().to_string();
+    assert!(msg.contains("must be the first combinator"));
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  Runtime validation tests (compile + link + execute)
+// ═══════════════════════════════════════════════════════════════
+
+/// Compile and run a .yrm source, returning the exit code.
+fn compile_run_and_check(source: &str, expected_exit: i32) {
+    // Skip on Windows (platform-specific linker symbols)
+    if cfg!(target_os = "windows") {
+        eprintln!("skipping runtime test on Windows");
+        return;
+    }
+
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let src_path = dir.path().join("test.yrm");
+    std::fs::write(&src_path, source).expect("failed to write source");
+
+    let output = std::process::Command::new("cargo")
+        .args(["run", "--", "run", src_path.to_str().unwrap()])
+        .output();
+
+    match output {
+        Ok(o) => {
+            let code = o.status.code().unwrap_or(-1);
+            if code != expected_exit {
+                let stderr = String::from_utf8_lossy(&o.stderr);
+                let stdout = String::from_utf8_lossy(&o.stdout);
+                panic!(
+                    "expected exit code {}, got {}.\nstdout: {}\nstderr: {}",
+                    expected_exit, code, stdout, stderr
+                );
+            }
+        }
+        Err(e) => {
+            eprintln!("skipping runtime test: {}", e);
+        }
+    }
+}
+
+#[test]
+fn test_run_sum() {
+    compile_run_and_check(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3, 4, 5];\n\
+         \x20   let s: int = arr.iter().sum();\n\
+         \x20   return s;\n\
+         }\n",
+        15,
+    );
+}
+
+#[test]
+fn test_run_count() {
+    compile_run_and_check(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let c: int = arr.iter().filter(|x: int| -> bool { return x > 1; }).count();\n\
+         \x20   return c;\n\
+         }\n",
+        2,
+    );
+}
+
+#[test]
+fn test_run_chain() {
+    compile_run_and_check(
+        "fn main() -> int {\n\
+         \x20   let a: [int] = [1, 2, 3];\n\
+         \x20   let b: [int] = [4, 5, 6];\n\
+         \x20   let s: int = a.iter().chain(b).fold(0, |acc: int, x: int| -> int { return acc + x; });\n\
+         \x20   return s;\n\
+         }\n",
+        21,
+    );
+}
+
+#[test]
+fn test_run_rev() {
+    compile_run_and_check(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let result: [int] = arr.iter().rev().collect();\n\
+         \x20   return result[0];\n\
+         }\n",
+        3,
+    );
+}
+
+#[test]
+fn test_run_take_while() {
+    compile_run_and_check(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3, 4, 5];\n\
+         \x20   let c: int = arr.iter().take_while(|v: int| -> bool { return v < 4; }).count();\n\
+         \x20   return c;\n\
+         }\n",
+        3,
+    );
+}
+
+#[test]
+fn test_run_position() {
+    compile_run_and_check(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [10, 20, 30];\n\
+         \x20   let pos: Option<int> = arr.iter().position(|x: int| -> bool { return x == 20; });\n\
+         \x20   return pos.unwrap();\n\
+         }\n",
+        1,
+    );
+}
+
+#[test]
+fn test_run_zip_range() {
+    compile_run_and_check(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [10, 20, 30];\n\
+         \x20   let s: int = arr.iter().zip(0..3).fold(0, |acc: int, pair: (int, int)| -> int { return acc + pair.1; });\n\
+         \x20   return s;\n\
+         }\n",
+        3,
+    );
+}
+
+#[test]
+fn test_run_clear() {
+    compile_run_and_check(
+        "fn main() -> int {\n\
+         \x20   let mut arr: [int] = [1, 2, 3];\n\
+         \x20   arr.clear();\n\
+         \x20   return len(arr);\n\
+         }\n",
+        0,
+    );
+}
+
+#[test]
+fn test_run_chars() {
+    compile_run_and_check(
+        "fn main() -> int {\n\
+         \x20   let s: string = \"hello\";\n\
+         \x20   let mut count: int = 0;\n\
+         \x20   for c in s.chars() {\n\
+         \x20       count += 1;\n\
+         \x20   }\n\
+         \x20   return count;\n\
+         }\n",
+        5,
+    );
+}
+
+#[test]
+fn test_run_position_match() {
+    compile_run_and_check(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [10, 20, 30];\n\
+         \x20   let pos: Option<int> = arr.iter().position(|x: int| -> bool { return x == 30; });\n\
+         \x20   match pos {\n\
+         \x20       Some(idx) => { return idx; }\n\
+         \x20       None => { return 99; }\n\
+         \x20   }\n\
+         }\n",
+        2,
+    );
+}

@@ -138,6 +138,24 @@ pub(crate) struct PipelineLoopParts {
     pub(crate) current_val: String,
 }
 
+/// Shared context for pipeline code generation, produced by the preamble and consumed
+/// by loop header, steps, and terminators.
+pub(crate) struct PipelineContext {
+    pub data_ptr: String,
+    pub len_val: String,
+    pub idx_ptr: String,
+    pub src_elem_ty: String,
+    pub final_elem_ty: String,
+    pub closure_infos: Vec<Option<ClosureInfo>>,
+    pub zip_infos: Vec<Option<ZipInfo>>,
+    pub take_skip_ptrs: Vec<Option<String>>,
+    pub enumerate_ptrs: Vec<Option<String>>,
+    pub is_range_source: bool,
+    pub range_end: Option<(String, bool)>,
+    pub chain_infos: Vec<Option<ChainInfo>>,
+    pub map_iter_info: Option<MapIterInfo>,
+}
+
 /// Tracks per-variable string buffer metadata for capacity-aware str_concat.
 /// When `cap == 0`, the data pointer is not an owned heap buffer (e.g. a global
 /// literal or a fresh allocation from a function).  The first inline concat

@@ -1,8 +1,10 @@
 // iterators.yrm — Iterator pipelines, combinators, and terminators.
 //
 // Demonstrates: .iter(), .map(), .filter(), .enumerate(), .zip(), .take(), .skip(),
-// .collect(), .fold(), .any(), .all(), .find(), .reduce(), chained pipelines,
-// closures with captures, type-transforming maps, break/continue.
+// .collect(), .fold(), .any(), .all(), .find(), .reduce(), .chain(), .rev(),
+// .take_while(), .sum(), .count(), .position(), .chars(), .clear(),
+// Set.iter(), Map.iter(), zip(range), closures with captures,
+// type-transforming maps, break/continue.
 
 fn main() -> int {
     // Basic map: double each element
@@ -297,6 +299,134 @@ fn main() -> int {
     let chain_fold: int = a.iter().chain(b).fold(0, |acc: int, x: int| -> int { return acc + x; });
     print_str("chain fold: ");
     print_int(chain_fold);
+
+    // --- clear ---
+    print_str("\n--- clear ---");
+    let mut clearable: [int] = [10, 20, 30];
+    print_str("before clear len: ");
+    print_int(len(clearable));
+    clearable.clear();
+    print_str("after clear len: ");
+    print_int(len(clearable));
+
+    // --- sum ---
+    print_str("\n--- sum ---");
+    let sum_arr: [int] = [1, 2, 3, 4, 5];
+    let total_sum: int = sum_arr.iter().sum();
+    print_str("sum [1..5]: ");
+    print_int(total_sum);
+
+    let filtered_sum: int = sum_arr.iter().filter(|x: int| -> bool { return x > 2; }).sum();
+    print_str("sum (>2): ");
+    print_int(filtered_sum);
+
+    // --- count ---
+    print_str("\n--- count ---");
+    let cnt: int = sum_arr.iter().count();
+    print_str("count [1..5]: ");
+    print_int(cnt);
+
+    let filtered_cnt: int = sum_arr.iter().filter(|x: int| -> bool { return x % 2 == 0; }).count();
+    print_str("count (evens): ");
+    print_int(filtered_cnt);
+
+    // --- position ---
+    print_str("\n--- position ---");
+    let pos: Option<int> = sum_arr.iter().position(|x: int| -> bool { return x == 3; });
+    match pos {
+        Some(idx) => {
+            print_str("position of 3: ");
+            print_int(idx);
+        }
+        None => {
+            print_str("position of 3: not found");
+        }
+    }
+
+    let pos_miss: Option<int> = sum_arr.iter().position(|x: int| -> bool { return x == 99; });
+    if pos_miss.is_none() {
+        print_str("position of 99: none");
+    }
+
+    // --- take_while ---
+    print_str("\n--- take_while ---");
+    sum = 0;
+    for x in sum_arr.iter().take_while(|v: int| -> bool { return v < 4; }) {
+        sum += x;
+    }
+    print_str("take_while (<4) sum: ");
+    print_int(sum);
+
+    let tw_collected: [int] = sum_arr.iter().take_while(|v: int| -> bool { return v < 4; }).collect();
+    print_str("take_while collect len: ");
+    print_int(len(tw_collected));
+
+    // --- chars ---
+    print_str("\n--- chars ---");
+    let greeting: string = "hello";
+    let mut char_count: int = 0;
+    for c in greeting.chars() {
+        char_count += 1;
+    }
+    print_str("chars count: ");
+    print_int(char_count);
+
+    let vowels: [char] = greeting.chars().filter(|c: char| -> bool { return c == 'e' or c == 'o'; }).collect();
+    print_str("vowels in hello: ");
+    print_int(len(vowels));
+
+    // --- rev ---
+    print_str("\n--- rev ---");
+    let rev_arr: [int] = [1, 2, 3, 4, 5];
+    let mut first_rev: int = 0;
+    for x in rev_arr.iter().rev() {
+        first_rev = x;
+        break;
+    }
+    print_str("first reversed: ");
+    print_int(first_rev);
+
+    let rev_collected: [int] = rev_arr.iter().rev().collect();
+    print_str("rev collect len: ");
+    print_int(len(rev_collected));
+
+    // --- zip(range) ---
+    print_str("\n--- zip(range) ---");
+    let zip_arr: [int] = [10, 20, 30];
+    let mut idx_sum: int = 0;
+    for pair in zip_arr.iter().zip(0..len(zip_arr)) {
+        idx_sum += pair.1;
+    }
+    print_str("zip range idx sum: ");
+    print_int(idx_sum);
+
+    // --- Set.iter ---
+    print_str("\n--- Set.iter ---");
+    let my_set: Set<int> = set_new();
+    set_add(my_set, 10);
+    set_add(my_set, 20);
+    set_add(my_set, 30);
+    let mut set_sum: int = 0;
+    for x in my_set.iter() {
+        set_sum += x;
+    }
+    print_str("set sum: ");
+    print_int(set_sum);
+
+    // --- Map.iter ---
+    print_str("\n--- Map.iter ---");
+    let m: Map<string, int> = map_new();
+    map_set(m, "a", 1);
+    map_set(m, "b", 2);
+    map_set(m, "c", 3);
+    let mut map_val_sum: int = 0;
+    for pair in m.iter() {
+        let k: string = pair.0;
+        let v: int = pair.1;
+        map_val_sum += v;
+    }
+    print_str("map value sum: ");
+    print_int(map_val_sum);
 
     return 0;
 }

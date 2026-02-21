@@ -755,20 +755,21 @@ impl Codegen {
         Ok(())
     }
 
-    /// Emit a for-loop over string characters: `for c in s.chars() { ... }`
-    pub(crate) fn emit_for_chars(
+    /// Helper: emit an indexed for-loop with a caller-supplied element-loading closure.
+    /// Handles alloca, cond/body/inc/end labels, scope, loop_labels, and index increment.
+    /// The `load_element` closure receives `(self, cur_idx, var_ptr)` and must load
+    /// the element at `cur_idx` and store it into `var_ptr`.
+    fn emit_indexed_for_loop(
         &mut self,
         var_name: &str,
-        string_expr: &Expr,
+        len_val: &str,
+        elem_ty: &str,
         body: &Block,
+        load_element: impl FnOnce(&mut Self, &str, &str) -> Result<(), CodegenError>,
     ) -> Result<(), CodegenError> {
-        let str_val = self.emit_expr(string_expr)?;
-        let str_len = self.fresh_temp();
-        self.emit_line(&format!("{} = call i64 @strlen(ptr {})", str_len, str_val));
-
         let idx_ptr = self.emit_alloca_store("i64", "0");
         let var_ptr = self.fresh_temp();
-        self.emit_line(&format!("{} = alloca i32", var_ptr)); // char is i32
+        self.emit_line(&format!("{} = alloca {}", var_ptr, elem_ty));
 
         let cond_label = self.fresh_label("for.cond");
         let body_label = self.fresh_label("for.body");
@@ -777,12 +778,12 @@ impl Codegen {
 
         self.emit_line(&format!("br label %{}", cond_label));
 
-        // Condition: idx < strlen
+        // Condition: idx < len
         self.emit_label(&cond_label);
         self.block_terminated = false;
         let cur_idx = self.emit_load("i64", &idx_ptr);
         let cmp = self.fresh_temp();
-        self.emit_line(&format!("{} = icmp slt i64 {}, {}", cmp, cur_idx, str_len));
+        self.emit_line(&format!("{} = icmp slt i64 {}, {}", cmp, cur_idx, len_val));
         self.emit_cond_branch(&cmp, &body_label, &end_label);
 
         // Body
@@ -790,16 +791,8 @@ impl Codegen {
         self.block_terminated = false;
         self.push_scope();
 
-        let byte_gep = self.fresh_temp();
-        self.emit_line(&format!(
-            "{} = getelementptr i8, ptr {}, i64 {}",
-            byte_gep, str_val, cur_idx
-        ));
-        let byte_val = self.emit_load("i8", &byte_gep);
-        let char_val = self.fresh_temp();
-        self.emit_line(&format!("{} = sext i8 {} to i32", char_val, byte_val));
-        self.emit_line(&format!("store i32 {}, ptr {}", char_val, var_ptr));
-        self.define_var(var_name, &var_ptr, "i32");
+        load_element(self, &cur_idx, &var_ptr)?;
+        self.define_var(var_name, &var_ptr, elem_ty);
 
         self.loop_labels
             .push((inc_label.clone(), end_label.clone()));
@@ -826,6 +819,37 @@ impl Codegen {
         Ok(())
     }
 
+    /// Emit a for-loop over string characters: `for c in s.chars() { ... }`
+    pub(crate) fn emit_for_chars(
+        &mut self,
+        var_name: &str,
+        string_expr: &Expr,
+        body: &Block,
+    ) -> Result<(), CodegenError> {
+        let str_val = self.emit_expr(string_expr)?;
+        let str_len = self.fresh_temp();
+        self.emit_line(&format!("{} = call i64 @strlen(ptr {})", str_len, str_val));
+
+        self.emit_indexed_for_loop(
+            var_name,
+            &str_len,
+            "i32",
+            body,
+            |codegen, cur_idx, var_ptr| {
+                let byte_gep = codegen.fresh_temp();
+                codegen.emit_line(&format!(
+                    "{} = getelementptr i8, ptr {}, i64 {}",
+                    byte_gep, str_val, cur_idx
+                ));
+                let byte_val = codegen.emit_load("i8", &byte_gep);
+                let char_val = codegen.fresh_temp();
+                codegen.emit_line(&format!("{} = sext i8 {} to i32", char_val, byte_val));
+                codegen.emit_line(&format!("store i32 {}, ptr {}", char_val, var_ptr));
+                Ok(())
+            },
+        )
+    }
+
     /// Emit a for-loop over Set elements: `for x in my_set.iter() { ... }`
     /// Materializes to array via set_values__T, then iterates normally.
     pub(crate) fn emit_for_set_iter(
@@ -846,59 +870,22 @@ impl Codegen {
         let elem_ty = self.llvm_type(elem_type);
         let (data_ptr, len_val) = self.emit_fat_ptr_load(&fat_ptr);
 
-        let idx_ptr = self.emit_alloca_store("i64", "0");
-        let var_ptr = self.fresh_temp();
-        self.emit_line(&format!("{} = alloca {}", var_ptr, elem_ty));
-
-        let cond_label = self.fresh_label("for.cond");
-        let body_label = self.fresh_label("for.body");
-        let inc_label = self.fresh_label("for.inc");
-        let end_label = self.fresh_label("for.end");
-
-        self.emit_line(&format!("br label %{}", cond_label));
-
-        self.emit_label(&cond_label);
-        self.block_terminated = false;
-        let cur_idx = self.emit_load("i64", &idx_ptr);
-        let cmp = self.fresh_temp();
-        self.emit_line(&format!("{} = icmp slt i64 {}, {}", cmp, cur_idx, len_val));
-        self.emit_cond_branch(&cmp, &body_label, &end_label);
-
-        self.emit_label(&body_label);
-        self.block_terminated = false;
-        self.push_scope();
-
-        let elem_gep = self.fresh_temp();
-        self.emit_line(&format!(
-            "{} = getelementptr {}, ptr {}, i64 {}",
-            elem_gep, elem_ty, data_ptr, cur_idx
-        ));
-        let elem_val = self.emit_load(&elem_ty, &elem_gep);
-        self.emit_line(&format!("store {} {}, ptr {}", elem_ty, elem_val, var_ptr));
-        self.define_var(var_name, &var_ptr, &elem_ty);
-
-        self.loop_labels
-            .push((inc_label.clone(), end_label.clone()));
-        self.emit_block(body)?;
-        self.loop_labels.pop();
-
-        if !self.block_terminated {
-            self.emit_line(&format!("br label %{}", inc_label));
-        }
-
-        self.pop_scope();
-
-        self.emit_label(&inc_label);
-        self.block_terminated = false;
-        let cur_idx2 = self.emit_load("i64", &idx_ptr);
-        let next_idx = self.fresh_temp();
-        self.emit_line(&format!("{} = add i64 {}, 1", next_idx, cur_idx2));
-        self.emit_line(&format!("store i64 {}, ptr {}", next_idx, idx_ptr));
-        self.emit_line(&format!("br label %{}", cond_label));
-
-        self.emit_label(&end_label);
-        self.block_terminated = false;
-        Ok(())
+        self.emit_indexed_for_loop(
+            var_name,
+            &len_val,
+            &elem_ty,
+            body,
+            |codegen, cur_idx, var_ptr| {
+                let elem_gep = codegen.fresh_temp();
+                codegen.emit_line(&format!(
+                    "{} = getelementptr {}, ptr {}, i64 {}",
+                    elem_gep, elem_ty, data_ptr, cur_idx
+                ));
+                let elem_val = codegen.emit_load(&elem_ty, &elem_gep);
+                codegen.emit_line(&format!("store {} {}, ptr {}", elem_ty, elem_val, var_ptr));
+                Ok(())
+            },
+        )
     }
 
     /// Emit a for-loop over Map entries: `for pair in my_map.iter() { ... }`
@@ -941,82 +928,61 @@ impl Codegen {
         self.ensure_pipeline_tuple_type(&tuple_name, &[key_elem_ty.clone(), val_elem_ty.clone()]);
         let tuple_ty = format!("%{}", tuple_name);
 
-        let idx_ptr = self.emit_alloca_store("i64", "0");
-        let var_ptr = self.fresh_temp();
-        self.emit_line(&format!("{} = alloca {}", var_ptr, tuple_ty));
+        let var_name_owned = var_name.to_string();
+        let key_type_clone = key_type.clone();
+        let val_type_clone = val_type.clone();
 
-        let cond_label = self.fresh_label("for.cond");
-        let body_label = self.fresh_label("for.body");
-        let inc_label = self.fresh_label("for.inc");
-        let end_label = self.fresh_label("for.end");
+        self.emit_indexed_for_loop(
+            var_name,
+            &key_len,
+            &tuple_ty,
+            body,
+            |codegen, cur_idx, var_ptr| {
+                // Load key
+                let key_gep = codegen.fresh_temp();
+                codegen.emit_line(&format!(
+                    "{} = getelementptr {}, ptr {}, i64 {}",
+                    key_gep, key_elem_ty, key_data, cur_idx
+                ));
+                let key_val = codegen.emit_load(&key_elem_ty, &key_gep);
 
-        self.emit_line(&format!("br label %{}", cond_label));
+                // Load value
+                let val_gep = codegen.fresh_temp();
+                codegen.emit_line(&format!(
+                    "{} = getelementptr {}, ptr {}, i64 {}",
+                    val_gep, val_elem_ty, val_data, cur_idx
+                ));
+                let val_val = codegen.emit_load(&val_elem_ty, &val_gep);
 
-        self.emit_label(&cond_label);
-        self.block_terminated = false;
-        let cur_idx = self.emit_load("i64", &idx_ptr);
-        let cmp = self.fresh_temp();
-        self.emit_line(&format!("{} = icmp slt i64 {}, {}", cmp, cur_idx, key_len));
-        self.emit_cond_branch(&cmp, &body_label, &end_label);
-
-        self.emit_label(&body_label);
-        self.block_terminated = false;
-        self.push_scope();
-
-        // Load key
-        let key_gep = self.fresh_temp();
-        self.emit_line(&format!(
-            "{} = getelementptr {}, ptr {}, i64 {}",
-            key_gep, key_elem_ty, key_data, cur_idx
-        ));
-        let key_val = self.emit_load(&key_elem_ty, &key_gep);
-
-        // Load value
-        let val_gep = self.fresh_temp();
-        self.emit_line(&format!(
-            "{} = getelementptr {}, ptr {}, i64 {}",
-            val_gep, val_elem_ty, val_data, cur_idx
-        ));
-        let val_val = self.emit_load(&val_elem_ty, &val_gep);
-
-        // Construct tuple
-        let tuple_ptr_tmp = self.fresh_temp();
-        self.emit_line(&format!("{} = alloca {}", tuple_ptr_tmp, tuple_ty));
-        self.emit_struct_field_store(&tuple_name, &tuple_ptr_tmp, 0, &key_elem_ty, &key_val);
-        self.emit_struct_field_store(&tuple_name, &tuple_ptr_tmp, 1, &val_elem_ty, &val_val);
-        let tuple_loaded = self.emit_load(&tuple_ty, &tuple_ptr_tmp);
-        self.emit_line(&format!(
-            "store {} {}, ptr {}",
-            tuple_ty, tuple_loaded, var_ptr
-        ));
-        self.define_var(var_name, &var_ptr, &tuple_ty);
-        self.var_ast_types.insert(
-            var_name.to_string(),
-            Type::Tuple(vec![key_type.clone(), val_type.clone()]),
-        );
-
-        self.loop_labels
-            .push((inc_label.clone(), end_label.clone()));
-        self.emit_block(body)?;
-        self.loop_labels.pop();
-
-        if !self.block_terminated {
-            self.emit_line(&format!("br label %{}", inc_label));
-        }
-
-        self.pop_scope();
-
-        self.emit_label(&inc_label);
-        self.block_terminated = false;
-        let cur_idx2 = self.emit_load("i64", &idx_ptr);
-        let next_idx = self.fresh_temp();
-        self.emit_line(&format!("{} = add i64 {}, 1", next_idx, cur_idx2));
-        self.emit_line(&format!("store i64 {}, ptr {}", next_idx, idx_ptr));
-        self.emit_line(&format!("br label %{}", cond_label));
-
-        self.emit_label(&end_label);
-        self.block_terminated = false;
-        Ok(())
+                // Construct tuple
+                let tuple_ptr_tmp = codegen.fresh_temp();
+                codegen.emit_line(&format!("{} = alloca {}", tuple_ptr_tmp, tuple_ty));
+                codegen.emit_struct_field_store(
+                    &tuple_name,
+                    &tuple_ptr_tmp,
+                    0,
+                    &key_elem_ty,
+                    &key_val,
+                );
+                codegen.emit_struct_field_store(
+                    &tuple_name,
+                    &tuple_ptr_tmp,
+                    1,
+                    &val_elem_ty,
+                    &val_val,
+                );
+                let tuple_loaded = codegen.emit_load(&tuple_ty, &tuple_ptr_tmp);
+                codegen.emit_line(&format!(
+                    "store {} {}, ptr {}",
+                    tuple_ty, tuple_loaded, var_ptr
+                ));
+                codegen.var_ast_types.insert(
+                    var_name_owned.clone(),
+                    Type::Tuple(vec![key_type_clone.clone(), val_type_clone.clone()]),
+                );
+                Ok(())
+            },
+        )
     }
 
     pub(crate) fn emit_match(&mut self, s: &MatchStmt) -> Result<(), CodegenError> {

@@ -860,14 +860,27 @@ impl Codegen {
             &pipeline.steps,
             pipeline.is_range_source,
         )?;
-        let is_range = pipeline.is_range_source;
 
-        // 2. Determine final output type
-        let final_elem_ty = self.pipeline_final_elem_type(&src_elem_ty, &pipeline.steps);
-
-        // 3. Alloca for index counter and loop variable
+        // 2. Determine final output type and build context
         let idx_ptr = self.emit_alloca_store("i64", "0");
+        let final_elem_ty = self.pipeline_final_elem_type(&src_elem_ty, &pipeline.steps);
+        let ctx = PipelineContext {
+            data_ptr,
+            len_val,
+            idx_ptr,
+            src_elem_ty: src_elem_ty.clone(),
+            final_elem_ty: final_elem_ty.clone(),
+            closure_infos,
+            zip_infos,
+            take_skip_ptrs,
+            enumerate_ptrs,
+            is_range_source: pipeline.is_range_source,
+            range_end,
+            chain_infos,
+            map_iter_info,
+        };
 
+        // 3. Alloca for loop variable
         let var_ptr = self.fresh_temp();
         self.emit_line(&format!("{} = alloca {}", var_ptr, final_elem_ty));
 
@@ -882,10 +895,10 @@ impl Codegen {
         self.emit_label(&cond_label);
         self.block_terminated = false;
         let cur_idx = self.emit_pipeline_loop_cond(
-            &idx_ptr,
-            &data_ptr,
-            &len_val,
-            &range_end,
+            &ctx.idx_ptr,
+            &ctx.data_ptr,
+            &ctx.len_val,
+            &ctx.range_end,
             &step_label,
             &end_label,
         );
@@ -894,22 +907,12 @@ impl Codegen {
         self.emit_label(&step_label);
         self.block_terminated = false;
         let (current_val, _) = self.emit_pipeline_steps(
-            &data_ptr,
-            &src_elem_ty,
             &cur_idx,
-            &idx_ptr,
             &cond_label,
             &body_label,
             &end_label,
+            &ctx,
             &pipeline.steps,
-            &closure_infos,
-            &zip_infos,
-            &take_skip_ptrs,
-            &enumerate_ptrs,
-            is_range,
-            &chain_infos,
-            &len_val,
-            &map_iter_info,
         )?;
 
         // 6. Body block
@@ -968,7 +971,6 @@ impl Codegen {
             &pipeline.steps,
             pipeline.is_range_source,
         )?;
-        let is_range = pipeline.is_range_source;
 
         // Emit terminator closure if any
         let term_closure_info = match &pipeline.terminator {
@@ -1014,190 +1016,72 @@ impl Codegen {
         // Determine element type after all pipeline steps (before terminator)
         let final_elem_ty = self.pipeline_final_elem_type(&src_elem_ty, &pipeline.steps);
 
-        // 3. Alloca for index counter
+        // 3. Alloca for index counter and build context
         let idx_ptr = self.emit_alloca_store("i64", "0");
+        let ctx = PipelineContext {
+            data_ptr,
+            len_val,
+            idx_ptr,
+            src_elem_ty,
+            final_elem_ty,
+            closure_infos,
+            zip_infos,
+            take_skip_ptrs,
+            enumerate_ptrs,
+            is_range_source: pipeline.is_range_source,
+            range_end,
+            chain_infos,
+            map_iter_info,
+        };
 
         // 4. Dispatch to specific terminator emitter
         match &pipeline.terminator {
-            PipelineTerminator::Collect => self.emit_terminator_collect(
-                &data_ptr,
-                &len_val,
-                &idx_ptr,
-                &src_elem_ty,
-                &final_elem_ty,
-                &pipeline.steps,
-                &closure_infos,
-                &zip_infos,
-                &take_skip_ptrs,
-                &enumerate_ptrs,
-                is_range,
-                &range_end,
-                &chain_infos,
-                &map_iter_info,
-            ),
+            PipelineTerminator::Collect => self.emit_terminator_collect(&ctx, &pipeline.steps),
             PipelineTerminator::Fold(init_expr, _) => {
                 let init_val = self.emit_expr(init_expr)?;
                 let tci = term_closure_info.unwrap();
                 self.emit_terminator_fold(
-                    &data_ptr,
-                    &len_val,
-                    &idx_ptr,
-                    &src_elem_ty,
-                    &final_elem_ty,
+                    &ctx,
                     &pipeline.steps,
-                    &closure_infos,
-                    &zip_infos,
-                    &take_skip_ptrs,
-                    &enumerate_ptrs,
                     &init_val,
                     &tci.fn_ptr,
                     &tci.env_ptr,
                     &tci.ret_ty,
-                    is_range,
-                    &range_end,
-                    &chain_infos,
-                    &map_iter_info,
                 )
             }
             PipelineTerminator::Any(_) => {
                 let tci = term_closure_info.unwrap();
-                self.emit_terminator_any_all(
-                    true,
-                    &data_ptr,
-                    &len_val,
-                    &idx_ptr,
-                    &src_elem_ty,
-                    &final_elem_ty,
-                    &pipeline.steps,
-                    &closure_infos,
-                    &zip_infos,
-                    &take_skip_ptrs,
-                    &enumerate_ptrs,
-                    &tci.fn_ptr,
-                    &tci.env_ptr,
-                    is_range,
-                    &range_end,
-                    &chain_infos,
-                    &map_iter_info,
-                )
+                self.emit_terminator_any_all(true, &ctx, &pipeline.steps, &tci.fn_ptr, &tci.env_ptr)
             }
             PipelineTerminator::All(_) => {
                 let tci = term_closure_info.unwrap();
                 self.emit_terminator_any_all(
                     false,
-                    &data_ptr,
-                    &len_val,
-                    &idx_ptr,
-                    &src_elem_ty,
-                    &final_elem_ty,
+                    &ctx,
                     &pipeline.steps,
-                    &closure_infos,
-                    &zip_infos,
-                    &take_skip_ptrs,
-                    &enumerate_ptrs,
                     &tci.fn_ptr,
                     &tci.env_ptr,
-                    is_range,
-                    &range_end,
-                    &chain_infos,
-                    &map_iter_info,
                 )
             }
             PipelineTerminator::Find(_) => {
                 let tci = term_closure_info.unwrap();
-                self.emit_terminator_find(
-                    &data_ptr,
-                    &len_val,
-                    &idx_ptr,
-                    &src_elem_ty,
-                    &final_elem_ty,
-                    &pipeline.steps,
-                    &closure_infos,
-                    &zip_infos,
-                    &take_skip_ptrs,
-                    &enumerate_ptrs,
-                    &tci.fn_ptr,
-                    &tci.env_ptr,
-                    is_range,
-                    &range_end,
-                    &chain_infos,
-                    &map_iter_info,
-                )
+                self.emit_terminator_find(&ctx, &pipeline.steps, &tci.fn_ptr, &tci.env_ptr)
             }
             PipelineTerminator::Reduce(_) => {
                 let tci = term_closure_info.unwrap();
                 self.emit_terminator_reduce(
-                    &data_ptr,
-                    &len_val,
-                    &idx_ptr,
-                    &src_elem_ty,
-                    &final_elem_ty,
+                    &ctx,
                     &pipeline.steps,
-                    &closure_infos,
-                    &zip_infos,
-                    &take_skip_ptrs,
-                    &enumerate_ptrs,
                     &tci.fn_ptr,
                     &tci.env_ptr,
                     &tci.ret_ty,
-                    is_range,
-                    &range_end,
-                    &chain_infos,
-                    &map_iter_info,
                 )
             }
-            PipelineTerminator::Sum => self.emit_terminator_sum(
-                &data_ptr,
-                &len_val,
-                &idx_ptr,
-                &src_elem_ty,
-                &final_elem_ty,
-                &pipeline.steps,
-                &closure_infos,
-                &zip_infos,
-                &take_skip_ptrs,
-                &enumerate_ptrs,
-                is_range,
-                &range_end,
-                &chain_infos,
-                &map_iter_info,
-            ),
-            PipelineTerminator::Count => self.emit_terminator_count(
-                &data_ptr,
-                &len_val,
-                &idx_ptr,
-                &src_elem_ty,
-                &final_elem_ty,
-                &pipeline.steps,
-                &closure_infos,
-                &zip_infos,
-                &take_skip_ptrs,
-                &enumerate_ptrs,
-                is_range,
-                &range_end,
-                &chain_infos,
-                &map_iter_info,
-            ),
+            PipelineTerminator::Sum => self.emit_terminator_sum(&ctx, &pipeline.steps),
+            PipelineTerminator::Count => self.emit_terminator_count(&ctx, &pipeline.steps),
             PipelineTerminator::Position(_) => {
                 let tci = term_closure_info.unwrap();
-                self.emit_terminator_position(
-                    &data_ptr,
-                    &len_val,
-                    &idx_ptr,
-                    &src_elem_ty,
-                    &final_elem_ty,
-                    &pipeline.steps,
-                    &closure_infos,
-                    &zip_infos,
-                    &take_skip_ptrs,
-                    &enumerate_ptrs,
-                    &tci.fn_ptr,
-                    &tci.env_ptr,
-                    is_range,
-                    &range_end,
-                    &chain_infos,
-                    &map_iter_info,
-                )
+                self.emit_terminator_position(&ctx, &pipeline.steps, &tci.fn_ptr, &tci.env_ptr)
             }
         }
     }
@@ -1207,38 +1091,27 @@ impl Codegen {
     /// Returns (current_val, current_ty) after all steps are applied.
     /// `cond_label` is the target for filter-skip, `body_label` is the final target,
     /// `end_label` is for take/zip exhaustion.
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn emit_pipeline_steps(
         &mut self,
-        data_ptr: &str,
-        src_elem_ty: &str,
         cur_idx: &str,
-        idx_ptr: &str,
         cond_label: &str,
         body_label: &str,
         end_label: &str,
+        ctx: &PipelineContext,
         steps: &[IterStep<'_>],
-        closure_infos: &[Option<ClosureInfo>],
-        zip_infos: &[Option<ZipInfo>],
-        take_skip_ptrs: &[Option<String>],
-        enumerate_ptrs: &[Option<String>],
-        is_range_source: bool,
-        chain_infos: &[Option<ChainInfo>],
-        len_val: &str,
-        map_iter_info: &Option<MapIterInfo>,
     ) -> Result<(String, String), CodegenError> {
         // For Map.iter(), the data_ptr points to keys array; use key type for GEP/load
-        let load_elem_ty = if let Some(ref mii) = *map_iter_info {
+        let load_elem_ty = if let Some(ref mii) = ctx.map_iter_info {
             &mii.key_elem_ty
         } else {
-            src_elem_ty
+            &ctx.src_elem_ty
         };
 
         // Check if first step is Rev — compute reversed index
         let has_rev = !steps.is_empty() && matches!(steps[0], IterStep::Rev);
         let effective_idx = if has_rev {
             let len_minus_1 = self.fresh_temp();
-            self.emit_line(&format!("{} = sub i64 {}, 1", len_minus_1, len_val));
+            self.emit_line(&format!("{} = sub i64 {}, 1", len_minus_1, ctx.len_val));
             let rev_idx = self.fresh_temp();
             self.emit_line(&format!(
                 "{} = sub i64 {}, {}",
@@ -1252,8 +1125,8 @@ impl Codegen {
         // Load element at current index — with chain conditional if chain is at position 0
         // When rev is active, effective_idx is the reversed index for element access.
         let load_idx = &effective_idx;
-        let mut current_val = if !chain_infos.is_empty() {
-            if let Some(ref ci) = chain_infos[0] {
+        let mut current_val = if !ctx.chain_infos.is_empty() {
+            if let Some(ref ci) = ctx.chain_infos[0] {
                 // Chain at position 0: conditionally load from first or second source
                 let in_first = self.fresh_temp();
                 self.emit_line(&format!(
@@ -1268,17 +1141,17 @@ impl Codegen {
                 // First source
                 self.emit_label(&chain_first_label);
                 self.block_terminated = false;
-                let first_val = if is_range_source {
+                let first_val = if ctx.is_range_source {
                     let val = self.fresh_temp();
-                    self.emit_line(&format!("{} = add i64 {}, {}", val, data_ptr, load_idx));
+                    self.emit_line(&format!("{} = add i64 {}, {}", val, ctx.data_ptr, load_idx));
                     val
                 } else {
                     let elem_gep = self.fresh_temp();
                     self.emit_line(&format!(
                         "{} = getelementptr {}, ptr {}, i64 {}",
-                        elem_gep, src_elem_ty, data_ptr, load_idx
+                        elem_gep, ctx.src_elem_ty, ctx.data_ptr, load_idx
                     ));
-                    self.emit_load(src_elem_ty, &elem_gep)
+                    self.emit_load(&ctx.src_elem_ty, &elem_gep)
                 };
                 self.emit_line(&format!("br label %{}", chain_merge_label));
 
@@ -1305,7 +1178,7 @@ impl Codegen {
                 self.emit_line(&format!(
                     "{} = phi {} [{}, %{}], [{}, %{}]",
                     merged,
-                    src_elem_ty,
+                    ctx.src_elem_ty,
                     first_val,
                     chain_first_label,
                     chain_val,
@@ -1314,42 +1187,42 @@ impl Codegen {
                 merged
             } else {
                 // No chain at position 0, normal load
-                if is_range_source {
+                if ctx.is_range_source {
                     let val = self.fresh_temp();
-                    self.emit_line(&format!("{} = add i64 {}, {}", val, data_ptr, load_idx));
+                    self.emit_line(&format!("{} = add i64 {}, {}", val, ctx.data_ptr, load_idx));
                     val
                 } else {
                     let elem_gep = self.fresh_temp();
                     self.emit_line(&format!(
                         "{} = getelementptr {}, ptr {}, i64 {}",
-                        elem_gep, load_elem_ty, data_ptr, load_idx
+                        elem_gep, load_elem_ty, ctx.data_ptr, load_idx
                     ));
                     self.emit_load(load_elem_ty, &elem_gep)
                 }
             }
-        } else if is_range_source {
+        } else if ctx.is_range_source {
             // Range source: element = start + index
             let val = self.fresh_temp();
-            self.emit_line(&format!("{} = add i64 {}, {}", val, data_ptr, load_idx));
+            self.emit_line(&format!("{} = add i64 {}, {}", val, ctx.data_ptr, load_idx));
             val
         } else {
             let elem_gep = self.fresh_temp();
             self.emit_line(&format!(
                 "{} = getelementptr {}, ptr {}, i64 {}",
-                elem_gep, load_elem_ty, data_ptr, load_idx
+                elem_gep, load_elem_ty, ctx.data_ptr, load_idx
             ));
             self.emit_load(load_elem_ty, &elem_gep)
         };
 
         // For chars() source, sext i8 → i32 so downstream closures see char type
-        if src_elem_ty == "i8" {
+        if ctx.src_elem_ty == "i8" {
             let char_val = self.fresh_temp();
             self.emit_line(&format!("{} = sext i8 {} to i32", char_val, current_val));
             current_val = char_val;
         }
 
         // For Map.iter(): current_val is the key; load value and construct (K, V) tuple
-        if let Some(ref mii) = *map_iter_info {
+        if let Some(ref mii) = ctx.map_iter_info {
             let val_gep = self.fresh_temp();
             self.emit_line(&format!(
                 "{} = getelementptr {}, ptr {}, i64 {}",
@@ -1379,20 +1252,20 @@ impl Codegen {
         // Increment index (always, even if filtered out)
         let next_idx = self.fresh_temp();
         self.emit_line(&format!("{} = add i64 {}, 1", next_idx, cur_idx));
-        self.emit_line(&format!("store i64 {}, ptr {}", next_idx, idx_ptr));
+        self.emit_line(&format!("store i64 {}, ptr {}", next_idx, ctx.idx_ptr));
 
         // Apply each pipeline step — use i32 as the effective type for chars() pipelines
-        let mut current_ty = if src_elem_ty == "i8" {
+        let mut current_ty = if ctx.src_elem_ty == "i8" {
             "i32".to_string()
         } else {
-            src_elem_ty.to_string()
+            ctx.src_elem_ty.to_string()
         };
         let step_count = steps.len();
         for (i, step) in steps.iter().enumerate() {
             let is_last = i + 1 == step_count;
             match step {
                 IterStep::Filter(_) => {
-                    let ci = closure_infos[i].as_ref().unwrap();
+                    let ci = ctx.closure_infos[i].as_ref().unwrap();
                     let result = self.fresh_temp();
                     self.emit_line(&format!(
                         "{} = call i1 {}(ptr {}, {} {})",
@@ -1410,7 +1283,7 @@ impl Codegen {
                     }
                 }
                 IterStep::Map(_) => {
-                    let ci = closure_infos[i].as_ref().unwrap();
+                    let ci = ctx.closure_infos[i].as_ref().unwrap();
                     let result = self.fresh_temp();
                     self.emit_line(&format!(
                         "{} = call {} {}(ptr {}, {} {})",
@@ -1423,7 +1296,7 @@ impl Codegen {
                     }
                 }
                 IterStep::Enumerate => {
-                    let counter_ptr = enumerate_ptrs[i].as_ref().unwrap();
+                    let counter_ptr = ctx.enumerate_ptrs[i].as_ref().unwrap();
                     let counter_val = self.emit_load("i64", counter_ptr);
                     let inner_semantic = llvm_to_semantic_name(&current_ty);
                     let tuple_name = format!("tuple.int.{}", inner_semantic);
@@ -1454,7 +1327,7 @@ impl Codegen {
                     }
                 }
                 IterStep::Zip(_) => {
-                    let zi = zip_infos[i].as_ref().unwrap();
+                    let zi = ctx.zip_infos[i].as_ref().unwrap();
                     let zip_cur = self.emit_load("i64", &zi.idx_ptr);
                     let zip_cmp = self.fresh_temp();
                     self.emit_line(&format!(
@@ -1507,7 +1380,7 @@ impl Codegen {
                     }
                 }
                 IterStep::Take(_) => {
-                    let remaining_ptr = take_skip_ptrs[i].as_ref().unwrap();
+                    let remaining_ptr = ctx.take_skip_ptrs[i].as_ref().unwrap();
                     let remaining = self.emit_load("i64", remaining_ptr);
                     let take_cmp = self.fresh_temp();
                     self.emit_line(&format!("{} = icmp sgt i64 {}, 0", take_cmp, remaining));
@@ -1523,7 +1396,7 @@ impl Codegen {
                     }
                 }
                 IterStep::Skip(_) => {
-                    let remaining_ptr = take_skip_ptrs[i].as_ref().unwrap();
+                    let remaining_ptr = ctx.take_skip_ptrs[i].as_ref().unwrap();
                     let remaining = self.emit_load("i64", remaining_ptr);
                     let skip_cmp = self.fresh_temp();
                     self.emit_line(&format!("{} = icmp sgt i64 {}, 0", skip_cmp, remaining));
@@ -1549,7 +1422,7 @@ impl Codegen {
                     }
                 }
                 IterStep::TakeWhile(_) => {
-                    let ci = closure_infos[i].as_ref().unwrap();
+                    let ci = ctx.closure_infos[i].as_ref().unwrap();
                     let result = self.fresh_temp();
                     self.emit_line(&format!(
                         "{} = call i1 {}(ptr {}, {} {})",
@@ -1590,23 +1463,11 @@ impl Codegen {
     /// Emit the cond → step → body-entry blocks common to every pipeline
     /// terminator.  Returns labels and the pipeline-processed element value
     /// so the caller only has to emit the body-specific and end-specific IR.
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn emit_pipeline_loop_header(
         &mut self,
         prefix: &str,
-        data_ptr: &str,
-        len_val: &str,
-        idx_ptr: &str,
-        src_elem_ty: &str,
+        ctx: &PipelineContext,
         steps: &[IterStep<'_>],
-        closure_infos: &[Option<ClosureInfo>],
-        zip_infos: &[Option<ZipInfo>],
-        take_skip_ptrs: &[Option<String>],
-        enumerate_ptrs: &[Option<String>],
-        is_range_source: bool,
-        range_end: &Option<(String, bool)>,
-        chain_infos: &[Option<ChainInfo>],
-        map_iter_info: &Option<MapIterInfo>,
     ) -> Result<PipelineLoopParts, CodegenError> {
         let cond_label = self.fresh_label(&format!("{prefix}.cond"));
         let step_label = self.fresh_label(&format!("{prefix}.step"));
@@ -1618,34 +1479,18 @@ impl Codegen {
         self.emit_label(&cond_label);
         self.block_terminated = false;
         let cur_idx = self.emit_pipeline_loop_cond(
-            idx_ptr,
-            data_ptr,
-            len_val,
-            range_end,
+            &ctx.idx_ptr,
+            &ctx.data_ptr,
+            &ctx.len_val,
+            &ctx.range_end,
             &step_label,
             &end_label,
         );
 
         self.emit_label(&step_label);
         self.block_terminated = false;
-        let (current_val, _) = self.emit_pipeline_steps(
-            data_ptr,
-            src_elem_ty,
-            &cur_idx,
-            idx_ptr,
-            &cond_label,
-            &body_label,
-            &end_label,
-            steps,
-            closure_infos,
-            zip_infos,
-            take_skip_ptrs,
-            enumerate_ptrs,
-            is_range_source,
-            chain_infos,
-            len_val,
-            map_iter_info,
-        )?;
+        let (current_val, _) =
+            self.emit_pipeline_steps(&cur_idx, &cond_label, &body_label, &end_label, ctx, steps)?;
 
         self.emit_label(&body_label);
         self.block_terminated = false;
@@ -1659,37 +1504,24 @@ impl Codegen {
 
     // ── Terminator: collect ─────────────────────────────────
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn emit_terminator_collect(
         &mut self,
-        data_ptr: &str,
-        len_val: &str,
-        idx_ptr: &str,
-        src_elem_ty: &str,
-        final_elem_ty: &str,
+        ctx: &PipelineContext,
         steps: &[IterStep<'_>],
-        closure_infos: &[Option<ClosureInfo>],
-        zip_infos: &[Option<ZipInfo>],
-        take_skip_ptrs: &[Option<String>],
-        enumerate_ptrs: &[Option<String>],
-        is_range_source: bool,
-        range_end: &Option<(String, bool)>,
-        chain_infos: &[Option<ChainInfo>],
-        map_iter_info: &Option<MapIterInfo>,
     ) -> Result<String, CodegenError> {
-        let elem_size = self.llvm_type_size(final_elem_ty);
+        let elem_size = self.llvm_type_size(&ctx.final_elem_ty);
 
         // Cap len_val so that len_val * elem_size cannot overflow i64.
         let max_safe_elems = i64::MAX as usize / elem_size.max(1);
         let len_over = self.fresh_temp();
         self.emit_line(&format!(
             "{} = icmp sgt i64 {}, {}",
-            len_over, len_val, max_safe_elems
+            len_over, ctx.len_val, max_safe_elems
         ));
         let safe_len = self.fresh_temp();
         self.emit_line(&format!(
             "{} = select i1 {}, i64 {}, i64 {}",
-            safe_len, len_over, max_safe_elems, len_val
+            safe_len, len_over, max_safe_elems, ctx.len_val
         ));
 
         // Allocate output array with capacity = safe_len
@@ -1705,22 +1537,7 @@ impl Codegen {
         ));
         let out_idx_ptr = self.emit_alloca_store("i64", "0");
 
-        let lp = self.emit_pipeline_loop_header(
-            "col",
-            data_ptr,
-            len_val,
-            idx_ptr,
-            src_elem_ty,
-            steps,
-            closure_infos,
-            zip_infos,
-            take_skip_ptrs,
-            enumerate_ptrs,
-            is_range_source,
-            range_end,
-            chain_infos,
-            map_iter_info,
-        )?;
+        let lp = self.emit_pipeline_loop_header("col", ctx, steps)?;
 
         // Body: store element to output array (guard against exceeding safe_len)
         let out_idx = self.emit_load("i64", &out_idx_ptr);
@@ -1736,11 +1553,11 @@ impl Codegen {
         let out_gep = self.fresh_temp();
         self.emit_line(&format!(
             "{} = getelementptr {}, ptr {}, i64 {}",
-            out_gep, final_elem_ty, out_data, out_idx
+            out_gep, ctx.final_elem_ty, out_data, out_idx
         ));
         self.emit_line(&format!(
             "store {} {}, ptr {}",
-            final_elem_ty, lp.current_val, out_gep
+            ctx.final_elem_ty, lp.current_val, out_gep
         ));
         let next_out = self.fresh_temp();
         self.emit_line(&format!("{} = add i64 {}, 1", next_out, out_idx));
@@ -1759,46 +1576,18 @@ impl Codegen {
 
     // ── Terminator: fold ─────────────────────────────────
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn emit_terminator_fold(
         &mut self,
-        data_ptr: &str,
-        len_val: &str,
-        idx_ptr: &str,
-        src_elem_ty: &str,
-        final_elem_ty: &str,
+        ctx: &PipelineContext,
         steps: &[IterStep<'_>],
-        closure_infos: &[Option<ClosureInfo>],
-        zip_infos: &[Option<ZipInfo>],
-        take_skip_ptrs: &[Option<String>],
-        enumerate_ptrs: &[Option<String>],
         init_val: &str,
         term_fn_ptr: &str,
         term_env_ptr: &str,
         acc_ty: &str,
-        is_range_source: bool,
-        range_end: &Option<(String, bool)>,
-        chain_infos: &[Option<ChainInfo>],
-        map_iter_info: &Option<MapIterInfo>,
     ) -> Result<String, CodegenError> {
         let acc_ptr = self.emit_alloca_store(acc_ty, init_val);
 
-        let lp = self.emit_pipeline_loop_header(
-            "fold",
-            data_ptr,
-            len_val,
-            idx_ptr,
-            src_elem_ty,
-            steps,
-            closure_infos,
-            zip_infos,
-            take_skip_ptrs,
-            enumerate_ptrs,
-            is_range_source,
-            range_end,
-            chain_infos,
-            map_iter_info,
-        )?;
+        let lp = self.emit_pipeline_loop_header("fold", ctx, steps)?;
 
         // Body: call closure(env, acc, elem) → new acc
         let acc_val = self.emit_load(acc_ty, &acc_ptr);
@@ -1811,7 +1600,7 @@ impl Codegen {
             term_env_ptr,
             acc_ty,
             acc_val,
-            final_elem_ty,
+            ctx.final_elem_ty,
             lp.current_val
         ));
         self.emit_line(&format!("store {} {}, ptr {}", acc_ty, new_acc, acc_ptr));
@@ -1826,26 +1615,13 @@ impl Codegen {
 
     // ── Terminator: any / all (unified) ─────────────────
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn emit_terminator_any_all(
         &mut self,
         is_any: bool,
-        data_ptr: &str,
-        len_val: &str,
-        idx_ptr: &str,
-        src_elem_ty: &str,
-        final_elem_ty: &str,
+        ctx: &PipelineContext,
         steps: &[IterStep<'_>],
-        closure_infos: &[Option<ClosureInfo>],
-        zip_infos: &[Option<ZipInfo>],
-        take_skip_ptrs: &[Option<String>],
-        enumerate_ptrs: &[Option<String>],
         term_fn_ptr: &str,
         term_env_ptr: &str,
-        is_range_source: bool,
-        range_end: &Option<(String, bool)>,
-        chain_infos: &[Option<ChainInfo>],
-        map_iter_info: &Option<MapIterInfo>,
     ) -> Result<String, CodegenError> {
         let prefix = if is_any { "any" } else { "all" };
         let init_val = if is_any { "false" } else { "true" };
@@ -1853,28 +1629,13 @@ impl Codegen {
 
         let result_ptr = self.emit_alloca_store("i1", init_val);
 
-        let lp = self.emit_pipeline_loop_header(
-            prefix,
-            data_ptr,
-            len_val,
-            idx_ptr,
-            src_elem_ty,
-            steps,
-            closure_infos,
-            zip_infos,
-            take_skip_ptrs,
-            enumerate_ptrs,
-            is_range_source,
-            range_end,
-            chain_infos,
-            map_iter_info,
-        )?;
+        let lp = self.emit_pipeline_loop_header(prefix, ctx, steps)?;
 
         // Body: call predicate, short-circuit on match
         let pred = self.fresh_temp();
         self.emit_line(&format!(
             "{} = call i1 {}(ptr {}, {} {})",
-            pred, term_fn_ptr, term_env_ptr, final_elem_ty, lp.current_val
+            pred, term_fn_ptr, term_env_ptr, ctx.final_elem_ty, lp.current_val
         ));
         let short_label = self.fresh_label(&format!("{prefix}.short"));
         let (true_target, false_target) = if is_any {
@@ -1901,27 +1662,14 @@ impl Codegen {
 
     // ── Terminator: find ─────────────────────────────────
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn emit_terminator_find(
         &mut self,
-        data_ptr: &str,
-        len_val: &str,
-        idx_ptr: &str,
-        src_elem_ty: &str,
-        final_elem_ty: &str,
+        ctx: &PipelineContext,
         steps: &[IterStep<'_>],
-        closure_infos: &[Option<ClosureInfo>],
-        zip_infos: &[Option<ZipInfo>],
-        take_skip_ptrs: &[Option<String>],
-        enumerate_ptrs: &[Option<String>],
         term_fn_ptr: &str,
         term_env_ptr: &str,
-        is_range_source: bool,
-        range_end: &Option<(String, bool)>,
-        chain_infos: &[Option<ChainInfo>],
-        map_iter_info: &Option<MapIterInfo>,
     ) -> Result<String, CodegenError> {
-        let option_name = self.yorum_type_to_option_name(final_elem_ty);
+        let option_name = self.yorum_type_to_option_name(&ctx.final_elem_ty);
         let option_llvm = format!("%{}", option_name);
 
         // Alloca result as None (tag=1)
@@ -1929,28 +1677,13 @@ impl Codegen {
         self.emit_line(&format!("{} = alloca {}", result_ptr, option_llvm));
         self.emit_struct_field_store(&option_name, &result_ptr, 0, "i32", "1");
 
-        let lp = self.emit_pipeline_loop_header(
-            "find",
-            data_ptr,
-            len_val,
-            idx_ptr,
-            src_elem_ty,
-            steps,
-            closure_infos,
-            zip_infos,
-            take_skip_ptrs,
-            enumerate_ptrs,
-            is_range_source,
-            range_end,
-            chain_infos,
-            map_iter_info,
-        )?;
+        let lp = self.emit_pipeline_loop_header("find", ctx, steps)?;
 
         // Body: call predicate, branch to found on match
         let pred = self.fresh_temp();
         self.emit_line(&format!(
             "{} = call i1 {}(ptr {}, {} {})",
-            pred, term_fn_ptr, term_env_ptr, final_elem_ty, lp.current_val
+            pred, term_fn_ptr, term_env_ptr, ctx.final_elem_ty, lp.current_val
         ));
         let found_label = self.fresh_label("find.found");
         self.emit_cond_branch(&pred, &found_label, &lp.cond_label);
@@ -1959,7 +1692,13 @@ impl Codegen {
         self.emit_label(&found_label);
         self.block_terminated = false;
         self.emit_struct_field_store(&option_name, &result_ptr, 0, "i32", "0");
-        self.emit_struct_field_store(&option_name, &result_ptr, 1, final_elem_ty, &lp.current_val);
+        self.emit_struct_field_store(
+            &option_name,
+            &result_ptr,
+            1,
+            &ctx.final_elem_ty,
+            &lp.current_val,
+        );
         self.emit_line(&format!("br label %{}", lp.end_label));
 
         // End
@@ -1970,28 +1709,15 @@ impl Codegen {
 
     // ── Terminator: reduce ─────────────────────────────────
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn emit_terminator_reduce(
         &mut self,
-        data_ptr: &str,
-        len_val: &str,
-        idx_ptr: &str,
-        src_elem_ty: &str,
-        final_elem_ty: &str,
+        ctx: &PipelineContext,
         steps: &[IterStep<'_>],
-        closure_infos: &[Option<ClosureInfo>],
-        zip_infos: &[Option<ZipInfo>],
-        take_skip_ptrs: &[Option<String>],
-        enumerate_ptrs: &[Option<String>],
         term_fn_ptr: &str,
         term_env_ptr: &str,
         ret_ty: &str,
-        is_range_source: bool,
-        range_end: &Option<(String, bool)>,
-        chain_infos: &[Option<ChainInfo>],
-        map_iter_info: &Option<MapIterInfo>,
     ) -> Result<String, CodegenError> {
-        let option_name = self.yorum_type_to_option_name(final_elem_ty);
+        let option_name = self.yorum_type_to_option_name(&ctx.final_elem_ty);
         let option_llvm = format!("%{}", option_name);
 
         // Alloca result as None (tag=1)
@@ -2004,22 +1730,7 @@ impl Codegen {
         self.emit_line(&format!("{} = alloca {}", acc_ptr, ret_ty));
         let has_value_ptr = self.emit_alloca_store("i1", "false");
 
-        let lp = self.emit_pipeline_loop_header(
-            "red",
-            data_ptr,
-            len_val,
-            idx_ptr,
-            src_elem_ty,
-            steps,
-            closure_infos,
-            zip_infos,
-            take_skip_ptrs,
-            enumerate_ptrs,
-            is_range_source,
-            range_end,
-            chain_infos,
-            map_iter_info,
-        )?;
+        let lp = self.emit_pipeline_loop_header("red", ctx, steps)?;
 
         // Body: check has_value to decide first vs accumulate
         let hv = self.emit_load("i1", &has_value_ptr);
@@ -2033,7 +1744,7 @@ impl Codegen {
         self.block_terminated = false;
         self.emit_line(&format!(
             "store {} {}, ptr {}",
-            final_elem_ty, lp.current_val, acc_ptr
+            ctx.final_elem_ty, lp.current_val, acc_ptr
         ));
         self.emit_line(&format!("store i1 true, ptr {}", has_value_ptr));
         self.emit_line(&format!("br label %{}", cont_label));
@@ -2051,7 +1762,7 @@ impl Codegen {
             term_env_ptr,
             ret_ty,
             acc_val,
-            final_elem_ty,
+            ctx.final_elem_ty,
             lp.current_val
         ));
         self.emit_line(&format!("store {} {}, ptr {}", ret_ty, new_acc, acc_ptr));
@@ -2101,106 +1812,50 @@ impl Codegen {
 
     // ── Terminator: sum ─────────────────────────────────
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn emit_terminator_sum(
         &mut self,
-        data_ptr: &str,
-        len_val: &str,
-        idx_ptr: &str,
-        src_elem_ty: &str,
-        final_elem_ty: &str,
+        ctx: &PipelineContext,
         steps: &[IterStep<'_>],
-        closure_infos: &[Option<ClosureInfo>],
-        zip_infos: &[Option<ZipInfo>],
-        take_skip_ptrs: &[Option<String>],
-        enumerate_ptrs: &[Option<String>],
-        is_range_source: bool,
-        range_end: &Option<(String, bool)>,
-        chain_infos: &[Option<ChainInfo>],
-        map_iter_info: &Option<MapIterInfo>,
     ) -> Result<String, CodegenError> {
-        let (init_val, add_op) = if final_elem_ty == "double" {
+        let (init_val, add_op) = if ctx.final_elem_ty == "double" {
             ("0.0", "fadd")
         } else {
             ("0", "add")
         };
-        let acc_ptr = self.emit_alloca_store(final_elem_ty, init_val);
+        let acc_ptr = self.emit_alloca_store(&ctx.final_elem_ty, init_val);
 
-        let lp = self.emit_pipeline_loop_header(
-            "sum",
-            data_ptr,
-            len_val,
-            idx_ptr,
-            src_elem_ty,
-            steps,
-            closure_infos,
-            zip_infos,
-            take_skip_ptrs,
-            enumerate_ptrs,
-            is_range_source,
-            range_end,
-            chain_infos,
-            map_iter_info,
-        )?;
+        let lp = self.emit_pipeline_loop_header("sum", ctx, steps)?;
 
         // Body: acc += elem
-        let acc_val = self.emit_load(final_elem_ty, &acc_ptr);
+        let acc_val = self.emit_load(&ctx.final_elem_ty, &acc_ptr);
         let new_acc = self.fresh_temp();
         self.emit_line(&format!(
             "{} = {} {} {}, {}",
-            new_acc, add_op, final_elem_ty, acc_val, lp.current_val
+            new_acc, add_op, ctx.final_elem_ty, acc_val, lp.current_val
         ));
         self.emit_line(&format!(
             "store {} {}, ptr {}",
-            final_elem_ty, new_acc, acc_ptr
+            ctx.final_elem_ty, new_acc, acc_ptr
         ));
         self.emit_line(&format!("br label %{}", lp.cond_label));
 
         // End: return accumulator
         self.emit_label(&lp.end_label);
         self.block_terminated = false;
-        let result = self.emit_load(final_elem_ty, &acc_ptr);
+        let result = self.emit_load(&ctx.final_elem_ty, &acc_ptr);
         Ok(result)
     }
 
     // ── Terminator: count ─────────────────────────────────
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn emit_terminator_count(
         &mut self,
-        data_ptr: &str,
-        len_val: &str,
-        idx_ptr: &str,
-        src_elem_ty: &str,
-        _final_elem_ty: &str,
+        ctx: &PipelineContext,
         steps: &[IterStep<'_>],
-        closure_infos: &[Option<ClosureInfo>],
-        zip_infos: &[Option<ZipInfo>],
-        take_skip_ptrs: &[Option<String>],
-        enumerate_ptrs: &[Option<String>],
-        is_range_source: bool,
-        range_end: &Option<(String, bool)>,
-        chain_infos: &[Option<ChainInfo>],
-        map_iter_info: &Option<MapIterInfo>,
     ) -> Result<String, CodegenError> {
         let counter_ptr = self.emit_alloca_store("i64", "0");
 
-        let lp = self.emit_pipeline_loop_header(
-            "cnt",
-            data_ptr,
-            len_val,
-            idx_ptr,
-            src_elem_ty,
-            steps,
-            closure_infos,
-            zip_infos,
-            take_skip_ptrs,
-            enumerate_ptrs,
-            is_range_source,
-            range_end,
-            chain_infos,
-            map_iter_info,
-        )?;
+        let lp = self.emit_pipeline_loop_header("cnt", ctx, steps)?;
 
         // Body: counter += 1 (lp.current_val is unused but must be emitted for filters)
         let _ = lp.current_val;
@@ -2219,25 +1874,12 @@ impl Codegen {
 
     // ── Terminator: position ─────────────────────────────────
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn emit_terminator_position(
         &mut self,
-        data_ptr: &str,
-        len_val: &str,
-        idx_ptr: &str,
-        src_elem_ty: &str,
-        final_elem_ty: &str,
+        ctx: &PipelineContext,
         steps: &[IterStep<'_>],
-        closure_infos: &[Option<ClosureInfo>],
-        zip_infos: &[Option<ZipInfo>],
-        take_skip_ptrs: &[Option<String>],
-        enumerate_ptrs: &[Option<String>],
         term_fn_ptr: &str,
         term_env_ptr: &str,
-        is_range_source: bool,
-        range_end: &Option<(String, bool)>,
-        chain_infos: &[Option<ChainInfo>],
-        map_iter_info: &Option<MapIterInfo>,
     ) -> Result<String, CodegenError> {
         let option_name = self.yorum_type_to_option_name("i64"); // Option<int>
         let option_llvm = format!("%{}", option_name);
@@ -2250,28 +1892,13 @@ impl Codegen {
         // Position counter (counts elements passing through the pipeline)
         let pos_ptr = self.emit_alloca_store("i64", "0");
 
-        let lp = self.emit_pipeline_loop_header(
-            "pos",
-            data_ptr,
-            len_val,
-            idx_ptr,
-            src_elem_ty,
-            steps,
-            closure_infos,
-            zip_infos,
-            take_skip_ptrs,
-            enumerate_ptrs,
-            is_range_source,
-            range_end,
-            chain_infos,
-            map_iter_info,
-        )?;
+        let lp = self.emit_pipeline_loop_header("pos", ctx, steps)?;
 
         // Body: call predicate, branch to found on match
         let pred = self.fresh_temp();
         self.emit_line(&format!(
             "{} = call i1 {}(ptr {}, {} {})",
-            pred, term_fn_ptr, term_env_ptr, final_elem_ty, lp.current_val
+            pred, term_fn_ptr, term_env_ptr, ctx.final_elem_ty, lp.current_val
         ));
         let found_label = self.fresh_label("pos.found");
         let cont_label = self.fresh_label("pos.cont");

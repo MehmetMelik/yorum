@@ -10663,6 +10663,85 @@ fn test_bounds_no_elision_while_step_becomes_negative() {
     );
 }
 
+#[test]
+fn test_bounds_no_elision_while_closure_param_shadows_outer_len_alias() {
+    // P1: while-elision analysis must be reset before emitting deferred
+    // closure functions. Outer facts for `n = len(arr)` must not leak into
+    // closure param `n`.
+    let ir = compile(
+        "fn invoke(f: fn(int) -> int) -> int {\n\
+         \x20   return f(10);\n\
+         }\n\
+         fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let n: int = len(arr);\n\
+         \x20   let f: fn(int) -> int = |n: int| -> int {\n\
+         \x20       let mut i: int = 0;\n\
+         \x20       let mut sum: int = 0;\n\
+         \x20       while i < n {\n\
+         \x20           sum += arr[i];\n\
+         \x20           i += 1;\n\
+         \x20       }\n\
+         \x20       return sum;\n\
+         \x20   };\n\
+         \x20   return invoke(f);\n\
+         }\n",
+    );
+    let closure_start = ir
+        .find("define i64 @__closure_0(")
+        .expect("__closure_0 not found");
+    let closure_rest = &ir[closure_start..];
+    let closure_end = closure_rest[1..]
+        .find("\ndefine ")
+        .map(|i| i + 1)
+        .unwrap_or(closure_rest.len());
+    let closure_ir = &closure_rest[..closure_end];
+    assert!(
+        closure_ir.contains("call void @__yorum_bounds_check"),
+        "closure param `n` must not inherit enclosing len-alias analysis state"
+    );
+}
+
+#[test]
+fn test_bounds_no_elision_while_clear_in_body() {
+    // P1: clear() mutates array length, so while-body accesses must keep
+    // bounds checks even when condition is `i < len(arr)`.
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let mut arr: [int] = [1, 2, 3];\n\
+         \x20   let mut i: int = 0;\n\
+         \x20   while i < len(arr) {\n\
+         \x20       arr.clear();\n\
+         \x20       print_int(arr[i]);\n\
+         \x20       i += 1;\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    let main_ir = extract_main_ir(&ir);
+    assert!(main_ir.contains("call void @__yorum_bounds_check"));
+}
+
+#[test]
+fn test_bounds_no_elision_while_stale_len_alias_after_clear() {
+    // P1: clear() before the loop invalidates `n = len(arr)` aliases.
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let mut arr: [int] = [1, 2, 3];\n\
+         \x20   let n: int = len(arr);\n\
+         \x20   arr.clear();\n\
+         \x20   let mut i: int = 0;\n\
+         \x20   while i < n {\n\
+         \x20       print_int(arr[i]);\n\
+         \x20       i += 1;\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    let main_ir = extract_main_ir(&ir);
+    assert!(main_ir.contains("call void @__yorum_bounds_check"));
+}
+
 // ═══════════════════════════════════════════════════════════════
 //  Phase 1: clear(), sum(), count()
 // ═══════════════════════════════════════════════════════════════

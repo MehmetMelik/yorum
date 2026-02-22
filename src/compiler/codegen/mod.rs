@@ -2586,6 +2586,13 @@ impl Codegen {
         let saved_block = std::mem::replace(&mut self.current_block, "entry".to_string());
         let saved_ret_ty = self.current_fn_ret_ty.take();
         let saved_vars = std::mem::take(&mut self.vars);
+        // Save while-elision analysis state (closure is a separate function scope)
+        let saved_len_aliases = std::mem::take(&mut self.len_aliases);
+        let saved_immutable_bindings = std::mem::take(&mut self.immutable_bindings);
+        let saved_non_negative_vars = std::mem::take(&mut self.non_negative_vars);
+        let saved_len_alias_scopes = std::mem::take(&mut self.len_alias_scopes);
+        let saved_immutable_binding_scopes = std::mem::take(&mut self.immutable_binding_scopes);
+        let saved_non_negative_scopes = std::mem::take(&mut self.non_negative_scopes);
 
         self.temp_counter = 0;
         self.label_counter = 0;
@@ -2652,6 +2659,12 @@ impl Codegen {
         self.current_block = saved_block;
         self.current_fn_ret_ty = saved_ret_ty;
         self.vars = saved_vars;
+        self.len_aliases = saved_len_aliases;
+        self.immutable_bindings = saved_immutable_bindings;
+        self.non_negative_vars = saved_non_negative_vars;
+        self.len_alias_scopes = saved_len_alias_scopes;
+        self.immutable_binding_scopes = saved_immutable_binding_scopes;
+        self.non_negative_scopes = saved_non_negative_scopes;
 
         Ok(())
     }
@@ -2753,6 +2766,13 @@ impl Codegen {
         let saved_vars = std::mem::take(&mut self.vars);
         let saved_contracts = std::mem::take(&mut self.current_fn_contracts);
         let saved_fn_name = std::mem::take(&mut self.current_fn_name);
+        // Save while-elision analysis state (spawn is a separate function scope)
+        let saved_len_aliases = std::mem::take(&mut self.len_aliases);
+        let saved_immutable_bindings = std::mem::take(&mut self.immutable_bindings);
+        let saved_non_negative_vars = std::mem::take(&mut self.non_negative_vars);
+        let saved_len_alias_scopes = std::mem::take(&mut self.len_alias_scopes);
+        let saved_immutable_binding_scopes = std::mem::take(&mut self.immutable_binding_scopes);
+        let saved_non_negative_scopes = std::mem::take(&mut self.non_negative_scopes);
 
         self.temp_counter = 0;
         self.label_counter = 0;
@@ -2804,6 +2824,12 @@ impl Codegen {
         self.vars = saved_vars;
         self.current_fn_contracts = saved_contracts;
         self.current_fn_name = saved_fn_name;
+        self.len_aliases = saved_len_aliases;
+        self.immutable_bindings = saved_immutable_bindings;
+        self.non_negative_vars = saved_non_negative_vars;
+        self.len_alias_scopes = saved_len_alias_scopes;
+        self.immutable_binding_scopes = saved_immutable_binding_scopes;
+        self.non_negative_scopes = saved_non_negative_scopes;
 
         Ok(())
     }
@@ -3280,7 +3306,15 @@ impl Codegen {
             }
             ExprKind::Unary(_, inner) => Self::expr_mutates_array(inner, array_name),
             ExprKind::FieldAccess(obj, _) => Self::expr_mutates_array(obj, array_name),
-            ExprKind::MethodCall(recv, _, args) => {
+            ExprKind::MethodCall(recv, method, args) => {
+                // .clear() on the target array mutates its length
+                if method == "clear" {
+                    if let ExprKind::Ident(name) = &recv.kind {
+                        if name == array_name {
+                            return true;
+                        }
+                    }
+                }
                 Self::expr_mutates_array(recv, array_name)
                     || args.iter().any(|a| Self::expr_mutates_array(a, array_name))
             }

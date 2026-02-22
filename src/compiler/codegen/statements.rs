@@ -4,9 +4,12 @@ impl Codegen {
     pub(crate) fn emit_let(&mut self, s: &LetStmt) -> Result<(), CodegenError> {
         let ty = self.llvm_type(&s.ty);
 
-        // Track immutable bindings for len_alias safety checks
+        // Track immutable bindings for len_alias safety checks.
+        // A mutable shadow must clear any prior immutable marker.
         if !s.is_mut {
             self.immutable_bindings.insert(s.name.clone());
+        } else {
+            self.immutable_bindings.remove(&s.name);
         }
 
         // Track non-negative variables for bounds check elision safety

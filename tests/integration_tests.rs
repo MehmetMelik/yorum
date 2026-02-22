@@ -10569,6 +10569,100 @@ fn test_bounds_no_elision_while_scope_leak() {
     );
 }
 
+#[test]
+fn test_bounds_no_elision_while_inner_scope_negates() {
+    // non_negative_vars must not be restored on scope exit when an inner-scope
+    // assignment invalidates an outer variable.
+    let ir = compile(
+        "fn check(arr: [int], cond: int) -> int {\n\
+         \x20   let mut i: int = 0;\n\
+         \x20   if cond == 1 {\n\
+         \x20       i = -1;\n\
+         \x20   }\n\
+         \x20   while i < len(arr) {\n\
+         \x20       print_int(arr[i]);\n\
+         \x20       i += 1;\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n\
+         fn main() -> int {\n\
+         \x20   let a: [int] = [1, 2, 3];\n\
+         \x20   return check(a, 1);\n\
+         }\n",
+    );
+    let check_start = ir.find("@check(").expect("@check not found");
+    let check_rest = &ir[check_start..];
+    let check_end = check_rest[1..]
+        .find("\ndefine ")
+        .map(|i| i + 1)
+        .unwrap_or(check_rest.len());
+    let check_ir = &check_rest[..check_end];
+    // i can be -1 after the if block — bounds check MUST remain
+    assert!(
+        check_ir.contains("call void @__yorum_bounds_check"),
+        "i can be negative after if block, bounds check must not be elided"
+    );
+}
+
+#[test]
+fn test_bounds_no_elision_while_mutable_shadow_immutable() {
+    // A mutable shadow must clear the immutable marker so array-repeat
+    // alias tracking doesn't treat it as immutable.
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let n: int = 5;\n\
+         \x20   let mut n: int = 3;\n\
+         \x20   let mut arr: [int] = [0; n];\n\
+         \x20   n = 10;\n\
+         \x20   let mut i: int = 0;\n\
+         \x20   while i < n {\n\
+         \x20       print_int(arr[i]);\n\
+         \x20       i += 1;\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    let main_ir = extract_main_ir(&ir);
+    // n is mutable (shadow), so [0; n] should NOT create a len alias.
+    // After n = 10, n > len(arr), so bounds check MUST remain.
+    assert!(main_ir.contains("call void @__yorum_bounds_check"));
+}
+
+#[test]
+fn test_bounds_no_elision_while_step_becomes_negative() {
+    // body_preserves_non_negative must account for helper variables
+    // being reassigned to negative values later in the loop body.
+    let ir = compile(
+        "fn check(arr: [int]) -> int {\n\
+         \x20   let mut step: int = 1;\n\
+         \x20   let mut i: int = 0;\n\
+         \x20   while i < len(arr) {\n\
+         \x20       print_int(arr[i]);\n\
+         \x20       i += step;\n\
+         \x20       step = -1;\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n\
+         fn main() -> int {\n\
+         \x20   let a: [int] = [1, 2, 3, 4, 5];\n\
+         \x20   return check(a);\n\
+         }\n",
+    );
+    let check_start = ir.find("@check(").expect("@check not found");
+    let check_rest = &ir[check_start..];
+    let check_end = check_rest[1..]
+        .find("\ndefine ")
+        .map(|i| i + 1)
+        .unwrap_or(check_rest.len());
+    let check_ir = &check_rest[..check_end];
+    // step becomes -1 in the body — on iteration 2, i += step makes i negative
+    // while i < len(arr) is still true, causing OOB. Bounds check MUST remain.
+    assert!(
+        check_ir.contains("call void @__yorum_bounds_check"),
+        "step reassigned to -1 in body, bounds check must not be elided"
+    );
+}
+
 // ═══════════════════════════════════════════════════════════════
 //  Phase 1: clear(), sum(), count()
 // ═══════════════════════════════════════════════════════════════

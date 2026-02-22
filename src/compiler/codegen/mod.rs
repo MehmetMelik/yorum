@@ -3460,13 +3460,26 @@ impl Codegen {
 
     /// Check that all modifications of `var_name` in the body preserve
     /// non-negativity (e.g. `var = var + <non_neg_expr>`).
+    ///
+    /// Uses a "loop-stable" snapshot: variables modified anywhere in the body
+    /// (other than var_name itself) are excluded from non_neg_vars, because
+    /// a later reassignment (e.g. `step = -1`) would make them negative on
+    /// subsequent iterations even if they started non-negative.
     fn body_preserves_non_negative(
         body: &Block,
         var_name: &str,
         non_neg_vars: &HashSet<String>,
     ) -> bool {
+        // Compute stable snapshot: exclude vars modified in the body
+        // (except var_name, which is the variable we're analyzing).
+        let stable: HashSet<String> = non_neg_vars
+            .iter()
+            .filter(|name| *name == var_name || !Self::body_reassigns_var(body, name))
+            .cloned()
+            .collect();
+
         for stmt in &body.stmts {
-            if !Self::stmt_preserves_non_negative(stmt, var_name, non_neg_vars) {
+            if !Self::stmt_preserves_non_negative(stmt, var_name, &stable) {
                 return false;
             }
         }
@@ -3805,7 +3818,15 @@ impl Codegen {
             self.immutable_bindings = saved;
         }
         if let Some(saved) = self.non_negative_scopes.pop() {
-            self.non_negative_vars = saved;
+            // Use intersection: a name is non-negative only if it survived
+            // BOTH the inner scope (wasn't invalidated by e.g. `i = -1`)
+            // AND was in the outer scope (isn't an inner-only `let` binding).
+            // This preserves invalidations from inner assignments to outer vars.
+            self.non_negative_vars = self
+                .non_negative_vars
+                .intersection(&saved)
+                .cloned()
+                .collect();
         }
     }
 

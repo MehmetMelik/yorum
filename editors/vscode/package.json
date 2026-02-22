@@ -2,7 +2,7 @@
   "name": "yorum",
   "displayName": "Yorum",
   "description": "Yorum language support — syntax highlighting, diagnostics, hover, and go-to-definition",
-  "version": "1.0.0",
+  "version": "1.12.2",
   "publisher": "yorum",
   "engines": {
     "vscode": "^1.75.0"

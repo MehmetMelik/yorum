@@ -10264,6 +10264,196 @@ fn test_bounds_check_elision_nested_loops() {
 }
 
 // ═══════════════════════════════════════════════════════════════
+//  While-loop bounds check elision
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn test_bounds_elision_while_direct_len() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let mut i: int = 0;\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   while i < len(arr) {\n\
+         \x20       sum += arr[i];\n\
+         \x20       i += 1;\n\
+         \x20   }\n\
+         \x20   print_int(sum);\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    let main_ir = extract_main_ir(&ir);
+    // Bounds check should be elided: i < len(arr) guards arr[i]
+    assert!(!main_ir.contains("call void @__yorum_bounds_check"));
+    assert!(main_ir.contains("getelementptr i64"));
+}
+
+#[test]
+fn test_bounds_elision_while_len_alias() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let n: int = len(arr);\n\
+         \x20   let mut i: int = 0;\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   while i < n {\n\
+         \x20       sum += arr[i];\n\
+         \x20       i += 1;\n\
+         \x20   }\n\
+         \x20   print_int(sum);\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    let main_ir = extract_main_ir(&ir);
+    // n == len(arr), immutable: bounds check should be elided
+    assert!(!main_ir.contains("call void @__yorum_bounds_check"));
+    assert!(main_ir.contains("getelementptr i64"));
+}
+
+#[test]
+fn test_bounds_elision_while_array_repeat() {
+    let ir = compile(
+        "fn sieve(n: int) -> int {\n\
+         \x20   let mut is_composite: [int] = [0; n];\n\
+         \x20   let p: int = 2;\n\
+         \x20   let mut j: int = p * p;\n\
+         \x20   while j < n {\n\
+         \x20       is_composite[j] = 1;\n\
+         \x20       j += p;\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n\
+         fn main() -> int { return sieve(30); }\n",
+    );
+    // Check the sieve function IR (not main)
+    let sieve_start = ir.find("@sieve(").expect("@sieve not found");
+    let sieve_rest = &ir[sieve_start..];
+    let sieve_end = sieve_rest[1..]
+        .find("\ndefine ")
+        .map(|i| i + 1)
+        .unwrap_or(sieve_rest.len());
+    let sieve_ir = &sieve_rest[..sieve_end];
+    // n is a param (immutable), [0; n] makes n alias len(is_composite)
+    assert!(
+        !sieve_ir.contains("call void @__yorum_bounds_check"),
+        "bounds check should be elided in sieve pattern"
+    );
+}
+
+#[test]
+fn test_bounds_elision_while_nonsequential() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3, 4, 5, 6];\n\
+         \x20   let mut j: int = 0;\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   while j < len(arr) {\n\
+         \x20       sum += arr[j];\n\
+         \x20       j += 2;\n\
+         \x20   }\n\
+         \x20   print_int(sum);\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    let main_ir = extract_main_ir(&ir);
+    // Step doesn't matter — j < len(arr) still guards arr[j]
+    assert!(!main_ir.contains("call void @__yorum_bounds_check"));
+}
+
+#[test]
+fn test_bounds_no_elision_while_modify_before_access() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let mut j: int = 0;\n\
+         \x20   while j < len(arr) {\n\
+         \x20       j += 1;\n\
+         \x20       print_int(arr[j]);\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    let main_ir = extract_main_ir(&ir);
+    // j is modified before arr[j] — unsafe, bounds check must remain
+    assert!(main_ir.contains("call void @__yorum_bounds_check"));
+}
+
+#[test]
+fn test_bounds_no_elision_while_push_in_body() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let mut arr: [int] = [1, 2, 3];\n\
+         \x20   let mut i: int = 0;\n\
+         \x20   while i < len(arr) {\n\
+         \x20       push(arr, arr[i]);\n\
+         \x20       i += 1;\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    let main_ir = extract_main_ir(&ir);
+    // push(arr, ..) mutates array — bounds check must remain
+    assert!(main_ir.contains("call void @__yorum_bounds_check"));
+}
+
+#[test]
+fn test_bounds_no_elision_while_bound_reassigned() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let mut n: int = len(arr);\n\
+         \x20   let mut i: int = 0;\n\
+         \x20   while i < n {\n\
+         \x20       print_int(arr[i]);\n\
+         \x20       n = 999;\n\
+         \x20       i += 1;\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    let main_ir = extract_main_ir(&ir);
+    // n is mutable — should NOT be tracked as len alias, bounds check must remain
+    assert!(main_ir.contains("call void @__yorum_bounds_check"));
+}
+
+#[test]
+fn test_sieve_compiles_and_runs() {
+    let ir = compile(
+        "fn sieve_of_eratosthenes(n: int) -> [int] {\n\
+         \x20   let mut is_composite: [int] = [0; n];\n\
+         \x20   let mut p: int = 2;\n\
+         \x20   while p * p < n {\n\
+         \x20       if is_composite[p] == 0 {\n\
+         \x20           let mut j: int = p * p;\n\
+         \x20           while j < n {\n\
+         \x20               is_composite[j] = 1;\n\
+         \x20               j += p;\n\
+         \x20           }\n\
+         \x20       }\n\
+         \x20       p += 1;\n\
+         \x20   }\n\
+         \x20   let mut primes: [int] = [0; 0];\n\
+         \x20   for i in 2..n {\n\
+         \x20       if is_composite[i] == 0 {\n\
+         \x20           push(primes, i);\n\
+         \x20       }\n\
+         \x20   }\n\
+         \x20   return primes;\n\
+         }\n\
+         fn main() -> int {\n\
+         \x20   let primes: [int] = sieve_of_eratosthenes(30);\n\
+         \x20   for i in 0..len(primes) {\n\
+         \x20       print_int(primes[i]);\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    // Should compile without errors
+    assert!(ir.contains("define i64 @main("));
+    assert!(ir.contains("@sieve_of_eratosthenes("));
+}
+
+// ═══════════════════════════════════════════════════════════════
 //  Phase 1: clear(), sum(), count()
 // ═══════════════════════════════════════════════════════════════
 

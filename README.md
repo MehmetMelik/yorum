@@ -1027,6 +1027,7 @@ cargo test test_fibonacci     # single test by name
 | **v1.11** | Array repeat syntax `[value; count]`, bounds check elision for `for i in 0..len(arr)` loops | Done |
 | **v1.12** | Iterator ecosystem: `.chain()`, `.flat_map()`, `.flatten()`, `.take_while()`, `.chars()`, `.rev()`, `.sum()`, `.count()`, `.position()`, unbounded ranges, Set/Map `.iter()`, codegen hardening | Done |
 | **v1.12.1** | LSP chain-aware dot-completions with type propagation through iterator pipelines | Done |
+| **v1.12.2** | While-loop bounds check elision with len-alias tracking and access-before-modification analysis | Done |
 
 ## License
 

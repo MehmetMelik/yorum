@@ -4,6 +4,14 @@ impl Codegen {
     pub(crate) fn emit_let(&mut self, s: &LetStmt) -> Result<(), CodegenError> {
         let ty = self.llvm_type(&s.ty);
 
+        // Track immutable bindings for len_alias safety checks
+        if !s.is_mut {
+            self.immutable_bindings.insert(s.name.clone());
+        }
+
+        // Invalidate stale len_aliases when a name is shadowed
+        self.len_aliases.remove(&s.name);
+
         // Unit-typed let bindings: evaluate the RHS for side effects only.
         // `alloca void` and `store void` are invalid LLVM IR.
         if s.ty == Type::Unit {
@@ -93,6 +101,14 @@ impl Codegen {
         // Reuse that alloca directly.
         if let Type::Array(ref inner) = s.ty {
             let elem_llvm_ty = self.llvm_type(inner);
+            // Track `let arr = [val; n]` — n aliases len(arr)
+            if let ExprKind::ArrayRepeat(_, ref count) = s.value.kind {
+                if let ExprKind::Ident(count_name) = &count.kind {
+                    if self.immutable_bindings.contains(count_name) {
+                        self.len_aliases.insert(count_name.clone(), s.name.clone());
+                    }
+                }
+            }
             let val_ptr = self.emit_expr(&s.value)?;
             self.define_var(&s.name, &val_ptr, "{ ptr, i64, i64 }");
             self.array_elem_types.insert(s.name.clone(), elem_llvm_ty);
@@ -142,6 +158,19 @@ impl Codegen {
         // If the RHS was a spawn, record the env info for .join() to use
         if let Some(env_info) = self.last_spawn_env_info.take() {
             self.task_env_info.insert(s.name.clone(), env_info);
+        }
+
+        // Track `let n = len(arr)` — n aliases len(arr) (immutable only)
+        if !s.is_mut {
+            if let ExprKind::Call(callee, args) = &s.value.kind {
+                if let ExprKind::Ident(fn_name) = &callee.kind {
+                    if fn_name == "len" && args.len() == 1 {
+                        if let ExprKind::Ident(arr_name) = &args[0].kind {
+                            self.len_aliases.insert(s.name.clone(), arr_name.clone());
+                        }
+                    }
+                }
+            }
         }
 
         Ok(())
@@ -575,6 +604,14 @@ impl Codegen {
         let cond = self.emit_expr(&s.condition)?;
         self.emit_cond_branch(&cond, &body_label, &end_label);
 
+        // Bounds check elision: detect `while var < len(arr)` or alias
+        let elision = Self::detect_bounded_while(&s.condition, &s.body, &self.len_aliases);
+        let prev_binding = if let Some((ref var, ref arr)) = elision {
+            self.bounded_loop_vars.insert(var.clone(), arr.clone())
+        } else {
+            None
+        };
+
         // Loop body
         self.emit_label(&body_label);
         self.block_terminated = false;
@@ -584,6 +621,16 @@ impl Codegen {
         self.emit_block(&s.body)?;
         self.pop_scope();
         self.loop_labels.pop();
+
+        // Restore previous bounded loop var binding (or remove if none)
+        if let Some((ref var, _)) = elision {
+            if let Some(prev) = prev_binding {
+                self.bounded_loop_vars.insert(var.clone(), prev);
+            } else {
+                self.bounded_loop_vars.remove(var);
+            }
+        }
+
         if !self.block_terminated {
             self.emit_line(&format!("br label %{}", cond_label));
         }

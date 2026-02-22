@@ -294,6 +294,14 @@ pub struct Codegen {
     /// bounds checks for `arr[i]` can be safely elided.
     bounded_loop_vars: HashMap<String, String>,
 
+    /// Variables known to equal len(array): var_name -> array_name.
+    /// Populated from `let n = len(arr)` (immutable) and `let arr = [val; n]` (n immutable).
+    len_aliases: HashMap<String, String>,
+
+    /// Names of immutable bindings (function params + non-mut let bindings).
+    /// Used to verify len_aliases are safe (can't be reassigned).
+    immutable_bindings: HashSet<String>,
+
     // Debug info (DWARF)
     debug_enabled: bool,
     debug_filename: String,
@@ -349,6 +357,8 @@ impl Codegen {
             tail_call_hint: false,
             string_buf_vars: HashMap::new(),
             bounded_loop_vars: HashMap::new(),
+            len_aliases: HashMap::new(),
+            immutable_bindings: HashSet::new(),
             debug_enabled: false,
             debug_filename: String::new(),
             debug_directory: String::new(),
@@ -835,6 +845,8 @@ impl Codegen {
         self.current_fn_name = f.name.clone();
         self.string_buf_vars.clear();
         self.bounded_loop_vars.clear();
+        self.len_aliases.clear();
+        self.immutable_bindings.clear();
 
         // Ensure tuple type definitions exist for params and return type
         if let Type::Tuple(ref types) = f.return_type {
@@ -938,6 +950,11 @@ impl Codegen {
                 }
                 _ => {}
             }
+        }
+
+        // Function params are immutable bindings (for len_alias tracking)
+        for param in &f.params {
+            self.immutable_bindings.insert(param.name.clone());
         }
 
         // Emit requires checks after parameter allocas
@@ -3266,6 +3283,317 @@ impl Codegen {
             ExprKind::RangeFrom(s) => Self::expr_mutates_array(s, array_name),
             ExprKind::Try(inner) => Self::expr_mutates_array(inner, array_name),
             ExprKind::Literal(_) | ExprKind::Ident(_) => false,
+        }
+    }
+
+    // ── While-loop bounds check elision helpers ──────────────
+
+    /// Detect `while var < bound` pattern where bound == len(arr).
+    /// Returns Some((loop_var, array_name)) if elision is safe.
+    fn detect_bounded_while(
+        condition: &Expr,
+        body: &Block,
+        len_aliases: &HashMap<String, String>,
+    ) -> Option<(String, String)> {
+        // Condition must be Binary(Ident(var), Lt, rhs)
+        let (var_name, arr_name) = match &condition.kind {
+            ExprKind::Binary(lhs, BinOp::Lt, rhs) => {
+                let var_name = if let ExprKind::Ident(name) = &lhs.kind {
+                    name.clone()
+                } else {
+                    return None;
+                };
+
+                let arr_name = match &rhs.kind {
+                    // Direct: while var < len(arr)
+                    ExprKind::Call(callee, args) => {
+                        if let ExprKind::Ident(fn_name) = &callee.kind {
+                            if fn_name == "len" && args.len() == 1 {
+                                if let ExprKind::Ident(name) = &args[0].kind {
+                                    name.clone()
+                                } else {
+                                    return None;
+                                }
+                            } else {
+                                return None;
+                            }
+                        } else {
+                            return None;
+                        }
+                    }
+                    // Indirect: while var < n where n aliases len(arr)
+                    ExprKind::Ident(bound_name) => {
+                        let arr = len_aliases.get(bound_name)?;
+                        if Self::body_reassigns_var(body, bound_name) {
+                            return None;
+                        }
+                        arr.clone()
+                    }
+                    _ => return None,
+                };
+                (var_name, arr_name)
+            }
+            _ => return None,
+        };
+
+        // Body must not mutate array length
+        if Self::body_mutates_array(body, &arr_name) {
+            return None;
+        }
+
+        // All arr[var] accesses must precede all var modifications
+        if !Self::accesses_precede_modifications(body, &var_name, &arr_name) {
+            return None;
+        }
+
+        Some((var_name, arr_name))
+    }
+
+    /// Check if body reassigns a variable (direct assignment or shadowing let).
+    fn body_reassigns_var(body: &Block, var_name: &str) -> bool {
+        body.stmts
+            .iter()
+            .any(|s| Self::stmt_reassigns_var(s, var_name))
+    }
+
+    fn stmt_reassigns_var(stmt: &Stmt, var_name: &str) -> bool {
+        match stmt {
+            Stmt::Let(s) => {
+                if s.name == var_name {
+                    return true;
+                }
+                false
+            }
+            Stmt::Assign(s) => {
+                if let ExprKind::Ident(name) = &s.target.kind {
+                    if name == var_name {
+                        return true;
+                    }
+                }
+                false
+            }
+            Stmt::If(s) => {
+                Self::body_reassigns_var(&s.then_block, var_name)
+                    || s.else_branch
+                        .as_ref()
+                        .is_some_and(|b| Self::else_branch_reassigns_var(b, var_name))
+            }
+            Stmt::While(s) => Self::body_reassigns_var(&s.body, var_name),
+            Stmt::For(s) => Self::body_reassigns_var(&s.body, var_name),
+            Stmt::Match(s) => s
+                .arms
+                .iter()
+                .any(|arm| Self::body_reassigns_var(&arm.body, var_name)),
+            Stmt::Expr(_) | Stmt::Return(_) | Stmt::Break(_) | Stmt::Continue(_) => false,
+        }
+    }
+
+    fn else_branch_reassigns_var(branch: &ElseBranch, var_name: &str) -> bool {
+        match branch {
+            ElseBranch::Else(block) => Self::body_reassigns_var(block, var_name),
+            ElseBranch::ElseIf(if_stmt) => {
+                Self::body_reassigns_var(&if_stmt.then_block, var_name)
+                    || if_stmt
+                        .else_branch
+                        .as_ref()
+                        .is_some_and(|b| Self::else_branch_reassigns_var(b, var_name))
+            }
+        }
+    }
+
+    /// Verify that all arr[var] accesses precede all var modifications in the body.
+    /// This ensures the loop condition `var < bound` still holds at access time.
+    fn accesses_precede_modifications(body: &Block, var_name: &str, arr_name: &str) -> bool {
+        let mut var_modified = false;
+        for stmt in &body.stmts {
+            let accesses = Self::stmt_accesses_arr_with_var(stmt, arr_name, var_name);
+            let modifies = Self::stmt_modifies_var(stmt, var_name);
+            // If a single statement both accesses and modifies, be conservative
+            if accesses && modifies {
+                return false;
+            }
+            // If var was already modified and we access arr[var], unsafe
+            if var_modified && accesses {
+                return false;
+            }
+            if modifies {
+                var_modified = true;
+            }
+        }
+        true
+    }
+
+    /// Check if a statement contains an `arr[var]` index access pattern.
+    fn stmt_accesses_arr_with_var(stmt: &Stmt, arr_name: &str, var_name: &str) -> bool {
+        match stmt {
+            Stmt::Let(s) => Self::expr_accesses_arr_with_var(&s.value, arr_name, var_name),
+            Stmt::Assign(s) => {
+                Self::expr_accesses_arr_with_var(&s.target, arr_name, var_name)
+                    || Self::expr_accesses_arr_with_var(&s.value, arr_name, var_name)
+            }
+            Stmt::Expr(s) => Self::expr_accesses_arr_with_var(&s.expr, arr_name, var_name),
+            Stmt::Return(s) => Self::expr_accesses_arr_with_var(&s.value, arr_name, var_name),
+            Stmt::If(s) => {
+                Self::expr_accesses_arr_with_var(&s.condition, arr_name, var_name)
+                    || s.then_block
+                        .stmts
+                        .iter()
+                        .any(|st| Self::stmt_accesses_arr_with_var(st, arr_name, var_name))
+                    || s.else_branch.as_ref().is_some_and(|b| {
+                        Self::else_branch_accesses_arr_with_var(b, arr_name, var_name)
+                    })
+            }
+            Stmt::While(s) => {
+                Self::expr_accesses_arr_with_var(&s.condition, arr_name, var_name)
+                    || s.body
+                        .stmts
+                        .iter()
+                        .any(|st| Self::stmt_accesses_arr_with_var(st, arr_name, var_name))
+            }
+            Stmt::For(s) => {
+                Self::expr_accesses_arr_with_var(&s.iterable, arr_name, var_name)
+                    || s.body
+                        .stmts
+                        .iter()
+                        .any(|st| Self::stmt_accesses_arr_with_var(st, arr_name, var_name))
+            }
+            Stmt::Match(s) => {
+                Self::expr_accesses_arr_with_var(&s.subject, arr_name, var_name)
+                    || s.arms.iter().any(|arm| {
+                        arm.body
+                            .stmts
+                            .iter()
+                            .any(|st| Self::stmt_accesses_arr_with_var(st, arr_name, var_name))
+                    })
+            }
+            Stmt::Break(_) | Stmt::Continue(_) => false,
+        }
+    }
+
+    fn else_branch_accesses_arr_with_var(
+        branch: &ElseBranch,
+        arr_name: &str,
+        var_name: &str,
+    ) -> bool {
+        match branch {
+            ElseBranch::Else(block) => block
+                .stmts
+                .iter()
+                .any(|st| Self::stmt_accesses_arr_with_var(st, arr_name, var_name)),
+            ElseBranch::ElseIf(if_stmt) => {
+                Self::expr_accesses_arr_with_var(&if_stmt.condition, arr_name, var_name)
+                    || if_stmt
+                        .then_block
+                        .stmts
+                        .iter()
+                        .any(|st| Self::stmt_accesses_arr_with_var(st, arr_name, var_name))
+                    || if_stmt.else_branch.as_ref().is_some_and(|b| {
+                        Self::else_branch_accesses_arr_with_var(b, arr_name, var_name)
+                    })
+            }
+        }
+    }
+
+    fn expr_accesses_arr_with_var(expr: &Expr, arr_name: &str, var_name: &str) -> bool {
+        match &expr.kind {
+            ExprKind::Index(arr_expr, idx_expr) => {
+                // Check if this is arr[var]
+                let is_target = matches!(&arr_expr.kind, ExprKind::Ident(a) if a == arr_name)
+                    && matches!(&idx_expr.kind, ExprKind::Ident(v) if v == var_name);
+                if is_target {
+                    return true;
+                }
+                Self::expr_accesses_arr_with_var(arr_expr, arr_name, var_name)
+                    || Self::expr_accesses_arr_with_var(idx_expr, arr_name, var_name)
+            }
+            ExprKind::Binary(l, _, r) => {
+                Self::expr_accesses_arr_with_var(l, arr_name, var_name)
+                    || Self::expr_accesses_arr_with_var(r, arr_name, var_name)
+            }
+            ExprKind::Unary(_, inner) => {
+                Self::expr_accesses_arr_with_var(inner, arr_name, var_name)
+            }
+            ExprKind::Call(callee, args) => {
+                Self::expr_accesses_arr_with_var(callee, arr_name, var_name)
+                    || args
+                        .iter()
+                        .any(|a| Self::expr_accesses_arr_with_var(a, arr_name, var_name))
+            }
+            ExprKind::FieldAccess(obj, _) => {
+                Self::expr_accesses_arr_with_var(obj, arr_name, var_name)
+            }
+            ExprKind::MethodCall(recv, _, args) => {
+                Self::expr_accesses_arr_with_var(recv, arr_name, var_name)
+                    || args
+                        .iter()
+                        .any(|a| Self::expr_accesses_arr_with_var(a, arr_name, var_name))
+            }
+            ExprKind::StructInit(_, fields) => fields
+                .iter()
+                .any(|f| Self::expr_accesses_arr_with_var(&f.value, arr_name, var_name)),
+            ExprKind::ArrayLit(elems) | ExprKind::TupleLit(elems) => elems
+                .iter()
+                .any(|e| Self::expr_accesses_arr_with_var(e, arr_name, var_name)),
+            ExprKind::ArrayRepeat(val, count) => {
+                Self::expr_accesses_arr_with_var(val, arr_name, var_name)
+                    || Self::expr_accesses_arr_with_var(count, arr_name, var_name)
+            }
+            ExprKind::Range(s, e) | ExprKind::RangeInclusive(s, e) => {
+                Self::expr_accesses_arr_with_var(s, arr_name, var_name)
+                    || Self::expr_accesses_arr_with_var(e, arr_name, var_name)
+            }
+            ExprKind::RangeFrom(s) => Self::expr_accesses_arr_with_var(s, arr_name, var_name),
+            ExprKind::Try(inner) => Self::expr_accesses_arr_with_var(inner, arr_name, var_name),
+            ExprKind::Spawn(block) => block
+                .stmts
+                .iter()
+                .any(|st| Self::stmt_accesses_arr_with_var(st, arr_name, var_name)),
+            ExprKind::Closure(_) | ExprKind::Literal(_) | ExprKind::Ident(_) => false,
+        }
+    }
+
+    /// Check if a statement modifies the given variable (assignment or shadowing let).
+    fn stmt_modifies_var(stmt: &Stmt, var_name: &str) -> bool {
+        match stmt {
+            Stmt::Let(s) => {
+                if s.name == var_name {
+                    return true;
+                }
+                false
+            }
+            Stmt::Assign(s) => {
+                if let ExprKind::Ident(name) = &s.target.kind {
+                    if name == var_name {
+                        return true;
+                    }
+                }
+                // Recurse into nested blocks in the value expression
+                Self::expr_contains_var_modification(&s.value, var_name)
+            }
+            Stmt::If(s) => {
+                Self::body_reassigns_var(&s.then_block, var_name)
+                    || s.else_branch
+                        .as_ref()
+                        .is_some_and(|b| Self::else_branch_reassigns_var(b, var_name))
+            }
+            Stmt::While(s) => Self::body_reassigns_var(&s.body, var_name),
+            Stmt::For(s) => s.var_name == var_name || Self::body_reassigns_var(&s.body, var_name),
+            Stmt::Match(s) => s
+                .arms
+                .iter()
+                .any(|arm| Self::body_reassigns_var(&arm.body, var_name)),
+            Stmt::Expr(s) => Self::expr_contains_var_modification(&s.expr, var_name),
+            Stmt::Return(_) | Stmt::Break(_) | Stmt::Continue(_) => false,
+        }
+    }
+
+    /// Check if an expression contains statements that modify a variable
+    /// (e.g. closures or spawn blocks with assignments).
+    fn expr_contains_var_modification(expr: &Expr, var_name: &str) -> bool {
+        match &expr.kind {
+            ExprKind::Spawn(block) => Self::body_reassigns_var(block, var_name),
+            ExprKind::Closure(c) => Self::body_reassigns_var(&c.body, var_name),
+            _ => false,
         }
     }
 

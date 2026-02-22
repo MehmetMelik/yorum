@@ -3347,6 +3347,111 @@ impl Codegen {
         }
     }
 
+    /// Check whether a statement may mutate the length of any array
+    /// (e.g. push/pop/clear), regardless of identifier name.
+    ///
+    /// Used to conservatively invalidate all len aliases when aliasing means
+    /// we cannot map the mutation back to a single source identifier.
+    fn stmt_has_length_mutation(stmt: &Stmt) -> bool {
+        match stmt {
+            Stmt::Let(s) => Self::expr_has_length_mutation(&s.value),
+            Stmt::Assign(s) => {
+                Self::expr_has_length_mutation(&s.target) || Self::expr_has_length_mutation(&s.value)
+            }
+            Stmt::Expr(s) => Self::expr_has_length_mutation(&s.expr),
+            Stmt::Return(s) => Self::expr_has_length_mutation(&s.value),
+            Stmt::If(s) => {
+                Self::expr_has_length_mutation(&s.condition)
+                    || s.then_block
+                        .stmts
+                        .iter()
+                        .any(Self::stmt_has_length_mutation)
+                    || s.else_branch
+                        .as_ref()
+                        .is_some_and(|branch| Self::else_has_length_mutation(branch))
+            }
+            Stmt::While(s) => {
+                Self::expr_has_length_mutation(&s.condition)
+                    || s.body.stmts.iter().any(Self::stmt_has_length_mutation)
+            }
+            Stmt::For(s) => {
+                Self::expr_has_length_mutation(&s.iterable)
+                    || s.body.stmts.iter().any(Self::stmt_has_length_mutation)
+            }
+            Stmt::Match(s) => {
+                Self::expr_has_length_mutation(&s.subject)
+                    || s.arms
+                        .iter()
+                        .any(|arm| arm.body.stmts.iter().any(Self::stmt_has_length_mutation))
+            }
+            Stmt::Break(_) | Stmt::Continue(_) => false,
+        }
+    }
+
+    fn else_has_length_mutation(branch: &ElseBranch) -> bool {
+        match branch {
+            ElseBranch::Else(block) => block.stmts.iter().any(Self::stmt_has_length_mutation),
+            ElseBranch::ElseIf(if_stmt) => {
+                Self::expr_has_length_mutation(&if_stmt.condition)
+                    || if_stmt
+                        .then_block
+                        .stmts
+                        .iter()
+                        .any(Self::stmt_has_length_mutation)
+                    || if_stmt
+                        .else_branch
+                        .as_ref()
+                        .is_some_and(|branch| Self::else_has_length_mutation(branch))
+            }
+        }
+    }
+
+    fn expr_has_length_mutation(expr: &Expr) -> bool {
+        match &expr.kind {
+            ExprKind::Call(callee, args) => {
+                if let ExprKind::Ident(fn_name) = &callee.kind {
+                    if (fn_name == "push" || fn_name == "pop") && !args.is_empty() {
+                        return true;
+                    }
+                }
+                Self::expr_has_length_mutation(callee)
+                    || args.iter().any(Self::expr_has_length_mutation)
+            }
+            ExprKind::MethodCall(recv, method, args) => {
+                if method == "clear" {
+                    return true;
+                }
+                Self::expr_has_length_mutation(recv)
+                    || args.iter().any(Self::expr_has_length_mutation)
+            }
+            ExprKind::Binary(lhs, _, rhs) => {
+                Self::expr_has_length_mutation(lhs) || Self::expr_has_length_mutation(rhs)
+            }
+            ExprKind::Unary(_, inner) => Self::expr_has_length_mutation(inner),
+            ExprKind::FieldAccess(obj, _) => Self::expr_has_length_mutation(obj),
+            ExprKind::Index(arr, idx) => {
+                Self::expr_has_length_mutation(arr) || Self::expr_has_length_mutation(idx)
+            }
+            ExprKind::StructInit(_, fields) => fields
+                .iter()
+                .any(|f| Self::expr_has_length_mutation(&f.value)),
+            ExprKind::ArrayLit(elems) | ExprKind::TupleLit(elems) => {
+                elems.iter().any(Self::expr_has_length_mutation)
+            }
+            ExprKind::ArrayRepeat(val, count) => {
+                Self::expr_has_length_mutation(val) || Self::expr_has_length_mutation(count)
+            }
+            ExprKind::Closure(_) => false,
+            ExprKind::Spawn(block) => block.stmts.iter().any(Self::stmt_has_length_mutation),
+            ExprKind::Range(s, e) | ExprKind::RangeInclusive(s, e) => {
+                Self::expr_has_length_mutation(s) || Self::expr_has_length_mutation(e)
+            }
+            ExprKind::RangeFrom(s) => Self::expr_has_length_mutation(s),
+            ExprKind::Try(inner) => Self::expr_has_length_mutation(inner),
+            ExprKind::Literal(_) | ExprKind::Ident(_) => false,
+        }
+    }
+
     // ── While-loop bounds check elision helpers ──────────────
 
     /// Check if an expression is provably non-negative (>= 0).
@@ -3367,15 +3472,6 @@ impl Codegen {
                 }
                 false
             }
-            ExprKind::Binary(lhs, op, rhs) => {
-                let l = Self::expr_is_provably_non_negative(lhs, non_neg_vars);
-                let r = Self::expr_is_provably_non_negative(rhs, non_neg_vars);
-                match op {
-                    // non_neg + non_neg >= 0, non_neg * non_neg >= 0
-                    BinOp::Add | BinOp::Mul => l && r,
-                    _ => false,
-                }
-            }
             _ => false,
         }
     }
@@ -3383,27 +3479,10 @@ impl Codegen {
     /// Check if an assignment `name = value` preserves non-negativity.
     /// Returns true for patterns like `name = name + <non_neg>` (desugared +=).
     pub(crate) fn assign_preserves_non_negative(
-        name: &str,
+        _name: &str,
         value: &Expr,
         non_neg_vars: &HashSet<String>,
     ) -> bool {
-        // Pattern: name = name + expr where expr is non-negative
-        // (desugared from name += expr)
-        if let ExprKind::Binary(lhs, BinOp::Add, rhs) = &value.kind {
-            if let ExprKind::Ident(lhs_name) = &lhs.kind {
-                if lhs_name == name {
-                    return Self::expr_is_provably_non_negative(rhs, non_neg_vars);
-                }
-            }
-        }
-        // Pattern: name = name * expr where expr is non-negative
-        if let ExprKind::Binary(lhs, BinOp::Mul, rhs) = &value.kind {
-            if let ExprKind::Ident(lhs_name) = &lhs.kind {
-                if lhs_name == name {
-                    return Self::expr_is_provably_non_negative(rhs, non_neg_vars);
-                }
-            }
-        }
         // General: value is provably non-negative
         Self::expr_is_provably_non_negative(value, non_neg_vars)
     }
@@ -3411,6 +3490,14 @@ impl Codegen {
     /// Invalidate len_aliases for any arrays mutated by a statement.
     /// Catches `push(arr, ..)`, `pop(arr)`, `arr = ..` between alias and loop.
     fn invalidate_len_aliases_for_stmt(&mut self, stmt: &Stmt) {
+        // Alias-aware conservative fallback: if any length-mutating array op appears
+        // (push/pop/clear), drop all len aliases because the mutation target may be
+        // an alias of a tracked array.
+        if Self::stmt_has_length_mutation(stmt) {
+            self.len_aliases.clear();
+            return;
+        }
+
         let affected: Vec<String> = self
             .len_aliases
             .iter()
@@ -3524,6 +3611,50 @@ impl Codegen {
         true
     }
 
+    fn is_small_non_negative_literal(expr: &Expr, max: i64) -> bool {
+        if let ExprKind::Literal(Literal::Int(n)) = &expr.kind {
+            *n >= 0 && *n <= max
+        } else {
+            false
+        }
+    }
+
+    /// Bounded-while specific non-negativity preservation.
+    ///
+    /// Allows only wrap-safe self-updates (`+0`, `+1`, `*0`, `*1`) in addition
+    /// to the general non-negative assignment proof.
+    fn assign_preserves_non_negative_bounded_while(
+        name: &str,
+        value: &Expr,
+        non_neg_vars: &HashSet<String>,
+    ) -> bool {
+        if let ExprKind::Binary(lhs, BinOp::Add, rhs) = &value.kind {
+            if let ExprKind::Ident(lhs_name) = &lhs.kind {
+                if lhs_name == name && Self::is_small_non_negative_literal(rhs, 1) {
+                    return true;
+                }
+            }
+            if let ExprKind::Ident(rhs_name) = &rhs.kind {
+                if rhs_name == name && Self::is_small_non_negative_literal(lhs, 1) {
+                    return true;
+                }
+            }
+        }
+        if let ExprKind::Binary(lhs, BinOp::Mul, rhs) = &value.kind {
+            if let ExprKind::Ident(lhs_name) = &lhs.kind {
+                if lhs_name == name && Self::is_small_non_negative_literal(rhs, 1) {
+                    return true;
+                }
+            }
+            if let ExprKind::Ident(rhs_name) = &rhs.kind {
+                if rhs_name == name && Self::is_small_non_negative_literal(lhs, 1) {
+                    return true;
+                }
+            }
+        }
+        Self::assign_preserves_non_negative(name, value, non_neg_vars)
+    }
+
     fn stmt_preserves_non_negative(
         stmt: &Stmt,
         var_name: &str,
@@ -3533,7 +3664,7 @@ impl Codegen {
             Stmt::Assign(s) => {
                 if let ExprKind::Ident(name) = &s.target.kind {
                     if name == var_name {
-                        return Self::assign_preserves_non_negative(
+                        return Self::assign_preserves_non_negative_bounded_while(
                             var_name,
                             &s.value,
                             non_neg_vars,

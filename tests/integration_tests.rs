@@ -10333,10 +10333,11 @@ fn test_bounds_elision_while_array_repeat() {
         .map(|i| i + 1)
         .unwrap_or(sieve_rest.len());
     let sieve_ir = &sieve_rest[..sieve_end];
-    // n is a param (immutable), [0; n] makes n alias len(is_composite)
+    // Overflow-safe rule: updates like `j += p` (p may be > 1) are not
+    // considered provably wrap-safe for while-elision.
     assert!(
-        !sieve_ir.contains("call void @__yorum_bounds_check"),
-        "bounds check should be elided in sieve pattern"
+        sieve_ir.contains("call void @__yorum_bounds_check"),
+        "non-unit additive step keeps bounds checks under overflow-safe rules"
     );
 }
 
@@ -10356,8 +10357,9 @@ fn test_bounds_elision_while_nonsequential() {
          }\n",
     );
     let main_ir = extract_main_ir(&ir);
-    // Step doesn't matter — j < len(arr) still guards arr[j]
-    assert!(!main_ir.contains("call void @__yorum_bounds_check"));
+    // Overflow-safe rule: `j += 2` is not guaranteed wrap-safe for all i64
+    // array lengths, so bounds checks are retained.
+    assert!(main_ir.contains("call void @__yorum_bounds_check"));
 }
 
 #[test]
@@ -10506,6 +10508,38 @@ fn test_bounds_no_elision_while_negative_increment() {
 }
 
 #[test]
+fn test_bounds_no_elision_while_mul_overflow_wraps_negative() {
+    // P1: i64 arithmetic wraps in LLVM IR. Even with non-negative operands,
+    // `i = i * C` can overflow to a negative value, making `i < len(arr)` true
+    // again and causing potential OOB indexing. Bounds check must remain.
+    let ir = compile(
+        "fn check() -> int {\n\
+         \x20   let arr: [int] = [10, 20, 30];\n\
+         \x20   let mut i: int = 2;\n\
+         \x20   while i < len(arr) {\n\
+         \x20       print_int(arr[i]);\n\
+         \x20       i = i * 4611686018427387904;\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n\
+         fn main() -> int {\n\
+         \x20   return check();\n\
+         }\n",
+    );
+    let check_start = ir.find("@check(").expect("@check not found");
+    let check_rest = &ir[check_start..];
+    let check_end = check_rest[1..]
+        .find("\ndefine ")
+        .map(|i| i + 1)
+        .unwrap_or(check_rest.len());
+    let check_ir = &check_rest[..check_end];
+    assert!(
+        check_ir.contains("call void @__yorum_bounds_check"),
+        "mul-based index updates can wrap negative; bounds check must not be elided"
+    );
+}
+
+#[test]
 fn test_bounds_no_elision_while_stale_alias_after_pop() {
     // P1: stale len alias after pop. n = len(arr), then pop(arr),
     // then while i < n — n is now larger than actual length.
@@ -10526,6 +10560,32 @@ fn test_bounds_no_elision_while_stale_alias_after_pop() {
     let main_ir = extract_main_ir(&ir);
     // n is stale after pop(arr) — bounds check MUST remain
     assert!(main_ir.contains("call void @__yorum_bounds_check"));
+}
+
+#[test]
+fn test_bounds_no_elision_while_stale_alias_after_pop_via_alias() {
+    // P1: len alias invalidation must account for array aliases.
+    // `b` aliases `arr`; pop(b) mutates arr length and must invalidate `n = len(arr)`.
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let mut arr: [int] = [1, 2, 3, 4, 5];\n\
+         \x20   let b: [int] = arr;\n\
+         \x20   let n: int = len(arr);\n\
+         \x20   let x: int = pop(b);\n\
+         \x20   let mut i: int = 0;\n\
+         \x20   while i < n {\n\
+         \x20       print_int(arr[i]);\n\
+         \x20       i += 1;\n\
+         \x20   }\n\
+         \x20   print_int(x);\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    let main_ir = extract_main_ir(&ir);
+    assert!(
+        main_ir.contains("call void @__yorum_bounds_check"),
+        "pop through alias must invalidate len(arr) aliases before while elision"
+    );
 }
 
 #[test]

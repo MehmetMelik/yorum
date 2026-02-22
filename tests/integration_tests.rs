@@ -10703,6 +10703,76 @@ fn test_bounds_no_elision_while_closure_param_shadows_outer_len_alias() {
 }
 
 #[test]
+fn test_bounds_no_elision_while_closure_param_shadows_outer_bounded_loop_var() {
+    // P1: bounded-loop facts (`i < len(arr)`) must not leak into
+    // separately emitted closure functions.
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let mut i: int = 0;\n\
+         \x20   while i < len(arr) {\n\
+         \x20       let f: fn(int) -> int = |i: int| -> int {\n\
+         \x20           let arr: [int] = [10, 20, 30];\n\
+         \x20           return arr[i];\n\
+         \x20       };\n\
+         \x20       print_int(f(10));\n\
+         \x20       i += 1;\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    let closure_start = ir
+        .find("define i64 @__closure_0(")
+        .expect("__closure_0 not found");
+    let closure_rest = &ir[closure_start..];
+    let closure_end = closure_rest[1..]
+        .find("\ndefine ")
+        .map(|i| i + 1)
+        .unwrap_or(closure_rest.len());
+    let closure_ir = &closure_rest[..closure_end];
+    assert!(
+        closure_ir.contains("call void @__yorum_bounds_check"),
+        "closure param/local names must not inherit enclosing bounded-loop analysis state"
+    );
+}
+
+#[test]
+fn test_bounds_no_elision_while_spawn_local_shadows_outer_bounded_loop_var() {
+    // P1: bounded-loop facts (`i < len(arr)`) must not leak into
+    // separately emitted spawn wrapper functions.
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let mut i: int = 0;\n\
+         \x20   while i < len(arr) {\n\
+         \x20       let t: Task<int> = spawn {\n\
+         \x20           let i: int = len(arr);\n\
+         \x20           let x: int = arr[i];\n\
+         \x20           return x;\n\
+         \x20       };\n\
+         \x20       let r: int = t.join();\n\
+         \x20       print_int(r);\n\
+         \x20       i += 1;\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    let spawn_start = ir
+        .find("define ptr @__spawn_0(")
+        .expect("__spawn_0 not found");
+    let spawn_rest = &ir[spawn_start..];
+    let spawn_end = spawn_rest[1..]
+        .find("\ndefine ")
+        .map(|i| i + 1)
+        .unwrap_or(spawn_rest.len());
+    let spawn_ir = &spawn_rest[..spawn_end];
+    assert!(
+        spawn_ir.contains("call void @__yorum_bounds_check"),
+        "spawn wrapper locals must not inherit enclosing bounded-loop analysis state"
+    );
+}
+
+#[test]
 fn test_bounds_no_elision_while_clear_in_body() {
     // P1: clear() mutates array length, so while-body accesses must keep
     // bounds checks even when condition is `i < len(arr)`.

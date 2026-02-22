@@ -2593,6 +2593,7 @@ impl Codegen {
         let saved_len_alias_scopes = std::mem::take(&mut self.len_alias_scopes);
         let saved_immutable_binding_scopes = std::mem::take(&mut self.immutable_binding_scopes);
         let saved_non_negative_scopes = std::mem::take(&mut self.non_negative_scopes);
+        let saved_bounded_loop_vars = std::mem::take(&mut self.bounded_loop_vars);
 
         self.temp_counter = 0;
         self.label_counter = 0;
@@ -2665,6 +2666,7 @@ impl Codegen {
         self.len_alias_scopes = saved_len_alias_scopes;
         self.immutable_binding_scopes = saved_immutable_binding_scopes;
         self.non_negative_scopes = saved_non_negative_scopes;
+        self.bounded_loop_vars = saved_bounded_loop_vars;
 
         Ok(())
     }
@@ -2773,6 +2775,7 @@ impl Codegen {
         let saved_len_alias_scopes = std::mem::take(&mut self.len_alias_scopes);
         let saved_immutable_binding_scopes = std::mem::take(&mut self.immutable_binding_scopes);
         let saved_non_negative_scopes = std::mem::take(&mut self.non_negative_scopes);
+        let saved_bounded_loop_vars = std::mem::take(&mut self.bounded_loop_vars);
 
         self.temp_counter = 0;
         self.label_counter = 0;
@@ -2830,6 +2833,7 @@ impl Codegen {
         self.len_alias_scopes = saved_len_alias_scopes;
         self.immutable_binding_scopes = saved_immutable_binding_scopes;
         self.non_negative_scopes = saved_non_negative_scopes;
+        self.bounded_loop_vars = saved_bounded_loop_vars;
 
         Ok(())
     }

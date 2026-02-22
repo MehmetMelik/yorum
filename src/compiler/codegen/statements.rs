@@ -622,7 +622,7 @@ impl Codegen {
         self.emit_cond_branch(&cond, &body_label, &end_label);
 
         // Bounds check elision: detect `while var < len(arr)` or alias
-        let elision = Self::detect_bounded_while(
+        let elision = self.detect_bounded_while(
             &s.condition,
             &s.body,
             &self.len_aliases,

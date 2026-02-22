@@ -10872,6 +10872,56 @@ fn test_bounds_no_elision_while_stale_len_alias_after_clear() {
     assert!(main_ir.contains("call void @__yorum_bounds_check"));
 }
 
+#[test]
+fn test_bounds_no_elision_while_body_alias_rebind() {
+    // P1: `b` aliases `arr`; rebinding `b` in the loop body can change
+    // the effective length seen by `arr[i]` in this backend.
+    // Bounds checks must remain.
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let mut arr: [int] = [1, 2, 3];\n\
+         \x20   let mut b: [int] = arr;\n\
+         \x20   let mut i: int = 2;\n\
+         \x20   while i < len(arr) {\n\
+         \x20       b = [9];\n\
+         \x20       print_int(arr[i]);\n\
+         \x20       i += 1;\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    let main_ir = extract_main_ir(&ir);
+    assert!(
+        main_ir.contains("call void @__yorum_bounds_check"),
+        "alias rebind in while body must block bounds-check elision"
+    );
+}
+
+#[test]
+fn test_bounds_no_elision_while_stale_len_alias_after_alias_rebind() {
+    // P1: `n = len(arr)` becomes stale if `arr` is rebound through alias `b`
+    // before the loop. Bounds checks must remain for `arr[i]`.
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let mut arr: [int] = [1, 2, 3];\n\
+         \x20   let n: int = len(arr);\n\
+         \x20   let mut b: [int] = arr;\n\
+         \x20   b = [9];\n\
+         \x20   let mut i: int = 0;\n\
+         \x20   while i < n {\n\
+         \x20       print_int(arr[i]);\n\
+         \x20       i += 1;\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    let main_ir = extract_main_ir(&ir);
+    assert!(
+        main_ir.contains("call void @__yorum_bounds_check"),
+        "alias rebind before while must invalidate len(arr) aliases"
+    );
+}
+
 // ═══════════════════════════════════════════════════════════════
 //  Phase 1: clear(), sum(), count()
 // ═══════════════════════════════════════════════════════════════

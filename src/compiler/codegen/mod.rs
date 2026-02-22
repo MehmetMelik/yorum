@@ -3356,7 +3356,8 @@ impl Codegen {
         match stmt {
             Stmt::Let(s) => Self::expr_has_length_mutation(&s.value),
             Stmt::Assign(s) => {
-                Self::expr_has_length_mutation(&s.target) || Self::expr_has_length_mutation(&s.value)
+                Self::expr_has_length_mutation(&s.target)
+                    || Self::expr_has_length_mutation(&s.value)
             }
             Stmt::Expr(s) => Self::expr_has_length_mutation(&s.expr),
             Stmt::Return(s) => Self::expr_has_length_mutation(&s.value),
@@ -3487,13 +3488,157 @@ impl Codegen {
         Self::expr_is_provably_non_negative(value, non_neg_vars)
     }
 
+    fn is_array_binding_name(&self, name: &str) -> bool {
+        self.lookup_var(name)
+            .is_some_and(|slot| slot.llvm_ty == "{ ptr, i64, i64 }")
+    }
+
+    /// Detect unknown calls that receive an in-scope array variable directly.
+    /// Such calls may mutate array length via aliases (e.g. helper(arr_alias)).
+    fn expr_has_unknown_call_with_array_ident_arg(&self, expr: &Expr) -> bool {
+        match &expr.kind {
+            ExprKind::Call(callee, args) => {
+                let is_known_non_mutating =
+                    matches!(&callee.kind, ExprKind::Ident(name) if name == "len");
+                let has_array_ident_arg = args.iter().any(|arg| {
+                    if let ExprKind::Ident(name) = &arg.kind {
+                        self.is_array_binding_name(name)
+                    } else {
+                        false
+                    }
+                });
+                (!is_known_non_mutating && has_array_ident_arg)
+                    || self.expr_has_unknown_call_with_array_ident_arg(callee)
+                    || args
+                        .iter()
+                        .any(|arg| self.expr_has_unknown_call_with_array_ident_arg(arg))
+            }
+            ExprKind::MethodCall(recv, _, args) => {
+                self.expr_has_unknown_call_with_array_ident_arg(recv)
+                    || args
+                        .iter()
+                        .any(|arg| self.expr_has_unknown_call_with_array_ident_arg(arg))
+            }
+            ExprKind::Binary(lhs, _, rhs) => {
+                self.expr_has_unknown_call_with_array_ident_arg(lhs)
+                    || self.expr_has_unknown_call_with_array_ident_arg(rhs)
+            }
+            ExprKind::Unary(_, inner) => self.expr_has_unknown_call_with_array_ident_arg(inner),
+            ExprKind::FieldAccess(obj, _) => self.expr_has_unknown_call_with_array_ident_arg(obj),
+            ExprKind::Index(arr, idx) => {
+                self.expr_has_unknown_call_with_array_ident_arg(arr)
+                    || self.expr_has_unknown_call_with_array_ident_arg(idx)
+            }
+            ExprKind::StructInit(_, fields) => fields
+                .iter()
+                .any(|field| self.expr_has_unknown_call_with_array_ident_arg(&field.value)),
+            ExprKind::ArrayLit(elems) | ExprKind::TupleLit(elems) => elems
+                .iter()
+                .any(|elem| self.expr_has_unknown_call_with_array_ident_arg(elem)),
+            ExprKind::ArrayRepeat(val, count) => {
+                self.expr_has_unknown_call_with_array_ident_arg(val)
+                    || self.expr_has_unknown_call_with_array_ident_arg(count)
+            }
+            ExprKind::Closure(_) => false,
+            ExprKind::Spawn(block) => block
+                .stmts
+                .iter()
+                .any(|stmt| self.stmt_has_indirect_array_length_mutation_risk(stmt)),
+            ExprKind::Range(s, e) | ExprKind::RangeInclusive(s, e) => {
+                self.expr_has_unknown_call_with_array_ident_arg(s)
+                    || self.expr_has_unknown_call_with_array_ident_arg(e)
+            }
+            ExprKind::RangeFrom(s) => self.expr_has_unknown_call_with_array_ident_arg(s),
+            ExprKind::Try(inner) => self.expr_has_unknown_call_with_array_ident_arg(inner),
+            ExprKind::Literal(_) | ExprKind::Ident(_) => false,
+        }
+    }
+
+    fn else_has_indirect_array_length_mutation_risk(&self, branch: &ElseBranch) -> bool {
+        match branch {
+            ElseBranch::Else(block) => block
+                .stmts
+                .iter()
+                .any(|stmt| self.stmt_has_indirect_array_length_mutation_risk(stmt)),
+            ElseBranch::ElseIf(if_stmt) => {
+                self.expr_has_unknown_call_with_array_ident_arg(&if_stmt.condition)
+                    || if_stmt
+                        .then_block
+                        .stmts
+                        .iter()
+                        .any(|stmt| self.stmt_has_indirect_array_length_mutation_risk(stmt))
+                    || if_stmt.else_branch.as_ref().is_some_and(|branch| {
+                        self.else_has_indirect_array_length_mutation_risk(branch)
+                    })
+            }
+        }
+    }
+
+    /// Conservative safety check for alias-sensitive array length analysis.
+    ///
+    /// Returns true when a statement can invalidate facts like `n = len(arr)` or
+    /// make `while i < len(arr)` elision unsafe through aliases/indirect effects.
+    fn stmt_has_indirect_array_length_mutation_risk(&self, stmt: &Stmt) -> bool {
+        if Self::stmt_has_length_mutation(stmt) {
+            return true;
+        }
+
+        match stmt {
+            Stmt::Let(s) => self.expr_has_unknown_call_with_array_ident_arg(&s.value),
+            Stmt::Assign(s) => {
+                if let ExprKind::Ident(name) = &s.target.kind {
+                    if self.is_array_binding_name(name) {
+                        return true;
+                    }
+                }
+                self.expr_has_unknown_call_with_array_ident_arg(&s.target)
+                    || self.expr_has_unknown_call_with_array_ident_arg(&s.value)
+            }
+            Stmt::Expr(s) => self.expr_has_unknown_call_with_array_ident_arg(&s.expr),
+            Stmt::Return(s) => self.expr_has_unknown_call_with_array_ident_arg(&s.value),
+            Stmt::If(s) => {
+                self.expr_has_unknown_call_with_array_ident_arg(&s.condition)
+                    || s.then_block
+                        .stmts
+                        .iter()
+                        .any(|stmt| self.stmt_has_indirect_array_length_mutation_risk(stmt))
+                    || s.else_branch.as_ref().is_some_and(|branch| {
+                        self.else_has_indirect_array_length_mutation_risk(branch)
+                    })
+            }
+            Stmt::While(s) => {
+                self.expr_has_unknown_call_with_array_ident_arg(&s.condition)
+                    || s.body
+                        .stmts
+                        .iter()
+                        .any(|stmt| self.stmt_has_indirect_array_length_mutation_risk(stmt))
+            }
+            Stmt::For(s) => {
+                self.expr_has_unknown_call_with_array_ident_arg(&s.iterable)
+                    || s.body
+                        .stmts
+                        .iter()
+                        .any(|stmt| self.stmt_has_indirect_array_length_mutation_risk(stmt))
+            }
+            Stmt::Match(s) => {
+                self.expr_has_unknown_call_with_array_ident_arg(&s.subject)
+                    || s.arms.iter().any(|arm| {
+                        arm.body
+                            .stmts
+                            .iter()
+                            .any(|stmt| self.stmt_has_indirect_array_length_mutation_risk(stmt))
+                    })
+            }
+            Stmt::Break(_) | Stmt::Continue(_) => false,
+        }
+    }
+
     /// Invalidate len_aliases for any arrays mutated by a statement.
     /// Catches `push(arr, ..)`, `pop(arr)`, `arr = ..` between alias and loop.
     fn invalidate_len_aliases_for_stmt(&mut self, stmt: &Stmt) {
-        // Alias-aware conservative fallback: if any length-mutating array op appears
-        // (push/pop/clear), drop all len aliases because the mutation target may be
-        // an alias of a tracked array.
-        if Self::stmt_has_length_mutation(stmt) {
+        // Conservative alias-aware fallback: if this statement can indirectly
+        // affect array length facts, drop all len aliases.
+        if self.stmt_has_indirect_array_length_mutation_risk(stmt) {
             self.len_aliases.clear();
             return;
         }
@@ -3514,6 +3659,7 @@ impl Codegen {
     /// Requires the loop variable to be provably non-negative (lower bound)
     /// and that body modifications preserve non-negativity.
     fn detect_bounded_while(
+        &self,
         condition: &Expr,
         body: &Block,
         len_aliases: &HashMap<String, String>,
@@ -3570,7 +3716,16 @@ impl Codegen {
             return None;
         }
 
-        // Body must not mutate array length
+        // Body must not mutate array length (including alias/indirect risks)
+        if body
+            .stmts
+            .iter()
+            .any(|stmt| self.stmt_has_indirect_array_length_mutation_risk(stmt))
+        {
+            return None;
+        }
+
+        // Body must not directly mutate/shadow the guarded array name
         if Self::body_mutates_array(body, &arr_name) {
             return None;
         }

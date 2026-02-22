@@ -302,6 +302,16 @@ pub struct Codegen {
     /// Used to verify len_aliases are safe (can't be reassigned).
     immutable_bindings: HashSet<String>,
 
+    /// Variables provably non-negative at current program point.
+    /// Populated from non-negative literal inits and len() calls.
+    non_negative_vars: HashSet<String>,
+
+    /// Saved snapshots for scope-aware push/pop of len_aliases,
+    /// immutable_bindings, and non_negative_vars.
+    len_alias_scopes: Vec<HashMap<String, String>>,
+    immutable_binding_scopes: Vec<HashSet<String>>,
+    non_negative_scopes: Vec<HashSet<String>>,
+
     // Debug info (DWARF)
     debug_enabled: bool,
     debug_filename: String,
@@ -359,6 +369,10 @@ impl Codegen {
             bounded_loop_vars: HashMap::new(),
             len_aliases: HashMap::new(),
             immutable_bindings: HashSet::new(),
+            non_negative_vars: HashSet::new(),
+            len_alias_scopes: Vec::new(),
+            immutable_binding_scopes: Vec::new(),
+            non_negative_scopes: Vec::new(),
             debug_enabled: false,
             debug_filename: String::new(),
             debug_directory: String::new(),
@@ -847,6 +861,10 @@ impl Codegen {
         self.bounded_loop_vars.clear();
         self.len_aliases.clear();
         self.immutable_bindings.clear();
+        self.non_negative_vars.clear();
+        self.len_alias_scopes.clear();
+        self.immutable_binding_scopes.clear();
+        self.non_negative_scopes.clear();
 
         // Ensure tuple type definitions exist for params and return type
         if let Type::Tuple(ref types) = f.return_type {
@@ -1102,6 +1120,11 @@ impl Codegen {
     // ── Statement emission ───────────────────────────────────
 
     fn emit_stmt(&mut self, stmt: &Stmt) -> Result<(), CodegenError> {
+        // Invalidate len_aliases for any arrays mutated by this statement.
+        // This ensures stale aliases (e.g. after push/pop between alias
+        // definition and while-loop) are removed before we reach emit_while.
+        self.invalidate_len_aliases_for_stmt(stmt);
+
         match stmt {
             Stmt::Let(s) => self.emit_let(s),
             Stmt::Assign(s) => self.emit_assign(s),
@@ -3288,12 +3311,88 @@ impl Codegen {
 
     // ── While-loop bounds check elision helpers ──────────────
 
+    /// Check if an expression is provably non-negative (>= 0).
+    /// Conservative: returns true only for patterns we can statically guarantee.
+    pub(crate) fn expr_is_provably_non_negative(
+        expr: &Expr,
+        non_neg_vars: &HashSet<String>,
+    ) -> bool {
+        match &expr.kind {
+            ExprKind::Literal(Literal::Int(n)) => *n >= 0,
+            ExprKind::Ident(name) => non_neg_vars.contains(name),
+            ExprKind::Call(callee, args) => {
+                // len() always returns >= 0
+                if let ExprKind::Ident(fn_name) = &callee.kind {
+                    if fn_name == "len" && args.len() == 1 {
+                        return true;
+                    }
+                }
+                false
+            }
+            ExprKind::Binary(lhs, op, rhs) => {
+                let l = Self::expr_is_provably_non_negative(lhs, non_neg_vars);
+                let r = Self::expr_is_provably_non_negative(rhs, non_neg_vars);
+                match op {
+                    // non_neg + non_neg >= 0, non_neg * non_neg >= 0
+                    BinOp::Add | BinOp::Mul => l && r,
+                    _ => false,
+                }
+            }
+            _ => false,
+        }
+    }
+
+    /// Check if an assignment `name = value` preserves non-negativity.
+    /// Returns true for patterns like `name = name + <non_neg>` (desugared +=).
+    pub(crate) fn assign_preserves_non_negative(
+        name: &str,
+        value: &Expr,
+        non_neg_vars: &HashSet<String>,
+    ) -> bool {
+        // Pattern: name = name + expr where expr is non-negative
+        // (desugared from name += expr)
+        if let ExprKind::Binary(lhs, BinOp::Add, rhs) = &value.kind {
+            if let ExprKind::Ident(lhs_name) = &lhs.kind {
+                if lhs_name == name {
+                    return Self::expr_is_provably_non_negative(rhs, non_neg_vars);
+                }
+            }
+        }
+        // Pattern: name = name * expr where expr is non-negative
+        if let ExprKind::Binary(lhs, BinOp::Mul, rhs) = &value.kind {
+            if let ExprKind::Ident(lhs_name) = &lhs.kind {
+                if lhs_name == name {
+                    return Self::expr_is_provably_non_negative(rhs, non_neg_vars);
+                }
+            }
+        }
+        // General: value is provably non-negative
+        Self::expr_is_provably_non_negative(value, non_neg_vars)
+    }
+
+    /// Invalidate len_aliases for any arrays mutated by a statement.
+    /// Catches `push(arr, ..)`, `pop(arr)`, `arr = ..` between alias and loop.
+    fn invalidate_len_aliases_for_stmt(&mut self, stmt: &Stmt) {
+        let affected: Vec<String> = self
+            .len_aliases
+            .iter()
+            .filter(|(_, arr)| Self::stmt_mutates_array(stmt, arr))
+            .map(|(alias, _)| alias.clone())
+            .collect();
+        for alias in affected {
+            self.len_aliases.remove(&alias);
+        }
+    }
+
     /// Detect `while var < bound` pattern where bound == len(arr).
     /// Returns Some((loop_var, array_name)) if elision is safe.
+    /// Requires the loop variable to be provably non-negative (lower bound)
+    /// and that body modifications preserve non-negativity.
     fn detect_bounded_while(
         condition: &Expr,
         body: &Block,
         len_aliases: &HashMap<String, String>,
+        non_negative_vars: &HashSet<String>,
     ) -> Option<(String, String)> {
         // Condition must be Binary(Ident(var), Lt, rhs)
         let (var_name, arr_name) = match &condition.kind {
@@ -3336,6 +3435,16 @@ impl Codegen {
             _ => return None,
         };
 
+        // Loop variable must be provably non-negative (lower bound safety)
+        if !non_negative_vars.contains(&var_name) {
+            return None;
+        }
+
+        // Body modifications must preserve non-negativity across iterations
+        if !Self::body_preserves_non_negative(body, &var_name, non_negative_vars) {
+            return None;
+        }
+
         // Body must not mutate array length
         if Self::body_mutates_array(body, &arr_name) {
             return None;
@@ -3347,6 +3456,85 @@ impl Codegen {
         }
 
         Some((var_name, arr_name))
+    }
+
+    /// Check that all modifications of `var_name` in the body preserve
+    /// non-negativity (e.g. `var = var + <non_neg_expr>`).
+    fn body_preserves_non_negative(
+        body: &Block,
+        var_name: &str,
+        non_neg_vars: &HashSet<String>,
+    ) -> bool {
+        for stmt in &body.stmts {
+            if !Self::stmt_preserves_non_negative(stmt, var_name, non_neg_vars) {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn stmt_preserves_non_negative(
+        stmt: &Stmt,
+        var_name: &str,
+        non_neg_vars: &HashSet<String>,
+    ) -> bool {
+        match stmt {
+            Stmt::Assign(s) => {
+                if let ExprKind::Ident(name) = &s.target.kind {
+                    if name == var_name {
+                        return Self::assign_preserves_non_negative(
+                            var_name,
+                            &s.value,
+                            non_neg_vars,
+                        );
+                    }
+                }
+                true
+            }
+            Stmt::Let(s) => {
+                // Shadowing the loop var breaks our tracking
+                if s.name == var_name {
+                    return false;
+                }
+                true
+            }
+            Stmt::If(s) => {
+                Self::body_preserves_non_negative(&s.then_block, var_name, non_neg_vars)
+                    && s.else_branch.as_ref().is_none_or(|b| {
+                        Self::else_preserves_non_negative(b, var_name, non_neg_vars)
+                    })
+            }
+            Stmt::While(s) => Self::body_preserves_non_negative(&s.body, var_name, non_neg_vars),
+            Stmt::For(s) => {
+                if s.var_name == var_name {
+                    return false;
+                }
+                Self::body_preserves_non_negative(&s.body, var_name, non_neg_vars)
+            }
+            Stmt::Match(s) => s
+                .arms
+                .iter()
+                .all(|arm| Self::body_preserves_non_negative(&arm.body, var_name, non_neg_vars)),
+            Stmt::Expr(_) | Stmt::Return(_) | Stmt::Break(_) | Stmt::Continue(_) => true,
+        }
+    }
+
+    fn else_preserves_non_negative(
+        branch: &ElseBranch,
+        var_name: &str,
+        non_neg_vars: &HashSet<String>,
+    ) -> bool {
+        match branch {
+            ElseBranch::Else(block) => {
+                Self::body_preserves_non_negative(block, var_name, non_neg_vars)
+            }
+            ElseBranch::ElseIf(if_stmt) => {
+                Self::body_preserves_non_negative(&if_stmt.then_block, var_name, non_neg_vars)
+                    && if_stmt.else_branch.as_ref().is_none_or(|b| {
+                        Self::else_preserves_non_negative(b, var_name, non_neg_vars)
+                    })
+            }
+        }
     }
 
     /// Check if body reassigns a variable (direct assignment or shadowing let).
@@ -3601,10 +3789,24 @@ impl Codegen {
 
     fn push_scope(&mut self) {
         self.vars.push(HashMap::new());
+        self.len_alias_scopes.push(self.len_aliases.clone());
+        self.immutable_binding_scopes
+            .push(self.immutable_bindings.clone());
+        self.non_negative_scopes
+            .push(self.non_negative_vars.clone());
     }
 
     fn pop_scope(&mut self) {
         self.vars.pop();
+        if let Some(saved) = self.len_alias_scopes.pop() {
+            self.len_aliases = saved;
+        }
+        if let Some(saved) = self.immutable_binding_scopes.pop() {
+            self.immutable_bindings = saved;
+        }
+        if let Some(saved) = self.non_negative_scopes.pop() {
+            self.non_negative_vars = saved;
+        }
     }
 
     fn define_var(&mut self, name: &str, ptr: &str, llvm_ty: &str) {

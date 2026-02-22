@@ -10453,6 +10453,122 @@ fn test_sieve_compiles_and_runs() {
     assert!(ir.contains("@sieve_of_eratosthenes("));
 }
 
+// ── While-loop elision: safety regression tests ─────────────
+
+#[test]
+fn test_bounds_no_elision_while_negative_init() {
+    // P1: negative index — var starts at -1, while var < len(arr) is true
+    // but arr[var] is out of bounds. Bounds check must NOT be elided.
+    // Test the specific case where access precedes modification with negative init.
+    let ir2 = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [10, 20, 30];\n\
+         \x20   let mut i: int = -1;\n\
+         \x20   while i < len(arr) {\n\
+         \x20       print_int(arr[i]);\n\
+         \x20       i += 1;\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    let main_ir2 = extract_main_ir(&ir2);
+    // i starts at -1: bounds check MUST remain despite access-before-modification
+    assert!(main_ir2.contains("call void @__yorum_bounds_check"));
+}
+
+#[test]
+fn test_bounds_no_elision_while_negative_increment() {
+    // P1: increment can make var negative across iterations.
+    // var starts at 5, var += -2 can eventually make it negative.
+    let ir = compile(
+        "fn helper(arr: [int]) -> int {\n\
+         \x20   let mut i: int = 5;\n\
+         \x20   while i < len(arr) {\n\
+         \x20       print_int(arr[i]);\n\
+         \x20       i += -2;\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n\
+         fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];\n\
+         \x20   return helper(arr);\n\
+         }\n",
+    );
+    let helper_start = ir.find("@helper(").expect("@helper not found");
+    let helper_rest = &ir[helper_start..];
+    let helper_end = helper_rest[1..]
+        .find("\ndefine ")
+        .map(|i| i + 1)
+        .unwrap_or(helper_rest.len());
+    let helper_ir = &helper_rest[..helper_end];
+    // -2 is negative: body doesn't preserve non-negativity, bounds check must remain
+    assert!(helper_ir.contains("call void @__yorum_bounds_check"));
+}
+
+#[test]
+fn test_bounds_no_elision_while_stale_alias_after_pop() {
+    // P1: stale len alias after pop. n = len(arr), then pop(arr),
+    // then while i < n — n is now larger than actual length.
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let mut arr: [int] = [1, 2, 3, 4, 5];\n\
+         \x20   let n: int = len(arr);\n\
+         \x20   let x: int = pop(arr);\n\
+         \x20   let mut i: int = 0;\n\
+         \x20   while i < n {\n\
+         \x20       print_int(arr[i]);\n\
+         \x20       i += 1;\n\
+         \x20   }\n\
+         \x20   print_int(x);\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    let main_ir = extract_main_ir(&ir);
+    // n is stale after pop(arr) — bounds check MUST remain
+    assert!(main_ir.contains("call void @__yorum_bounds_check"));
+}
+
+#[test]
+fn test_bounds_no_elision_while_scope_leak() {
+    // P1: inner scope alias should not leak to outer scope.
+    // let n = len(arr1); if cond { let n = len(arr2); }
+    // Later `while i < n` should use the OUTER n (arr1), not the inner.
+    let ir = compile(
+        "fn check(arr1: [int], arr2: [int], cond: int) -> int {\n\
+         \x20   let n: int = len(arr1);\n\
+         \x20   if cond == 1 {\n\
+         \x20       let n: int = len(arr2);\n\
+         \x20       print_int(n);\n\
+         \x20   }\n\
+         \x20   let mut i: int = 0;\n\
+         \x20   while i < n {\n\
+         \x20       print_int(arr1[i]);\n\
+         \x20       i += 1;\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n\
+         fn main() -> int {\n\
+         \x20   let a: [int] = [1, 2, 3];\n\
+         \x20   let b: [int] = [4, 5];\n\
+         \x20   return check(a, b, 1);\n\
+         }\n",
+    );
+    let check_start = ir.find("@check(").expect("@check not found");
+    let check_rest = &ir[check_start..];
+    let check_end = check_rest[1..]
+        .find("\ndefine ")
+        .map(|i| i + 1)
+        .unwrap_or(check_rest.len());
+    let check_ir = &check_rest[..check_end];
+    // After the if block, n should still alias arr1 (outer scope).
+    // The inner `let n = len(arr2)` should not leak.
+    // With correct scoping, elision SHOULD work for arr1[i] with n=len(arr1).
+    assert!(
+        !check_ir.contains("call void @__yorum_bounds_check"),
+        "outer scope alias n=len(arr1) should enable elision for arr1[i]"
+    );
+}
+
 // ═══════════════════════════════════════════════════════════════
 //  Phase 1: clear(), sum(), count()
 // ═══════════════════════════════════════════════════════════════

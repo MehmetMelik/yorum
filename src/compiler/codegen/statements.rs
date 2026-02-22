@@ -9,6 +9,12 @@ impl Codegen {
             self.immutable_bindings.insert(s.name.clone());
         }
 
+        // Track non-negative variables for bounds check elision safety
+        self.non_negative_vars.remove(&s.name);
+        if Self::expr_is_provably_non_negative(&s.value, &self.non_negative_vars) {
+            self.non_negative_vars.insert(s.name.clone());
+        }
+
         // Invalidate stale len_aliases when a name is shadowed
         self.len_aliases.remove(&s.name);
 
@@ -179,6 +185,14 @@ impl Codegen {
     pub(crate) fn emit_assign(&mut self, s: &AssignStmt) -> Result<(), CodegenError> {
         match &s.target.kind {
             ExprKind::Ident(name) => {
+                // Update non-negative tracking: x = x + <non-neg> preserves
+                // non-negativity, anything else invalidates.
+                if self.non_negative_vars.contains(name)
+                    && !Self::assign_preserves_non_negative(name, &s.value, &self.non_negative_vars)
+                {
+                    self.non_negative_vars.remove(name);
+                }
+
                 let slot = self
                     .lookup_var(name)
                     .ok_or_else(|| CodegenError {
@@ -605,7 +619,12 @@ impl Codegen {
         self.emit_cond_branch(&cond, &body_label, &end_label);
 
         // Bounds check elision: detect `while var < len(arr)` or alias
-        let elision = Self::detect_bounded_while(&s.condition, &s.body, &self.len_aliases);
+        let elision = Self::detect_bounded_while(
+            &s.condition,
+            &s.body,
+            &self.len_aliases,
+            &self.non_negative_vars,
+        );
         let prev_binding = if let Some((ref var, ref arr)) = elision {
             self.bounded_loop_vars.insert(var.clone(), arr.clone())
         } else {

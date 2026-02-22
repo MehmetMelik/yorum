@@ -10898,6 +10898,31 @@ fn test_bounds_no_elision_while_body_alias_rebind() {
 }
 
 #[test]
+fn test_bounds_no_elision_while_body_local_alias_rebind() {
+    // P1: loop-local alias declarations are not available in self.vars when
+    // detect_bounded_while scans the body, so alias rebinds must still block
+    // while-loop bounds-check elision.
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let mut arr: [int] = [1, 2, 3];\n\
+         \x20   let mut i: int = 2;\n\
+         \x20   while i < len(arr) {\n\
+         \x20       let mut b: [int] = arr;\n\
+         \x20       b = [9];\n\
+         \x20       print_int(arr[i]);\n\
+         \x20       i += 1;\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    let main_ir = extract_main_ir(&ir);
+    assert!(
+        main_ir.contains("call void @__yorum_bounds_check"),
+        "loop-local alias rebind in while body must block bounds-check elision"
+    );
+}
+
+#[test]
 fn test_bounds_no_elision_while_stale_len_alias_after_alias_rebind() {
     // P1: `n = len(arr)` becomes stale if `arr` is rebound through alias `b`
     // before the loop. Bounds checks must remain for `arr[i]`.

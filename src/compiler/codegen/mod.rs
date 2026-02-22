@@ -3493,83 +3493,171 @@ impl Codegen {
             .is_some_and(|slot| slot.llvm_ty == "{ ptr, i64, i64 }")
     }
 
+    fn is_array_binding_name_with_locals(
+        &self,
+        name: &str,
+        local_array_bindings: &HashSet<String>,
+    ) -> bool {
+        local_array_bindings.contains(name) || self.is_array_binding_name(name)
+    }
+
     /// Detect unknown calls that receive an in-scope array variable directly.
     /// Such calls may mutate array length via aliases (e.g. helper(arr_alias)).
-    fn expr_has_unknown_call_with_array_ident_arg(&self, expr: &Expr) -> bool {
+    fn expr_has_unknown_call_with_array_ident_arg_with_locals(
+        &self,
+        expr: &Expr,
+        local_array_bindings: &HashSet<String>,
+    ) -> bool {
         match &expr.kind {
             ExprKind::Call(callee, args) => {
                 let is_known_non_mutating =
                     matches!(&callee.kind, ExprKind::Ident(name) if name == "len");
                 let has_array_ident_arg = args.iter().any(|arg| {
                     if let ExprKind::Ident(name) = &arg.kind {
-                        self.is_array_binding_name(name)
+                        self.is_array_binding_name_with_locals(name, local_array_bindings)
                     } else {
                         false
                     }
                 });
                 (!is_known_non_mutating && has_array_ident_arg)
-                    || self.expr_has_unknown_call_with_array_ident_arg(callee)
-                    || args
-                        .iter()
-                        .any(|arg| self.expr_has_unknown_call_with_array_ident_arg(arg))
+                    || self.expr_has_unknown_call_with_array_ident_arg_with_locals(
+                        callee,
+                        local_array_bindings,
+                    )
+                    || args.iter().any(|arg| {
+                        self.expr_has_unknown_call_with_array_ident_arg_with_locals(
+                            arg,
+                            local_array_bindings,
+                        )
+                    })
             }
             ExprKind::MethodCall(recv, _, args) => {
-                self.expr_has_unknown_call_with_array_ident_arg(recv)
-                    || args
-                        .iter()
-                        .any(|arg| self.expr_has_unknown_call_with_array_ident_arg(arg))
+                self.expr_has_unknown_call_with_array_ident_arg_with_locals(
+                    recv,
+                    local_array_bindings,
+                ) || args.iter().any(|arg| {
+                    self.expr_has_unknown_call_with_array_ident_arg_with_locals(
+                        arg,
+                        local_array_bindings,
+                    )
+                })
             }
             ExprKind::Binary(lhs, _, rhs) => {
-                self.expr_has_unknown_call_with_array_ident_arg(lhs)
-                    || self.expr_has_unknown_call_with_array_ident_arg(rhs)
+                self.expr_has_unknown_call_with_array_ident_arg_with_locals(
+                    lhs,
+                    local_array_bindings,
+                ) || self.expr_has_unknown_call_with_array_ident_arg_with_locals(
+                    rhs,
+                    local_array_bindings,
+                )
             }
-            ExprKind::Unary(_, inner) => self.expr_has_unknown_call_with_array_ident_arg(inner),
-            ExprKind::FieldAccess(obj, _) => self.expr_has_unknown_call_with_array_ident_arg(obj),
+            ExprKind::Unary(_, inner) => self
+                .expr_has_unknown_call_with_array_ident_arg_with_locals(
+                    inner,
+                    local_array_bindings,
+                ),
+            ExprKind::FieldAccess(obj, _) => self
+                .expr_has_unknown_call_with_array_ident_arg_with_locals(obj, local_array_bindings),
             ExprKind::Index(arr, idx) => {
-                self.expr_has_unknown_call_with_array_ident_arg(arr)
-                    || self.expr_has_unknown_call_with_array_ident_arg(idx)
+                self.expr_has_unknown_call_with_array_ident_arg_with_locals(
+                    arr,
+                    local_array_bindings,
+                ) || self.expr_has_unknown_call_with_array_ident_arg_with_locals(
+                    idx,
+                    local_array_bindings,
+                )
             }
-            ExprKind::StructInit(_, fields) => fields
-                .iter()
-                .any(|field| self.expr_has_unknown_call_with_array_ident_arg(&field.value)),
-            ExprKind::ArrayLit(elems) | ExprKind::TupleLit(elems) => elems
-                .iter()
-                .any(|elem| self.expr_has_unknown_call_with_array_ident_arg(elem)),
+            ExprKind::StructInit(_, fields) => fields.iter().any(|field| {
+                self.expr_has_unknown_call_with_array_ident_arg_with_locals(
+                    &field.value,
+                    local_array_bindings,
+                )
+            }),
+            ExprKind::ArrayLit(elems) | ExprKind::TupleLit(elems) => elems.iter().any(|elem| {
+                self.expr_has_unknown_call_with_array_ident_arg_with_locals(
+                    elem,
+                    local_array_bindings,
+                )
+            }),
             ExprKind::ArrayRepeat(val, count) => {
-                self.expr_has_unknown_call_with_array_ident_arg(val)
-                    || self.expr_has_unknown_call_with_array_ident_arg(count)
+                self.expr_has_unknown_call_with_array_ident_arg_with_locals(
+                    val,
+                    local_array_bindings,
+                ) || self.expr_has_unknown_call_with_array_ident_arg_with_locals(
+                    count,
+                    local_array_bindings,
+                )
             }
             ExprKind::Closure(_) => false,
-            ExprKind::Spawn(block) => block
-                .stmts
-                .iter()
-                .any(|stmt| self.stmt_has_indirect_array_length_mutation_risk(stmt)),
+            ExprKind::Spawn(block) => self
+                .block_has_indirect_array_length_mutation_risk_with_locals(
+                    block,
+                    local_array_bindings,
+                ),
             ExprKind::Range(s, e) | ExprKind::RangeInclusive(s, e) => {
-                self.expr_has_unknown_call_with_array_ident_arg(s)
-                    || self.expr_has_unknown_call_with_array_ident_arg(e)
+                self.expr_has_unknown_call_with_array_ident_arg_with_locals(s, local_array_bindings)
+                    || self.expr_has_unknown_call_with_array_ident_arg_with_locals(
+                        e,
+                        local_array_bindings,
+                    )
             }
-            ExprKind::RangeFrom(s) => self.expr_has_unknown_call_with_array_ident_arg(s),
-            ExprKind::Try(inner) => self.expr_has_unknown_call_with_array_ident_arg(inner),
+            ExprKind::RangeFrom(s) => {
+                self.expr_has_unknown_call_with_array_ident_arg_with_locals(s, local_array_bindings)
+            }
+            ExprKind::Try(inner) => self.expr_has_unknown_call_with_array_ident_arg_with_locals(
+                inner,
+                local_array_bindings,
+            ),
             ExprKind::Literal(_) | ExprKind::Ident(_) => false,
         }
     }
 
-    fn else_has_indirect_array_length_mutation_risk(&self, branch: &ElseBranch) -> bool {
+    fn block_has_indirect_array_length_mutation_risk_with_locals(
+        &self,
+        block: &Block,
+        inherited_array_bindings: &HashSet<String>,
+    ) -> bool {
+        let mut scoped_array_bindings = inherited_array_bindings.clone();
+        for stmt in &block.stmts {
+            if self.stmt_has_indirect_array_length_mutation_risk_with_locals(
+                stmt,
+                &scoped_array_bindings,
+            ) {
+                return true;
+            }
+            if let Stmt::Let(s) = stmt {
+                if matches!(s.ty, Type::Array(_)) {
+                    scoped_array_bindings.insert(s.name.clone());
+                }
+            }
+        }
+        false
+    }
+
+    fn else_has_indirect_array_length_mutation_risk_with_locals(
+        &self,
+        branch: &ElseBranch,
+        local_array_bindings: &HashSet<String>,
+    ) -> bool {
         match branch {
-            ElseBranch::Else(block) => block
-                .stmts
-                .iter()
-                .any(|stmt| self.stmt_has_indirect_array_length_mutation_risk(stmt)),
+            ElseBranch::Else(block) => self
+                .block_has_indirect_array_length_mutation_risk_with_locals(
+                    block,
+                    local_array_bindings,
+                ),
             ElseBranch::ElseIf(if_stmt) => {
-                self.expr_has_unknown_call_with_array_ident_arg(&if_stmt.condition)
-                    || if_stmt
-                        .then_block
-                        .stmts
-                        .iter()
-                        .any(|stmt| self.stmt_has_indirect_array_length_mutation_risk(stmt))
-                    || if_stmt.else_branch.as_ref().is_some_and(|branch| {
-                        self.else_has_indirect_array_length_mutation_risk(branch)
-                    })
+                self.expr_has_unknown_call_with_array_ident_arg_with_locals(
+                    &if_stmt.condition,
+                    local_array_bindings,
+                ) || self.block_has_indirect_array_length_mutation_risk_with_locals(
+                    &if_stmt.then_block,
+                    local_array_bindings,
+                ) || if_stmt.else_branch.as_ref().is_some_and(|branch| {
+                    self.else_has_indirect_array_length_mutation_risk_with_locals(
+                        branch,
+                        local_array_bindings,
+                    )
+                })
             }
         }
     }
@@ -3579,55 +3667,88 @@ impl Codegen {
     /// Returns true when a statement can invalidate facts like `n = len(arr)` or
     /// make `while i < len(arr)` elision unsafe through aliases/indirect effects.
     fn stmt_has_indirect_array_length_mutation_risk(&self, stmt: &Stmt) -> bool {
+        let local_array_bindings = HashSet::new();
+        self.stmt_has_indirect_array_length_mutation_risk_with_locals(stmt, &local_array_bindings)
+    }
+
+    fn stmt_has_indirect_array_length_mutation_risk_with_locals(
+        &self,
+        stmt: &Stmt,
+        local_array_bindings: &HashSet<String>,
+    ) -> bool {
         if Self::stmt_has_length_mutation(stmt) {
             return true;
         }
 
         match stmt {
-            Stmt::Let(s) => self.expr_has_unknown_call_with_array_ident_arg(&s.value),
+            Stmt::Let(s) => self.expr_has_unknown_call_with_array_ident_arg_with_locals(
+                &s.value,
+                local_array_bindings,
+            ),
             Stmt::Assign(s) => {
                 if let ExprKind::Ident(name) = &s.target.kind {
-                    if self.is_array_binding_name(name) {
+                    if self.is_array_binding_name_with_locals(name, local_array_bindings) {
                         return true;
                     }
                 }
-                self.expr_has_unknown_call_with_array_ident_arg(&s.target)
-                    || self.expr_has_unknown_call_with_array_ident_arg(&s.value)
+                self.expr_has_unknown_call_with_array_ident_arg_with_locals(
+                    &s.target,
+                    local_array_bindings,
+                ) || self.expr_has_unknown_call_with_array_ident_arg_with_locals(
+                    &s.value,
+                    local_array_bindings,
+                )
             }
-            Stmt::Expr(s) => self.expr_has_unknown_call_with_array_ident_arg(&s.expr),
-            Stmt::Return(s) => self.expr_has_unknown_call_with_array_ident_arg(&s.value),
+            Stmt::Expr(s) => self.expr_has_unknown_call_with_array_ident_arg_with_locals(
+                &s.expr,
+                local_array_bindings,
+            ),
+            Stmt::Return(s) => self.expr_has_unknown_call_with_array_ident_arg_with_locals(
+                &s.value,
+                local_array_bindings,
+            ),
             Stmt::If(s) => {
-                self.expr_has_unknown_call_with_array_ident_arg(&s.condition)
-                    || s.then_block
-                        .stmts
-                        .iter()
-                        .any(|stmt| self.stmt_has_indirect_array_length_mutation_risk(stmt))
-                    || s.else_branch.as_ref().is_some_and(|branch| {
-                        self.else_has_indirect_array_length_mutation_risk(branch)
-                    })
+                self.expr_has_unknown_call_with_array_ident_arg_with_locals(
+                    &s.condition,
+                    local_array_bindings,
+                ) || self.block_has_indirect_array_length_mutation_risk_with_locals(
+                    &s.then_block,
+                    local_array_bindings,
+                ) || s.else_branch.as_ref().is_some_and(|branch| {
+                    self.else_has_indirect_array_length_mutation_risk_with_locals(
+                        branch,
+                        local_array_bindings,
+                    )
+                })
             }
             Stmt::While(s) => {
-                self.expr_has_unknown_call_with_array_ident_arg(&s.condition)
-                    || s.body
-                        .stmts
-                        .iter()
-                        .any(|stmt| self.stmt_has_indirect_array_length_mutation_risk(stmt))
+                self.expr_has_unknown_call_with_array_ident_arg_with_locals(
+                    &s.condition,
+                    local_array_bindings,
+                ) || self.block_has_indirect_array_length_mutation_risk_with_locals(
+                    &s.body,
+                    local_array_bindings,
+                )
             }
             Stmt::For(s) => {
-                self.expr_has_unknown_call_with_array_ident_arg(&s.iterable)
-                    || s.body
-                        .stmts
-                        .iter()
-                        .any(|stmt| self.stmt_has_indirect_array_length_mutation_risk(stmt))
+                self.expr_has_unknown_call_with_array_ident_arg_with_locals(
+                    &s.iterable,
+                    local_array_bindings,
+                ) || self.block_has_indirect_array_length_mutation_risk_with_locals(
+                    &s.body,
+                    local_array_bindings,
+                )
             }
             Stmt::Match(s) => {
-                self.expr_has_unknown_call_with_array_ident_arg(&s.subject)
-                    || s.arms.iter().any(|arm| {
-                        arm.body
-                            .stmts
-                            .iter()
-                            .any(|stmt| self.stmt_has_indirect_array_length_mutation_risk(stmt))
-                    })
+                self.expr_has_unknown_call_with_array_ident_arg_with_locals(
+                    &s.subject,
+                    local_array_bindings,
+                ) || s.arms.iter().any(|arm| {
+                    self.block_has_indirect_array_length_mutation_risk_with_locals(
+                        &arm.body,
+                        local_array_bindings,
+                    )
+                })
             }
             Stmt::Break(_) | Stmt::Continue(_) => false,
         }
@@ -3717,10 +3838,9 @@ impl Codegen {
         }
 
         // Body must not mutate array length (including alias/indirect risks)
-        if body
-            .stmts
-            .iter()
-            .any(|stmt| self.stmt_has_indirect_array_length_mutation_risk(stmt))
+        let local_array_bindings = HashSet::new();
+        if self
+            .block_has_indirect_array_length_mutation_risk_with_locals(body, &local_array_bindings)
         {
             return None;
         }

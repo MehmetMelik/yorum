@@ -140,6 +140,14 @@ Rationale: No language ecosystem grows without a package manager. Prerequisite f
 
 ---
 
+## v1.12.2 — While-Loop Bounds Check Elision (Done)
+
+- ~~**While-loop elision:** `while j < len(arr)` and `while j < n` (where `n` aliases `len(arr)`) now elide bounds checks for `arr[j]` when accesses provably precede index modifications~~
+- ~~**Len-alias tracking:** immutable bindings from `let n = len(arr)` and `let arr = [val; n]` tracked as length aliases for elision in while-loop conditions~~
+- ~~**Safety analysis:** access-before-modification analysis, bound immutability checks, and array mutation guards ensure elision is only applied when provably safe~~
+
+---
+
 ## Longer-term (v2.0+)
 
 | Feature | Notes |
@@ -211,3 +219,4 @@ The top 3 highest-impact releases:
 11. ~~**v1.11 (Optimizations)** — array repeat `[value; count]`, bounds check elision~~ **Done**
 12. ~~**v1.12 (Iterator Ecosystem)** — `.chain()`, `.flat_map()`, `.flatten()`, `.take_while()`, `.chars()`, `.rev()`, `.sum()`, `.count()`, `.position()`, unbounded ranges, Set/Map `.iter()`~~ **Done**
 13. ~~**v1.12.1 (LSP Chain Completions)** — chain-aware dot-completions with type propagation through iterator pipelines~~ **Done**
+14. ~~**v1.12.2 (While-Loop Bounds Elision)** — while-loop bounds check elision with len-alias tracking and access-before-modification analysis~~ **Done**

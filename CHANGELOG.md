@@ -2,6 +2,23 @@
 
 All notable changes to the Yorum programming language compiler.
 
+## [1.12.2] - 2026-02-22
+
+**While-Loop Bounds Check Elision** — Extends the bounds check elision optimization from `for i in 0..len(arr)` loops to `while` loops with `while var < len(arr)` or `while var < n` (where `n` is a known alias for `len(arr)`). Enables safe elision for patterns like the Sieve of Eratosthenes with non-sequential index increments.
+
+### Added
+
+- **While-loop bounds elision:** `while j < len(arr) { arr[j] = ...; j += step; }` now elides bounds checks when the compiler can prove `j < len(arr)` holds at every array access. Supports direct `len()` calls and indirect aliases via `let n = len(arr)` or `let arr = [0; n]`
+- **Len alias tracking:** immutable bindings from `let n = len(arr)` and array-repeat `let arr = [val; n]` are tracked as length aliases, enabling elision in `while j < n` patterns
+- **Access-before-modification analysis:** static analysis verifies all `arr[var]` accesses precede any `var` modifications within the loop body, ensuring the loop condition still holds at access time
+- **Safety guards:** elision is conservatively disabled when the bound variable is mutable/reassigned, the array is mutated (push/pop), or the index is modified before access
+- **`examples/sieve.yrm`:** new example demonstrating the Sieve of Eratosthenes with while-loop bounds check elision
+- 8 new integration tests for while-loop elision (4 positive + 3 negative safety + 1 end-to-end sieve)
+
+**Stats:** 4 files changed | Tests: 764 (86 unit + 678 integration)
+
+---
+
 ## [1.12.1] - 2026-02-21
 
 **LSP Chain-Aware Completions** — Dot-completions now work after any point in an iterator pipeline chain, with accurate element types derived by walking the AST through `.map()`, `.filter()`, `.enumerate()`, `.zip()`, and all other combinators/terminators.

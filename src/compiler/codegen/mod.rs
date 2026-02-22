@@ -294,6 +294,24 @@ pub struct Codegen {
     /// bounds checks for `arr[i]` can be safely elided.
     bounded_loop_vars: HashMap<String, String>,
 
+    /// Variables known to equal len(array): var_name -> array_name.
+    /// Populated from `let n = len(arr)` (immutable) and `let arr = [val; n]` (n immutable).
+    len_aliases: HashMap<String, String>,
+
+    /// Names of immutable bindings (function params + non-mut let bindings).
+    /// Used to verify len_aliases are safe (can't be reassigned).
+    immutable_bindings: HashSet<String>,
+
+    /// Variables provably non-negative at current program point.
+    /// Populated from non-negative literal inits and len() calls.
+    non_negative_vars: HashSet<String>,
+
+    /// Saved snapshots for scope-aware push/pop of len_aliases,
+    /// immutable_bindings, and non_negative_vars.
+    len_alias_scopes: Vec<HashMap<String, String>>,
+    immutable_binding_scopes: Vec<HashSet<String>>,
+    non_negative_scopes: Vec<HashSet<String>>,
+
     // Debug info (DWARF)
     debug_enabled: bool,
     debug_filename: String,
@@ -349,6 +367,12 @@ impl Codegen {
             tail_call_hint: false,
             string_buf_vars: HashMap::new(),
             bounded_loop_vars: HashMap::new(),
+            len_aliases: HashMap::new(),
+            immutable_bindings: HashSet::new(),
+            non_negative_vars: HashSet::new(),
+            len_alias_scopes: Vec::new(),
+            immutable_binding_scopes: Vec::new(),
+            non_negative_scopes: Vec::new(),
             debug_enabled: false,
             debug_filename: String::new(),
             debug_directory: String::new(),
@@ -835,6 +859,12 @@ impl Codegen {
         self.current_fn_name = f.name.clone();
         self.string_buf_vars.clear();
         self.bounded_loop_vars.clear();
+        self.len_aliases.clear();
+        self.immutable_bindings.clear();
+        self.non_negative_vars.clear();
+        self.len_alias_scopes.clear();
+        self.immutable_binding_scopes.clear();
+        self.non_negative_scopes.clear();
 
         // Ensure tuple type definitions exist for params and return type
         if let Type::Tuple(ref types) = f.return_type {
@@ -938,6 +968,11 @@ impl Codegen {
                 }
                 _ => {}
             }
+        }
+
+        // Function params are immutable bindings (for len_alias tracking)
+        for param in &f.params {
+            self.immutable_bindings.insert(param.name.clone());
         }
 
         // Emit requires checks after parameter allocas
@@ -1085,6 +1120,11 @@ impl Codegen {
     // ── Statement emission ───────────────────────────────────
 
     fn emit_stmt(&mut self, stmt: &Stmt) -> Result<(), CodegenError> {
+        // Invalidate len_aliases for any arrays mutated by this statement.
+        // This ensures stale aliases (e.g. after push/pop between alias
+        // definition and while-loop) are removed before we reach emit_while.
+        self.invalidate_len_aliases_for_stmt(stmt);
+
         match stmt {
             Stmt::Let(s) => self.emit_let(s),
             Stmt::Assign(s) => self.emit_assign(s),
@@ -2546,6 +2586,14 @@ impl Codegen {
         let saved_block = std::mem::replace(&mut self.current_block, "entry".to_string());
         let saved_ret_ty = self.current_fn_ret_ty.take();
         let saved_vars = std::mem::take(&mut self.vars);
+        // Save while-elision analysis state (closure is a separate function scope)
+        let saved_len_aliases = std::mem::take(&mut self.len_aliases);
+        let saved_immutable_bindings = std::mem::take(&mut self.immutable_bindings);
+        let saved_non_negative_vars = std::mem::take(&mut self.non_negative_vars);
+        let saved_len_alias_scopes = std::mem::take(&mut self.len_alias_scopes);
+        let saved_immutable_binding_scopes = std::mem::take(&mut self.immutable_binding_scopes);
+        let saved_non_negative_scopes = std::mem::take(&mut self.non_negative_scopes);
+        let saved_bounded_loop_vars = std::mem::take(&mut self.bounded_loop_vars);
 
         self.temp_counter = 0;
         self.label_counter = 0;
@@ -2612,6 +2660,13 @@ impl Codegen {
         self.current_block = saved_block;
         self.current_fn_ret_ty = saved_ret_ty;
         self.vars = saved_vars;
+        self.len_aliases = saved_len_aliases;
+        self.immutable_bindings = saved_immutable_bindings;
+        self.non_negative_vars = saved_non_negative_vars;
+        self.len_alias_scopes = saved_len_alias_scopes;
+        self.immutable_binding_scopes = saved_immutable_binding_scopes;
+        self.non_negative_scopes = saved_non_negative_scopes;
+        self.bounded_loop_vars = saved_bounded_loop_vars;
 
         Ok(())
     }
@@ -2713,6 +2768,14 @@ impl Codegen {
         let saved_vars = std::mem::take(&mut self.vars);
         let saved_contracts = std::mem::take(&mut self.current_fn_contracts);
         let saved_fn_name = std::mem::take(&mut self.current_fn_name);
+        // Save while-elision analysis state (spawn is a separate function scope)
+        let saved_len_aliases = std::mem::take(&mut self.len_aliases);
+        let saved_immutable_bindings = std::mem::take(&mut self.immutable_bindings);
+        let saved_non_negative_vars = std::mem::take(&mut self.non_negative_vars);
+        let saved_len_alias_scopes = std::mem::take(&mut self.len_alias_scopes);
+        let saved_immutable_binding_scopes = std::mem::take(&mut self.immutable_binding_scopes);
+        let saved_non_negative_scopes = std::mem::take(&mut self.non_negative_scopes);
+        let saved_bounded_loop_vars = std::mem::take(&mut self.bounded_loop_vars);
 
         self.temp_counter = 0;
         self.label_counter = 0;
@@ -2764,6 +2827,13 @@ impl Codegen {
         self.vars = saved_vars;
         self.current_fn_contracts = saved_contracts;
         self.current_fn_name = saved_fn_name;
+        self.len_aliases = saved_len_aliases;
+        self.immutable_bindings = saved_immutable_bindings;
+        self.non_negative_vars = saved_non_negative_vars;
+        self.len_alias_scopes = saved_len_alias_scopes;
+        self.immutable_binding_scopes = saved_immutable_binding_scopes;
+        self.non_negative_scopes = saved_non_negative_scopes;
+        self.bounded_loop_vars = saved_bounded_loop_vars;
 
         Ok(())
     }
@@ -3240,7 +3310,15 @@ impl Codegen {
             }
             ExprKind::Unary(_, inner) => Self::expr_mutates_array(inner, array_name),
             ExprKind::FieldAccess(obj, _) => Self::expr_mutates_array(obj, array_name),
-            ExprKind::MethodCall(recv, _, args) => {
+            ExprKind::MethodCall(recv, method, args) => {
+                // .clear() on the target array mutates its length
+                if method == "clear" {
+                    if let ExprKind::Ident(name) = &recv.kind {
+                        if name == array_name {
+                            return true;
+                        }
+                    }
+                }
                 Self::expr_mutates_array(recv, array_name)
                     || args.iter().any(|a| Self::expr_mutates_array(a, array_name))
             }
@@ -3269,14 +3347,931 @@ impl Codegen {
         }
     }
 
+    /// Check whether a statement may mutate the length of any array
+    /// (e.g. push/pop/clear), regardless of identifier name.
+    ///
+    /// Used to conservatively invalidate all len aliases when aliasing means
+    /// we cannot map the mutation back to a single source identifier.
+    fn stmt_has_length_mutation(stmt: &Stmt) -> bool {
+        match stmt {
+            Stmt::Let(s) => Self::expr_has_length_mutation(&s.value),
+            Stmt::Assign(s) => {
+                Self::expr_has_length_mutation(&s.target)
+                    || Self::expr_has_length_mutation(&s.value)
+            }
+            Stmt::Expr(s) => Self::expr_has_length_mutation(&s.expr),
+            Stmt::Return(s) => Self::expr_has_length_mutation(&s.value),
+            Stmt::If(s) => {
+                Self::expr_has_length_mutation(&s.condition)
+                    || s.then_block
+                        .stmts
+                        .iter()
+                        .any(Self::stmt_has_length_mutation)
+                    || s.else_branch
+                        .as_ref()
+                        .is_some_and(|branch| Self::else_has_length_mutation(branch))
+            }
+            Stmt::While(s) => {
+                Self::expr_has_length_mutation(&s.condition)
+                    || s.body.stmts.iter().any(Self::stmt_has_length_mutation)
+            }
+            Stmt::For(s) => {
+                Self::expr_has_length_mutation(&s.iterable)
+                    || s.body.stmts.iter().any(Self::stmt_has_length_mutation)
+            }
+            Stmt::Match(s) => {
+                Self::expr_has_length_mutation(&s.subject)
+                    || s.arms
+                        .iter()
+                        .any(|arm| arm.body.stmts.iter().any(Self::stmt_has_length_mutation))
+            }
+            Stmt::Break(_) | Stmt::Continue(_) => false,
+        }
+    }
+
+    fn else_has_length_mutation(branch: &ElseBranch) -> bool {
+        match branch {
+            ElseBranch::Else(block) => block.stmts.iter().any(Self::stmt_has_length_mutation),
+            ElseBranch::ElseIf(if_stmt) => {
+                Self::expr_has_length_mutation(&if_stmt.condition)
+                    || if_stmt
+                        .then_block
+                        .stmts
+                        .iter()
+                        .any(Self::stmt_has_length_mutation)
+                    || if_stmt
+                        .else_branch
+                        .as_ref()
+                        .is_some_and(|branch| Self::else_has_length_mutation(branch))
+            }
+        }
+    }
+
+    fn expr_has_length_mutation(expr: &Expr) -> bool {
+        match &expr.kind {
+            ExprKind::Call(callee, args) => {
+                if let ExprKind::Ident(fn_name) = &callee.kind {
+                    if (fn_name == "push" || fn_name == "pop") && !args.is_empty() {
+                        return true;
+                    }
+                }
+                Self::expr_has_length_mutation(callee)
+                    || args.iter().any(Self::expr_has_length_mutation)
+            }
+            ExprKind::MethodCall(recv, method, args) => {
+                if method == "clear" {
+                    return true;
+                }
+                Self::expr_has_length_mutation(recv)
+                    || args.iter().any(Self::expr_has_length_mutation)
+            }
+            ExprKind::Binary(lhs, _, rhs) => {
+                Self::expr_has_length_mutation(lhs) || Self::expr_has_length_mutation(rhs)
+            }
+            ExprKind::Unary(_, inner) => Self::expr_has_length_mutation(inner),
+            ExprKind::FieldAccess(obj, _) => Self::expr_has_length_mutation(obj),
+            ExprKind::Index(arr, idx) => {
+                Self::expr_has_length_mutation(arr) || Self::expr_has_length_mutation(idx)
+            }
+            ExprKind::StructInit(_, fields) => fields
+                .iter()
+                .any(|f| Self::expr_has_length_mutation(&f.value)),
+            ExprKind::ArrayLit(elems) | ExprKind::TupleLit(elems) => {
+                elems.iter().any(Self::expr_has_length_mutation)
+            }
+            ExprKind::ArrayRepeat(val, count) => {
+                Self::expr_has_length_mutation(val) || Self::expr_has_length_mutation(count)
+            }
+            ExprKind::Closure(_) => false,
+            ExprKind::Spawn(block) => block.stmts.iter().any(Self::stmt_has_length_mutation),
+            ExprKind::Range(s, e) | ExprKind::RangeInclusive(s, e) => {
+                Self::expr_has_length_mutation(s) || Self::expr_has_length_mutation(e)
+            }
+            ExprKind::RangeFrom(s) => Self::expr_has_length_mutation(s),
+            ExprKind::Try(inner) => Self::expr_has_length_mutation(inner),
+            ExprKind::Literal(_) | ExprKind::Ident(_) => false,
+        }
+    }
+
+    // ── While-loop bounds check elision helpers ──────────────
+
+    /// Check if an expression is provably non-negative (>= 0).
+    /// Conservative: returns true only for patterns we can statically guarantee.
+    pub(crate) fn expr_is_provably_non_negative(
+        expr: &Expr,
+        non_neg_vars: &HashSet<String>,
+    ) -> bool {
+        match &expr.kind {
+            ExprKind::Literal(Literal::Int(n)) => *n >= 0,
+            ExprKind::Ident(name) => non_neg_vars.contains(name),
+            ExprKind::Call(callee, args) => {
+                // len() always returns >= 0
+                if let ExprKind::Ident(fn_name) = &callee.kind {
+                    if fn_name == "len" && args.len() == 1 {
+                        return true;
+                    }
+                }
+                false
+            }
+            _ => false,
+        }
+    }
+
+    /// Check if an assignment `name = value` preserves non-negativity.
+    /// Returns true for patterns like `name = name + <non_neg>` (desugared +=).
+    pub(crate) fn assign_preserves_non_negative(
+        _name: &str,
+        value: &Expr,
+        non_neg_vars: &HashSet<String>,
+    ) -> bool {
+        // General: value is provably non-negative
+        Self::expr_is_provably_non_negative(value, non_neg_vars)
+    }
+
+    fn is_array_binding_name(&self, name: &str) -> bool {
+        self.lookup_var(name)
+            .is_some_and(|slot| slot.llvm_ty == "{ ptr, i64, i64 }")
+    }
+
+    fn is_array_binding_name_with_locals(
+        &self,
+        name: &str,
+        local_array_bindings: &HashSet<String>,
+    ) -> bool {
+        local_array_bindings.contains(name) || self.is_array_binding_name(name)
+    }
+
+    /// Detect unknown calls that receive an in-scope array variable directly.
+    /// Such calls may mutate array length via aliases (e.g. helper(arr_alias)).
+    fn expr_has_unknown_call_with_array_ident_arg_with_locals(
+        &self,
+        expr: &Expr,
+        local_array_bindings: &HashSet<String>,
+    ) -> bool {
+        match &expr.kind {
+            ExprKind::Call(callee, args) => {
+                let is_known_non_mutating =
+                    matches!(&callee.kind, ExprKind::Ident(name) if name == "len");
+                let has_array_ident_arg = args.iter().any(|arg| {
+                    if let ExprKind::Ident(name) = &arg.kind {
+                        self.is_array_binding_name_with_locals(name, local_array_bindings)
+                    } else {
+                        false
+                    }
+                });
+                (!is_known_non_mutating && has_array_ident_arg)
+                    || self.expr_has_unknown_call_with_array_ident_arg_with_locals(
+                        callee,
+                        local_array_bindings,
+                    )
+                    || args.iter().any(|arg| {
+                        self.expr_has_unknown_call_with_array_ident_arg_with_locals(
+                            arg,
+                            local_array_bindings,
+                        )
+                    })
+            }
+            ExprKind::MethodCall(recv, _, args) => {
+                self.expr_has_unknown_call_with_array_ident_arg_with_locals(
+                    recv,
+                    local_array_bindings,
+                ) || args.iter().any(|arg| {
+                    self.expr_has_unknown_call_with_array_ident_arg_with_locals(
+                        arg,
+                        local_array_bindings,
+                    )
+                })
+            }
+            ExprKind::Binary(lhs, _, rhs) => {
+                self.expr_has_unknown_call_with_array_ident_arg_with_locals(
+                    lhs,
+                    local_array_bindings,
+                ) || self.expr_has_unknown_call_with_array_ident_arg_with_locals(
+                    rhs,
+                    local_array_bindings,
+                )
+            }
+            ExprKind::Unary(_, inner) => self
+                .expr_has_unknown_call_with_array_ident_arg_with_locals(
+                    inner,
+                    local_array_bindings,
+                ),
+            ExprKind::FieldAccess(obj, _) => self
+                .expr_has_unknown_call_with_array_ident_arg_with_locals(obj, local_array_bindings),
+            ExprKind::Index(arr, idx) => {
+                self.expr_has_unknown_call_with_array_ident_arg_with_locals(
+                    arr,
+                    local_array_bindings,
+                ) || self.expr_has_unknown_call_with_array_ident_arg_with_locals(
+                    idx,
+                    local_array_bindings,
+                )
+            }
+            ExprKind::StructInit(_, fields) => fields.iter().any(|field| {
+                self.expr_has_unknown_call_with_array_ident_arg_with_locals(
+                    &field.value,
+                    local_array_bindings,
+                )
+            }),
+            ExprKind::ArrayLit(elems) | ExprKind::TupleLit(elems) => elems.iter().any(|elem| {
+                self.expr_has_unknown_call_with_array_ident_arg_with_locals(
+                    elem,
+                    local_array_bindings,
+                )
+            }),
+            ExprKind::ArrayRepeat(val, count) => {
+                self.expr_has_unknown_call_with_array_ident_arg_with_locals(
+                    val,
+                    local_array_bindings,
+                ) || self.expr_has_unknown_call_with_array_ident_arg_with_locals(
+                    count,
+                    local_array_bindings,
+                )
+            }
+            ExprKind::Closure(_) => false,
+            ExprKind::Spawn(block) => self
+                .block_has_indirect_array_length_mutation_risk_with_locals(
+                    block,
+                    local_array_bindings,
+                ),
+            ExprKind::Range(s, e) | ExprKind::RangeInclusive(s, e) => {
+                self.expr_has_unknown_call_with_array_ident_arg_with_locals(s, local_array_bindings)
+                    || self.expr_has_unknown_call_with_array_ident_arg_with_locals(
+                        e,
+                        local_array_bindings,
+                    )
+            }
+            ExprKind::RangeFrom(s) => {
+                self.expr_has_unknown_call_with_array_ident_arg_with_locals(s, local_array_bindings)
+            }
+            ExprKind::Try(inner) => self.expr_has_unknown_call_with_array_ident_arg_with_locals(
+                inner,
+                local_array_bindings,
+            ),
+            ExprKind::Literal(_) | ExprKind::Ident(_) => false,
+        }
+    }
+
+    fn block_has_indirect_array_length_mutation_risk_with_locals(
+        &self,
+        block: &Block,
+        inherited_array_bindings: &HashSet<String>,
+    ) -> bool {
+        let mut scoped_array_bindings = inherited_array_bindings.clone();
+        for stmt in &block.stmts {
+            if self.stmt_has_indirect_array_length_mutation_risk_with_locals(
+                stmt,
+                &scoped_array_bindings,
+            ) {
+                return true;
+            }
+            if let Stmt::Let(s) = stmt {
+                if matches!(s.ty, Type::Array(_)) {
+                    scoped_array_bindings.insert(s.name.clone());
+                }
+            }
+        }
+        false
+    }
+
+    fn else_has_indirect_array_length_mutation_risk_with_locals(
+        &self,
+        branch: &ElseBranch,
+        local_array_bindings: &HashSet<String>,
+    ) -> bool {
+        match branch {
+            ElseBranch::Else(block) => self
+                .block_has_indirect_array_length_mutation_risk_with_locals(
+                    block,
+                    local_array_bindings,
+                ),
+            ElseBranch::ElseIf(if_stmt) => {
+                self.expr_has_unknown_call_with_array_ident_arg_with_locals(
+                    &if_stmt.condition,
+                    local_array_bindings,
+                ) || self.block_has_indirect_array_length_mutation_risk_with_locals(
+                    &if_stmt.then_block,
+                    local_array_bindings,
+                ) || if_stmt.else_branch.as_ref().is_some_and(|branch| {
+                    self.else_has_indirect_array_length_mutation_risk_with_locals(
+                        branch,
+                        local_array_bindings,
+                    )
+                })
+            }
+        }
+    }
+
+    /// Conservative safety check for alias-sensitive array length analysis.
+    ///
+    /// Returns true when a statement can invalidate facts like `n = len(arr)` or
+    /// make `while i < len(arr)` elision unsafe through aliases/indirect effects.
+    fn stmt_has_indirect_array_length_mutation_risk(&self, stmt: &Stmt) -> bool {
+        let local_array_bindings = HashSet::new();
+        self.stmt_has_indirect_array_length_mutation_risk_with_locals(stmt, &local_array_bindings)
+    }
+
+    fn stmt_has_indirect_array_length_mutation_risk_with_locals(
+        &self,
+        stmt: &Stmt,
+        local_array_bindings: &HashSet<String>,
+    ) -> bool {
+        if Self::stmt_has_length_mutation(stmt) {
+            return true;
+        }
+
+        match stmt {
+            Stmt::Let(s) => self.expr_has_unknown_call_with_array_ident_arg_with_locals(
+                &s.value,
+                local_array_bindings,
+            ),
+            Stmt::Assign(s) => {
+                if let ExprKind::Ident(name) = &s.target.kind {
+                    if self.is_array_binding_name_with_locals(name, local_array_bindings) {
+                        return true;
+                    }
+                }
+                self.expr_has_unknown_call_with_array_ident_arg_with_locals(
+                    &s.target,
+                    local_array_bindings,
+                ) || self.expr_has_unknown_call_with_array_ident_arg_with_locals(
+                    &s.value,
+                    local_array_bindings,
+                )
+            }
+            Stmt::Expr(s) => self.expr_has_unknown_call_with_array_ident_arg_with_locals(
+                &s.expr,
+                local_array_bindings,
+            ),
+            Stmt::Return(s) => self.expr_has_unknown_call_with_array_ident_arg_with_locals(
+                &s.value,
+                local_array_bindings,
+            ),
+            Stmt::If(s) => {
+                self.expr_has_unknown_call_with_array_ident_arg_with_locals(
+                    &s.condition,
+                    local_array_bindings,
+                ) || self.block_has_indirect_array_length_mutation_risk_with_locals(
+                    &s.then_block,
+                    local_array_bindings,
+                ) || s.else_branch.as_ref().is_some_and(|branch| {
+                    self.else_has_indirect_array_length_mutation_risk_with_locals(
+                        branch,
+                        local_array_bindings,
+                    )
+                })
+            }
+            Stmt::While(s) => {
+                self.expr_has_unknown_call_with_array_ident_arg_with_locals(
+                    &s.condition,
+                    local_array_bindings,
+                ) || self.block_has_indirect_array_length_mutation_risk_with_locals(
+                    &s.body,
+                    local_array_bindings,
+                )
+            }
+            Stmt::For(s) => {
+                self.expr_has_unknown_call_with_array_ident_arg_with_locals(
+                    &s.iterable,
+                    local_array_bindings,
+                ) || self.block_has_indirect_array_length_mutation_risk_with_locals(
+                    &s.body,
+                    local_array_bindings,
+                )
+            }
+            Stmt::Match(s) => {
+                self.expr_has_unknown_call_with_array_ident_arg_with_locals(
+                    &s.subject,
+                    local_array_bindings,
+                ) || s.arms.iter().any(|arm| {
+                    self.block_has_indirect_array_length_mutation_risk_with_locals(
+                        &arm.body,
+                        local_array_bindings,
+                    )
+                })
+            }
+            Stmt::Break(_) | Stmt::Continue(_) => false,
+        }
+    }
+
+    /// Invalidate len_aliases for any arrays mutated by a statement.
+    /// Catches `push(arr, ..)`, `pop(arr)`, `arr = ..` between alias and loop.
+    fn invalidate_len_aliases_for_stmt(&mut self, stmt: &Stmt) {
+        // Conservative alias-aware fallback: if this statement can indirectly
+        // affect array length facts, drop all len aliases.
+        if self.stmt_has_indirect_array_length_mutation_risk(stmt) {
+            self.len_aliases.clear();
+            return;
+        }
+
+        let affected: Vec<String> = self
+            .len_aliases
+            .iter()
+            .filter(|(_, arr)| Self::stmt_mutates_array(stmt, arr))
+            .map(|(alias, _)| alias.clone())
+            .collect();
+        for alias in affected {
+            self.len_aliases.remove(&alias);
+        }
+    }
+
+    /// Detect `while var < bound` pattern where bound == len(arr).
+    /// Returns Some((loop_var, array_name)) if elision is safe.
+    /// Requires the loop variable to be provably non-negative (lower bound)
+    /// and that body modifications preserve non-negativity.
+    fn detect_bounded_while(
+        &self,
+        condition: &Expr,
+        body: &Block,
+        len_aliases: &HashMap<String, String>,
+        non_negative_vars: &HashSet<String>,
+    ) -> Option<(String, String)> {
+        // Condition must be Binary(Ident(var), Lt, rhs)
+        let (var_name, arr_name) = match &condition.kind {
+            ExprKind::Binary(lhs, BinOp::Lt, rhs) => {
+                let var_name = if let ExprKind::Ident(name) = &lhs.kind {
+                    name.clone()
+                } else {
+                    return None;
+                };
+
+                let arr_name = match &rhs.kind {
+                    // Direct: while var < len(arr)
+                    ExprKind::Call(callee, args) => {
+                        if let ExprKind::Ident(fn_name) = &callee.kind {
+                            if fn_name == "len" && args.len() == 1 {
+                                if let ExprKind::Ident(name) = &args[0].kind {
+                                    name.clone()
+                                } else {
+                                    return None;
+                                }
+                            } else {
+                                return None;
+                            }
+                        } else {
+                            return None;
+                        }
+                    }
+                    // Indirect: while var < n where n aliases len(arr)
+                    ExprKind::Ident(bound_name) => {
+                        let arr = len_aliases.get(bound_name)?;
+                        if Self::body_reassigns_var(body, bound_name) {
+                            return None;
+                        }
+                        arr.clone()
+                    }
+                    _ => return None,
+                };
+                (var_name, arr_name)
+            }
+            _ => return None,
+        };
+
+        // Loop variable must be provably non-negative (lower bound safety)
+        if !non_negative_vars.contains(&var_name) {
+            return None;
+        }
+
+        // Body modifications must preserve non-negativity across iterations
+        if !Self::body_preserves_non_negative(body, &var_name, non_negative_vars) {
+            return None;
+        }
+
+        // Body must not mutate array length (including alias/indirect risks)
+        let local_array_bindings = HashSet::new();
+        if self
+            .block_has_indirect_array_length_mutation_risk_with_locals(body, &local_array_bindings)
+        {
+            return None;
+        }
+
+        // Body must not directly mutate/shadow the guarded array name
+        if Self::body_mutates_array(body, &arr_name) {
+            return None;
+        }
+
+        // All arr[var] accesses must precede all var modifications
+        if !Self::accesses_precede_modifications(body, &var_name, &arr_name) {
+            return None;
+        }
+
+        Some((var_name, arr_name))
+    }
+
+    /// Check that all modifications of `var_name` in the body preserve
+    /// non-negativity (e.g. `var = var + <non_neg_expr>`).
+    ///
+    /// Uses a "loop-stable" snapshot: variables modified anywhere in the body
+    /// (other than var_name itself) are excluded from non_neg_vars, because
+    /// a later reassignment (e.g. `step = -1`) would make them negative on
+    /// subsequent iterations even if they started non-negative.
+    fn body_preserves_non_negative(
+        body: &Block,
+        var_name: &str,
+        non_neg_vars: &HashSet<String>,
+    ) -> bool {
+        // Compute stable snapshot: exclude vars modified in the body
+        // (except var_name, which is the variable we're analyzing).
+        let stable: HashSet<String> = non_neg_vars
+            .iter()
+            .filter(|name| *name == var_name || !Self::body_reassigns_var(body, name))
+            .cloned()
+            .collect();
+
+        for stmt in &body.stmts {
+            if !Self::stmt_preserves_non_negative(stmt, var_name, &stable) {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn is_small_non_negative_literal(expr: &Expr, max: i64) -> bool {
+        if let ExprKind::Literal(Literal::Int(n)) = &expr.kind {
+            *n >= 0 && *n <= max
+        } else {
+            false
+        }
+    }
+
+    /// Bounded-while specific non-negativity preservation.
+    ///
+    /// Allows only wrap-safe self-updates (`+0`, `+1`, `*0`, `*1`) in addition
+    /// to the general non-negative assignment proof.
+    fn assign_preserves_non_negative_bounded_while(
+        name: &str,
+        value: &Expr,
+        non_neg_vars: &HashSet<String>,
+    ) -> bool {
+        if let ExprKind::Binary(lhs, BinOp::Add, rhs) = &value.kind {
+            if let ExprKind::Ident(lhs_name) = &lhs.kind {
+                if lhs_name == name && Self::is_small_non_negative_literal(rhs, 1) {
+                    return true;
+                }
+            }
+            if let ExprKind::Ident(rhs_name) = &rhs.kind {
+                if rhs_name == name && Self::is_small_non_negative_literal(lhs, 1) {
+                    return true;
+                }
+            }
+        }
+        if let ExprKind::Binary(lhs, BinOp::Mul, rhs) = &value.kind {
+            if let ExprKind::Ident(lhs_name) = &lhs.kind {
+                if lhs_name == name && Self::is_small_non_negative_literal(rhs, 1) {
+                    return true;
+                }
+            }
+            if let ExprKind::Ident(rhs_name) = &rhs.kind {
+                if rhs_name == name && Self::is_small_non_negative_literal(lhs, 1) {
+                    return true;
+                }
+            }
+        }
+        Self::assign_preserves_non_negative(name, value, non_neg_vars)
+    }
+
+    fn stmt_preserves_non_negative(
+        stmt: &Stmt,
+        var_name: &str,
+        non_neg_vars: &HashSet<String>,
+    ) -> bool {
+        match stmt {
+            Stmt::Assign(s) => {
+                if let ExprKind::Ident(name) = &s.target.kind {
+                    if name == var_name {
+                        return Self::assign_preserves_non_negative_bounded_while(
+                            var_name,
+                            &s.value,
+                            non_neg_vars,
+                        );
+                    }
+                }
+                true
+            }
+            Stmt::Let(s) => {
+                // Shadowing the loop var breaks our tracking
+                if s.name == var_name {
+                    return false;
+                }
+                true
+            }
+            Stmt::If(s) => {
+                Self::body_preserves_non_negative(&s.then_block, var_name, non_neg_vars)
+                    && s.else_branch.as_ref().is_none_or(|b| {
+                        Self::else_preserves_non_negative(b, var_name, non_neg_vars)
+                    })
+            }
+            Stmt::While(s) => Self::body_preserves_non_negative(&s.body, var_name, non_neg_vars),
+            Stmt::For(s) => {
+                if s.var_name == var_name {
+                    return false;
+                }
+                Self::body_preserves_non_negative(&s.body, var_name, non_neg_vars)
+            }
+            Stmt::Match(s) => s
+                .arms
+                .iter()
+                .all(|arm| Self::body_preserves_non_negative(&arm.body, var_name, non_neg_vars)),
+            Stmt::Expr(_) | Stmt::Return(_) | Stmt::Break(_) | Stmt::Continue(_) => true,
+        }
+    }
+
+    fn else_preserves_non_negative(
+        branch: &ElseBranch,
+        var_name: &str,
+        non_neg_vars: &HashSet<String>,
+    ) -> bool {
+        match branch {
+            ElseBranch::Else(block) => {
+                Self::body_preserves_non_negative(block, var_name, non_neg_vars)
+            }
+            ElseBranch::ElseIf(if_stmt) => {
+                Self::body_preserves_non_negative(&if_stmt.then_block, var_name, non_neg_vars)
+                    && if_stmt.else_branch.as_ref().is_none_or(|b| {
+                        Self::else_preserves_non_negative(b, var_name, non_neg_vars)
+                    })
+            }
+        }
+    }
+
+    /// Check if body reassigns a variable (direct assignment or shadowing let).
+    fn body_reassigns_var(body: &Block, var_name: &str) -> bool {
+        body.stmts
+            .iter()
+            .any(|s| Self::stmt_reassigns_var(s, var_name))
+    }
+
+    fn stmt_reassigns_var(stmt: &Stmt, var_name: &str) -> bool {
+        match stmt {
+            Stmt::Let(s) => {
+                if s.name == var_name {
+                    return true;
+                }
+                false
+            }
+            Stmt::Assign(s) => {
+                if let ExprKind::Ident(name) = &s.target.kind {
+                    if name == var_name {
+                        return true;
+                    }
+                }
+                false
+            }
+            Stmt::If(s) => {
+                Self::body_reassigns_var(&s.then_block, var_name)
+                    || s.else_branch
+                        .as_ref()
+                        .is_some_and(|b| Self::else_branch_reassigns_var(b, var_name))
+            }
+            Stmt::While(s) => Self::body_reassigns_var(&s.body, var_name),
+            Stmt::For(s) => Self::body_reassigns_var(&s.body, var_name),
+            Stmt::Match(s) => s
+                .arms
+                .iter()
+                .any(|arm| Self::body_reassigns_var(&arm.body, var_name)),
+            Stmt::Expr(_) | Stmt::Return(_) | Stmt::Break(_) | Stmt::Continue(_) => false,
+        }
+    }
+
+    fn else_branch_reassigns_var(branch: &ElseBranch, var_name: &str) -> bool {
+        match branch {
+            ElseBranch::Else(block) => Self::body_reassigns_var(block, var_name),
+            ElseBranch::ElseIf(if_stmt) => {
+                Self::body_reassigns_var(&if_stmt.then_block, var_name)
+                    || if_stmt
+                        .else_branch
+                        .as_ref()
+                        .is_some_and(|b| Self::else_branch_reassigns_var(b, var_name))
+            }
+        }
+    }
+
+    /// Verify that all arr[var] accesses precede all var modifications in the body.
+    /// This ensures the loop condition `var < bound` still holds at access time.
+    fn accesses_precede_modifications(body: &Block, var_name: &str, arr_name: &str) -> bool {
+        let mut var_modified = false;
+        for stmt in &body.stmts {
+            let accesses = Self::stmt_accesses_arr_with_var(stmt, arr_name, var_name);
+            let modifies = Self::stmt_modifies_var(stmt, var_name);
+            // If a single statement both accesses and modifies, be conservative
+            if accesses && modifies {
+                return false;
+            }
+            // If var was already modified and we access arr[var], unsafe
+            if var_modified && accesses {
+                return false;
+            }
+            if modifies {
+                var_modified = true;
+            }
+        }
+        true
+    }
+
+    /// Check if a statement contains an `arr[var]` index access pattern.
+    fn stmt_accesses_arr_with_var(stmt: &Stmt, arr_name: &str, var_name: &str) -> bool {
+        match stmt {
+            Stmt::Let(s) => Self::expr_accesses_arr_with_var(&s.value, arr_name, var_name),
+            Stmt::Assign(s) => {
+                Self::expr_accesses_arr_with_var(&s.target, arr_name, var_name)
+                    || Self::expr_accesses_arr_with_var(&s.value, arr_name, var_name)
+            }
+            Stmt::Expr(s) => Self::expr_accesses_arr_with_var(&s.expr, arr_name, var_name),
+            Stmt::Return(s) => Self::expr_accesses_arr_with_var(&s.value, arr_name, var_name),
+            Stmt::If(s) => {
+                Self::expr_accesses_arr_with_var(&s.condition, arr_name, var_name)
+                    || s.then_block
+                        .stmts
+                        .iter()
+                        .any(|st| Self::stmt_accesses_arr_with_var(st, arr_name, var_name))
+                    || s.else_branch.as_ref().is_some_and(|b| {
+                        Self::else_branch_accesses_arr_with_var(b, arr_name, var_name)
+                    })
+            }
+            Stmt::While(s) => {
+                Self::expr_accesses_arr_with_var(&s.condition, arr_name, var_name)
+                    || s.body
+                        .stmts
+                        .iter()
+                        .any(|st| Self::stmt_accesses_arr_with_var(st, arr_name, var_name))
+            }
+            Stmt::For(s) => {
+                Self::expr_accesses_arr_with_var(&s.iterable, arr_name, var_name)
+                    || s.body
+                        .stmts
+                        .iter()
+                        .any(|st| Self::stmt_accesses_arr_with_var(st, arr_name, var_name))
+            }
+            Stmt::Match(s) => {
+                Self::expr_accesses_arr_with_var(&s.subject, arr_name, var_name)
+                    || s.arms.iter().any(|arm| {
+                        arm.body
+                            .stmts
+                            .iter()
+                            .any(|st| Self::stmt_accesses_arr_with_var(st, arr_name, var_name))
+                    })
+            }
+            Stmt::Break(_) | Stmt::Continue(_) => false,
+        }
+    }
+
+    fn else_branch_accesses_arr_with_var(
+        branch: &ElseBranch,
+        arr_name: &str,
+        var_name: &str,
+    ) -> bool {
+        match branch {
+            ElseBranch::Else(block) => block
+                .stmts
+                .iter()
+                .any(|st| Self::stmt_accesses_arr_with_var(st, arr_name, var_name)),
+            ElseBranch::ElseIf(if_stmt) => {
+                Self::expr_accesses_arr_with_var(&if_stmt.condition, arr_name, var_name)
+                    || if_stmt
+                        .then_block
+                        .stmts
+                        .iter()
+                        .any(|st| Self::stmt_accesses_arr_with_var(st, arr_name, var_name))
+                    || if_stmt.else_branch.as_ref().is_some_and(|b| {
+                        Self::else_branch_accesses_arr_with_var(b, arr_name, var_name)
+                    })
+            }
+        }
+    }
+
+    fn expr_accesses_arr_with_var(expr: &Expr, arr_name: &str, var_name: &str) -> bool {
+        match &expr.kind {
+            ExprKind::Index(arr_expr, idx_expr) => {
+                // Check if this is arr[var]
+                let is_target = matches!(&arr_expr.kind, ExprKind::Ident(a) if a == arr_name)
+                    && matches!(&idx_expr.kind, ExprKind::Ident(v) if v == var_name);
+                if is_target {
+                    return true;
+                }
+                Self::expr_accesses_arr_with_var(arr_expr, arr_name, var_name)
+                    || Self::expr_accesses_arr_with_var(idx_expr, arr_name, var_name)
+            }
+            ExprKind::Binary(l, _, r) => {
+                Self::expr_accesses_arr_with_var(l, arr_name, var_name)
+                    || Self::expr_accesses_arr_with_var(r, arr_name, var_name)
+            }
+            ExprKind::Unary(_, inner) => {
+                Self::expr_accesses_arr_with_var(inner, arr_name, var_name)
+            }
+            ExprKind::Call(callee, args) => {
+                Self::expr_accesses_arr_with_var(callee, arr_name, var_name)
+                    || args
+                        .iter()
+                        .any(|a| Self::expr_accesses_arr_with_var(a, arr_name, var_name))
+            }
+            ExprKind::FieldAccess(obj, _) => {
+                Self::expr_accesses_arr_with_var(obj, arr_name, var_name)
+            }
+            ExprKind::MethodCall(recv, _, args) => {
+                Self::expr_accesses_arr_with_var(recv, arr_name, var_name)
+                    || args
+                        .iter()
+                        .any(|a| Self::expr_accesses_arr_with_var(a, arr_name, var_name))
+            }
+            ExprKind::StructInit(_, fields) => fields
+                .iter()
+                .any(|f| Self::expr_accesses_arr_with_var(&f.value, arr_name, var_name)),
+            ExprKind::ArrayLit(elems) | ExprKind::TupleLit(elems) => elems
+                .iter()
+                .any(|e| Self::expr_accesses_arr_with_var(e, arr_name, var_name)),
+            ExprKind::ArrayRepeat(val, count) => {
+                Self::expr_accesses_arr_with_var(val, arr_name, var_name)
+                    || Self::expr_accesses_arr_with_var(count, arr_name, var_name)
+            }
+            ExprKind::Range(s, e) | ExprKind::RangeInclusive(s, e) => {
+                Self::expr_accesses_arr_with_var(s, arr_name, var_name)
+                    || Self::expr_accesses_arr_with_var(e, arr_name, var_name)
+            }
+            ExprKind::RangeFrom(s) => Self::expr_accesses_arr_with_var(s, arr_name, var_name),
+            ExprKind::Try(inner) => Self::expr_accesses_arr_with_var(inner, arr_name, var_name),
+            ExprKind::Spawn(block) => block
+                .stmts
+                .iter()
+                .any(|st| Self::stmt_accesses_arr_with_var(st, arr_name, var_name)),
+            ExprKind::Closure(_) | ExprKind::Literal(_) | ExprKind::Ident(_) => false,
+        }
+    }
+
+    /// Check if a statement modifies the given variable (assignment or shadowing let).
+    fn stmt_modifies_var(stmt: &Stmt, var_name: &str) -> bool {
+        match stmt {
+            Stmt::Let(s) => {
+                if s.name == var_name {
+                    return true;
+                }
+                false
+            }
+            Stmt::Assign(s) => {
+                if let ExprKind::Ident(name) = &s.target.kind {
+                    if name == var_name {
+                        return true;
+                    }
+                }
+                // Recurse into nested blocks in the value expression
+                Self::expr_contains_var_modification(&s.value, var_name)
+            }
+            Stmt::If(s) => {
+                Self::body_reassigns_var(&s.then_block, var_name)
+                    || s.else_branch
+                        .as_ref()
+                        .is_some_and(|b| Self::else_branch_reassigns_var(b, var_name))
+            }
+            Stmt::While(s) => Self::body_reassigns_var(&s.body, var_name),
+            Stmt::For(s) => s.var_name == var_name || Self::body_reassigns_var(&s.body, var_name),
+            Stmt::Match(s) => s
+                .arms
+                .iter()
+                .any(|arm| Self::body_reassigns_var(&arm.body, var_name)),
+            Stmt::Expr(s) => Self::expr_contains_var_modification(&s.expr, var_name),
+            Stmt::Return(_) | Stmt::Break(_) | Stmt::Continue(_) => false,
+        }
+    }
+
+    /// Check if an expression contains statements that modify a variable
+    /// (e.g. closures or spawn blocks with assignments).
+    fn expr_contains_var_modification(expr: &Expr, var_name: &str) -> bool {
+        match &expr.kind {
+            ExprKind::Spawn(block) => Self::body_reassigns_var(block, var_name),
+            ExprKind::Closure(c) => Self::body_reassigns_var(&c.body, var_name),
+            _ => false,
+        }
+    }
+
     // ── Variable scope management ────────────────────────────
 
     fn push_scope(&mut self) {
         self.vars.push(HashMap::new());
+        self.len_alias_scopes.push(self.len_aliases.clone());
+        self.immutable_binding_scopes
+            .push(self.immutable_bindings.clone());
+        self.non_negative_scopes
+            .push(self.non_negative_vars.clone());
     }
 
     fn pop_scope(&mut self) {
         self.vars.pop();
+        if let Some(saved) = self.len_alias_scopes.pop() {
+            self.len_aliases = saved;
+        }
+        if let Some(saved) = self.immutable_binding_scopes.pop() {
+            self.immutable_bindings = saved;
+        }
+        if let Some(saved) = self.non_negative_scopes.pop() {
+            // Use intersection: a name is non-negative only if it survived
+            // BOTH the inner scope (wasn't invalidated by e.g. `i = -1`)
+            // AND was in the outer scope (isn't an inner-only `let` binding).
+            // This preserves invalidations from inner assignments to outer vars.
+            self.non_negative_vars = self
+                .non_negative_vars
+                .intersection(&saved)
+                .cloned()
+                .collect();
+        }
     }
 
     fn define_var(&mut self, name: &str, ptr: &str, llvm_ty: &str) {

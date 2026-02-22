@@ -10264,6 +10264,690 @@ fn test_bounds_check_elision_nested_loops() {
 }
 
 // ═══════════════════════════════════════════════════════════════
+//  While-loop bounds check elision
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn test_bounds_elision_while_direct_len() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let mut i: int = 0;\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   while i < len(arr) {\n\
+         \x20       sum += arr[i];\n\
+         \x20       i += 1;\n\
+         \x20   }\n\
+         \x20   print_int(sum);\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    let main_ir = extract_main_ir(&ir);
+    // Bounds check should be elided: i < len(arr) guards arr[i]
+    assert!(!main_ir.contains("call void @__yorum_bounds_check"));
+    assert!(main_ir.contains("getelementptr i64"));
+}
+
+#[test]
+fn test_bounds_elision_while_len_alias() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let n: int = len(arr);\n\
+         \x20   let mut i: int = 0;\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   while i < n {\n\
+         \x20       sum += arr[i];\n\
+         \x20       i += 1;\n\
+         \x20   }\n\
+         \x20   print_int(sum);\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    let main_ir = extract_main_ir(&ir);
+    // n == len(arr), immutable: bounds check should be elided
+    assert!(!main_ir.contains("call void @__yorum_bounds_check"));
+    assert!(main_ir.contains("getelementptr i64"));
+}
+
+#[test]
+fn test_bounds_elision_while_array_repeat() {
+    let ir = compile(
+        "fn sieve(n: int) -> int {\n\
+         \x20   let mut is_composite: [int] = [0; n];\n\
+         \x20   let p: int = 2;\n\
+         \x20   let mut j: int = p * p;\n\
+         \x20   while j < n {\n\
+         \x20       is_composite[j] = 1;\n\
+         \x20       j += p;\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n\
+         fn main() -> int { return sieve(30); }\n",
+    );
+    // Check the sieve function IR (not main)
+    let sieve_start = ir.find("@sieve(").expect("@sieve not found");
+    let sieve_rest = &ir[sieve_start..];
+    let sieve_end = sieve_rest[1..]
+        .find("\ndefine ")
+        .map(|i| i + 1)
+        .unwrap_or(sieve_rest.len());
+    let sieve_ir = &sieve_rest[..sieve_end];
+    // Overflow-safe rule: updates like `j += p` (p may be > 1) are not
+    // considered provably wrap-safe for while-elision.
+    assert!(
+        sieve_ir.contains("call void @__yorum_bounds_check"),
+        "non-unit additive step keeps bounds checks under overflow-safe rules"
+    );
+}
+
+#[test]
+fn test_bounds_elision_while_nonsequential() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3, 4, 5, 6];\n\
+         \x20   let mut j: int = 0;\n\
+         \x20   let mut sum: int = 0;\n\
+         \x20   while j < len(arr) {\n\
+         \x20       sum += arr[j];\n\
+         \x20       j += 2;\n\
+         \x20   }\n\
+         \x20   print_int(sum);\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    let main_ir = extract_main_ir(&ir);
+    // Overflow-safe rule: `j += 2` is not guaranteed wrap-safe for all i64
+    // array lengths, so bounds checks are retained.
+    assert!(main_ir.contains("call void @__yorum_bounds_check"));
+}
+
+#[test]
+fn test_bounds_no_elision_while_modify_before_access() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let mut j: int = 0;\n\
+         \x20   while j < len(arr) {\n\
+         \x20       j += 1;\n\
+         \x20       print_int(arr[j]);\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    let main_ir = extract_main_ir(&ir);
+    // j is modified before arr[j] — unsafe, bounds check must remain
+    assert!(main_ir.contains("call void @__yorum_bounds_check"));
+}
+
+#[test]
+fn test_bounds_no_elision_while_push_in_body() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let mut arr: [int] = [1, 2, 3];\n\
+         \x20   let mut i: int = 0;\n\
+         \x20   while i < len(arr) {\n\
+         \x20       push(arr, arr[i]);\n\
+         \x20       i += 1;\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    let main_ir = extract_main_ir(&ir);
+    // push(arr, ..) mutates array — bounds check must remain
+    assert!(main_ir.contains("call void @__yorum_bounds_check"));
+}
+
+#[test]
+fn test_bounds_no_elision_while_bound_reassigned() {
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let mut n: int = len(arr);\n\
+         \x20   let mut i: int = 0;\n\
+         \x20   while i < n {\n\
+         \x20       print_int(arr[i]);\n\
+         \x20       n = 999;\n\
+         \x20       i += 1;\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    let main_ir = extract_main_ir(&ir);
+    // n is mutable — should NOT be tracked as len alias, bounds check must remain
+    assert!(main_ir.contains("call void @__yorum_bounds_check"));
+}
+
+#[test]
+fn test_sieve_compiles_and_runs() {
+    let ir = compile(
+        "fn sieve_of_eratosthenes(n: int) -> [int] {\n\
+         \x20   let mut is_composite: [int] = [0; n];\n\
+         \x20   let mut p: int = 2;\n\
+         \x20   while p * p < n {\n\
+         \x20       if is_composite[p] == 0 {\n\
+         \x20           let mut j: int = p * p;\n\
+         \x20           while j < n {\n\
+         \x20               is_composite[j] = 1;\n\
+         \x20               j += p;\n\
+         \x20           }\n\
+         \x20       }\n\
+         \x20       p += 1;\n\
+         \x20   }\n\
+         \x20   let mut primes: [int] = [0; 0];\n\
+         \x20   for i in 2..n {\n\
+         \x20       if is_composite[i] == 0 {\n\
+         \x20           push(primes, i);\n\
+         \x20       }\n\
+         \x20   }\n\
+         \x20   return primes;\n\
+         }\n\
+         fn main() -> int {\n\
+         \x20   let primes: [int] = sieve_of_eratosthenes(30);\n\
+         \x20   for i in 0..len(primes) {\n\
+         \x20       print_int(primes[i]);\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    // Should compile without errors
+    assert!(ir.contains("define i64 @main("));
+    assert!(ir.contains("@sieve_of_eratosthenes("));
+}
+
+// ── While-loop elision: safety regression tests ─────────────
+
+#[test]
+fn test_bounds_no_elision_while_negative_init() {
+    // P1: negative index — var starts at -1, while var < len(arr) is true
+    // but arr[var] is out of bounds. Bounds check must NOT be elided.
+    // Test the specific case where access precedes modification with negative init.
+    let ir2 = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [10, 20, 30];\n\
+         \x20   let mut i: int = -1;\n\
+         \x20   while i < len(arr) {\n\
+         \x20       print_int(arr[i]);\n\
+         \x20       i += 1;\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    let main_ir2 = extract_main_ir(&ir2);
+    // i starts at -1: bounds check MUST remain despite access-before-modification
+    assert!(main_ir2.contains("call void @__yorum_bounds_check"));
+}
+
+#[test]
+fn test_bounds_no_elision_while_negative_increment() {
+    // P1: increment can make var negative across iterations.
+    // var starts at 5, var += -2 can eventually make it negative.
+    let ir = compile(
+        "fn helper(arr: [int]) -> int {\n\
+         \x20   let mut i: int = 5;\n\
+         \x20   while i < len(arr) {\n\
+         \x20       print_int(arr[i]);\n\
+         \x20       i += -2;\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n\
+         fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];\n\
+         \x20   return helper(arr);\n\
+         }\n",
+    );
+    let helper_start = ir.find("@helper(").expect("@helper not found");
+    let helper_rest = &ir[helper_start..];
+    let helper_end = helper_rest[1..]
+        .find("\ndefine ")
+        .map(|i| i + 1)
+        .unwrap_or(helper_rest.len());
+    let helper_ir = &helper_rest[..helper_end];
+    // -2 is negative: body doesn't preserve non-negativity, bounds check must remain
+    assert!(helper_ir.contains("call void @__yorum_bounds_check"));
+}
+
+#[test]
+fn test_bounds_no_elision_while_mul_overflow_wraps_negative() {
+    // P1: i64 arithmetic wraps in LLVM IR. Even with non-negative operands,
+    // `i = i * C` can overflow to a negative value, making `i < len(arr)` true
+    // again and causing potential OOB indexing. Bounds check must remain.
+    let ir = compile(
+        "fn check() -> int {\n\
+         \x20   let arr: [int] = [10, 20, 30];\n\
+         \x20   let mut i: int = 2;\n\
+         \x20   while i < len(arr) {\n\
+         \x20       print_int(arr[i]);\n\
+         \x20       i = i * 4611686018427387904;\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n\
+         fn main() -> int {\n\
+         \x20   return check();\n\
+         }\n",
+    );
+    let check_start = ir.find("@check(").expect("@check not found");
+    let check_rest = &ir[check_start..];
+    let check_end = check_rest[1..]
+        .find("\ndefine ")
+        .map(|i| i + 1)
+        .unwrap_or(check_rest.len());
+    let check_ir = &check_rest[..check_end];
+    assert!(
+        check_ir.contains("call void @__yorum_bounds_check"),
+        "mul-based index updates can wrap negative; bounds check must not be elided"
+    );
+}
+
+#[test]
+fn test_bounds_no_elision_while_stale_alias_after_pop() {
+    // P1: stale len alias after pop. n = len(arr), then pop(arr),
+    // then while i < n — n is now larger than actual length.
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let mut arr: [int] = [1, 2, 3, 4, 5];\n\
+         \x20   let n: int = len(arr);\n\
+         \x20   let x: int = pop(arr);\n\
+         \x20   let mut i: int = 0;\n\
+         \x20   while i < n {\n\
+         \x20       print_int(arr[i]);\n\
+         \x20       i += 1;\n\
+         \x20   }\n\
+         \x20   print_int(x);\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    let main_ir = extract_main_ir(&ir);
+    // n is stale after pop(arr) — bounds check MUST remain
+    assert!(main_ir.contains("call void @__yorum_bounds_check"));
+}
+
+#[test]
+fn test_bounds_no_elision_while_stale_alias_after_pop_via_alias() {
+    // P1: len alias invalidation must account for array aliases.
+    // `b` aliases `arr`; pop(b) mutates arr length and must invalidate `n = len(arr)`.
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let mut arr: [int] = [1, 2, 3, 4, 5];\n\
+         \x20   let b: [int] = arr;\n\
+         \x20   let n: int = len(arr);\n\
+         \x20   let x: int = pop(b);\n\
+         \x20   let mut i: int = 0;\n\
+         \x20   while i < n {\n\
+         \x20       print_int(arr[i]);\n\
+         \x20       i += 1;\n\
+         \x20   }\n\
+         \x20   print_int(x);\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    let main_ir = extract_main_ir(&ir);
+    assert!(
+        main_ir.contains("call void @__yorum_bounds_check"),
+        "pop through alias must invalidate len(arr) aliases before while elision"
+    );
+}
+
+#[test]
+fn test_bounds_no_elision_while_scope_leak() {
+    // P1: inner scope alias should not leak to outer scope.
+    // let n = len(arr1); if cond { let n = len(arr2); }
+    // Later `while i < n` should use the OUTER n (arr1), not the inner.
+    let ir = compile(
+        "fn check(arr1: [int], arr2: [int], cond: int) -> int {\n\
+         \x20   let n: int = len(arr1);\n\
+         \x20   if cond == 1 {\n\
+         \x20       let n: int = len(arr2);\n\
+         \x20       print_int(n);\n\
+         \x20   }\n\
+         \x20   let mut i: int = 0;\n\
+         \x20   while i < n {\n\
+         \x20       print_int(arr1[i]);\n\
+         \x20       i += 1;\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n\
+         fn main() -> int {\n\
+         \x20   let a: [int] = [1, 2, 3];\n\
+         \x20   let b: [int] = [4, 5];\n\
+         \x20   return check(a, b, 1);\n\
+         }\n",
+    );
+    let check_start = ir.find("@check(").expect("@check not found");
+    let check_rest = &ir[check_start..];
+    let check_end = check_rest[1..]
+        .find("\ndefine ")
+        .map(|i| i + 1)
+        .unwrap_or(check_rest.len());
+    let check_ir = &check_rest[..check_end];
+    // After the if block, n should still alias arr1 (outer scope).
+    // The inner `let n = len(arr2)` should not leak.
+    // With correct scoping, elision SHOULD work for arr1[i] with n=len(arr1).
+    assert!(
+        !check_ir.contains("call void @__yorum_bounds_check"),
+        "outer scope alias n=len(arr1) should enable elision for arr1[i]"
+    );
+}
+
+#[test]
+fn test_bounds_no_elision_while_inner_scope_negates() {
+    // non_negative_vars must not be restored on scope exit when an inner-scope
+    // assignment invalidates an outer variable.
+    let ir = compile(
+        "fn check(arr: [int], cond: int) -> int {\n\
+         \x20   let mut i: int = 0;\n\
+         \x20   if cond == 1 {\n\
+         \x20       i = -1;\n\
+         \x20   }\n\
+         \x20   while i < len(arr) {\n\
+         \x20       print_int(arr[i]);\n\
+         \x20       i += 1;\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n\
+         fn main() -> int {\n\
+         \x20   let a: [int] = [1, 2, 3];\n\
+         \x20   return check(a, 1);\n\
+         }\n",
+    );
+    let check_start = ir.find("@check(").expect("@check not found");
+    let check_rest = &ir[check_start..];
+    let check_end = check_rest[1..]
+        .find("\ndefine ")
+        .map(|i| i + 1)
+        .unwrap_or(check_rest.len());
+    let check_ir = &check_rest[..check_end];
+    // i can be -1 after the if block — bounds check MUST remain
+    assert!(
+        check_ir.contains("call void @__yorum_bounds_check"),
+        "i can be negative after if block, bounds check must not be elided"
+    );
+}
+
+#[test]
+fn test_bounds_no_elision_while_mutable_shadow_immutable() {
+    // A mutable shadow must clear the immutable marker so array-repeat
+    // alias tracking doesn't treat it as immutable.
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let n: int = 5;\n\
+         \x20   let mut n: int = 3;\n\
+         \x20   let mut arr: [int] = [0; n];\n\
+         \x20   n = 10;\n\
+         \x20   let mut i: int = 0;\n\
+         \x20   while i < n {\n\
+         \x20       print_int(arr[i]);\n\
+         \x20       i += 1;\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    let main_ir = extract_main_ir(&ir);
+    // n is mutable (shadow), so [0; n] should NOT create a len alias.
+    // After n = 10, n > len(arr), so bounds check MUST remain.
+    assert!(main_ir.contains("call void @__yorum_bounds_check"));
+}
+
+#[test]
+fn test_bounds_no_elision_while_step_becomes_negative() {
+    // body_preserves_non_negative must account for helper variables
+    // being reassigned to negative values later in the loop body.
+    let ir = compile(
+        "fn check(arr: [int]) -> int {\n\
+         \x20   let mut step: int = 1;\n\
+         \x20   let mut i: int = 0;\n\
+         \x20   while i < len(arr) {\n\
+         \x20       print_int(arr[i]);\n\
+         \x20       i += step;\n\
+         \x20       step = -1;\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n\
+         fn main() -> int {\n\
+         \x20   let a: [int] = [1, 2, 3, 4, 5];\n\
+         \x20   return check(a);\n\
+         }\n",
+    );
+    let check_start = ir.find("@check(").expect("@check not found");
+    let check_rest = &ir[check_start..];
+    let check_end = check_rest[1..]
+        .find("\ndefine ")
+        .map(|i| i + 1)
+        .unwrap_or(check_rest.len());
+    let check_ir = &check_rest[..check_end];
+    // step becomes -1 in the body — on iteration 2, i += step makes i negative
+    // while i < len(arr) is still true, causing OOB. Bounds check MUST remain.
+    assert!(
+        check_ir.contains("call void @__yorum_bounds_check"),
+        "step reassigned to -1 in body, bounds check must not be elided"
+    );
+}
+
+#[test]
+fn test_bounds_no_elision_while_closure_param_shadows_outer_len_alias() {
+    // P1: while-elision analysis must be reset before emitting deferred
+    // closure functions. Outer facts for `n = len(arr)` must not leak into
+    // closure param `n`.
+    let ir = compile(
+        "fn invoke(f: fn(int) -> int) -> int {\n\
+         \x20   return f(10);\n\
+         }\n\
+         fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let n: int = len(arr);\n\
+         \x20   let f: fn(int) -> int = |n: int| -> int {\n\
+         \x20       let mut i: int = 0;\n\
+         \x20       let mut sum: int = 0;\n\
+         \x20       while i < n {\n\
+         \x20           sum += arr[i];\n\
+         \x20           i += 1;\n\
+         \x20       }\n\
+         \x20       return sum;\n\
+         \x20   };\n\
+         \x20   return invoke(f);\n\
+         }\n",
+    );
+    let closure_start = ir
+        .find("define i64 @__closure_0(")
+        .expect("__closure_0 not found");
+    let closure_rest = &ir[closure_start..];
+    let closure_end = closure_rest[1..]
+        .find("\ndefine ")
+        .map(|i| i + 1)
+        .unwrap_or(closure_rest.len());
+    let closure_ir = &closure_rest[..closure_end];
+    assert!(
+        closure_ir.contains("call void @__yorum_bounds_check"),
+        "closure param `n` must not inherit enclosing len-alias analysis state"
+    );
+}
+
+#[test]
+fn test_bounds_no_elision_while_closure_param_shadows_outer_bounded_loop_var() {
+    // P1: bounded-loop facts (`i < len(arr)`) must not leak into
+    // separately emitted closure functions.
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let mut i: int = 0;\n\
+         \x20   while i < len(arr) {\n\
+         \x20       let f: fn(int) -> int = |i: int| -> int {\n\
+         \x20           let arr: [int] = [10, 20, 30];\n\
+         \x20           return arr[i];\n\
+         \x20       };\n\
+         \x20       print_int(f(10));\n\
+         \x20       i += 1;\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    let closure_start = ir
+        .find("define i64 @__closure_0(")
+        .expect("__closure_0 not found");
+    let closure_rest = &ir[closure_start..];
+    let closure_end = closure_rest[1..]
+        .find("\ndefine ")
+        .map(|i| i + 1)
+        .unwrap_or(closure_rest.len());
+    let closure_ir = &closure_rest[..closure_end];
+    assert!(
+        closure_ir.contains("call void @__yorum_bounds_check"),
+        "closure param/local names must not inherit enclosing bounded-loop analysis state"
+    );
+}
+
+#[test]
+fn test_bounds_no_elision_while_spawn_local_shadows_outer_bounded_loop_var() {
+    // P1: bounded-loop facts (`i < len(arr)`) must not leak into
+    // separately emitted spawn wrapper functions.
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let arr: [int] = [1, 2, 3];\n\
+         \x20   let mut i: int = 0;\n\
+         \x20   while i < len(arr) {\n\
+         \x20       let t: Task<int> = spawn {\n\
+         \x20           let i: int = len(arr);\n\
+         \x20           let x: int = arr[i];\n\
+         \x20           return x;\n\
+         \x20       };\n\
+         \x20       let r: int = t.join();\n\
+         \x20       print_int(r);\n\
+         \x20       i += 1;\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    let spawn_start = ir
+        .find("define ptr @__spawn_0(")
+        .expect("__spawn_0 not found");
+    let spawn_rest = &ir[spawn_start..];
+    let spawn_end = spawn_rest[1..]
+        .find("\ndefine ")
+        .map(|i| i + 1)
+        .unwrap_or(spawn_rest.len());
+    let spawn_ir = &spawn_rest[..spawn_end];
+    assert!(
+        spawn_ir.contains("call void @__yorum_bounds_check"),
+        "spawn wrapper locals must not inherit enclosing bounded-loop analysis state"
+    );
+}
+
+#[test]
+fn test_bounds_no_elision_while_clear_in_body() {
+    // P1: clear() mutates array length, so while-body accesses must keep
+    // bounds checks even when condition is `i < len(arr)`.
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let mut arr: [int] = [1, 2, 3];\n\
+         \x20   let mut i: int = 0;\n\
+         \x20   while i < len(arr) {\n\
+         \x20       arr.clear();\n\
+         \x20       print_int(arr[i]);\n\
+         \x20       i += 1;\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    let main_ir = extract_main_ir(&ir);
+    assert!(main_ir.contains("call void @__yorum_bounds_check"));
+}
+
+#[test]
+fn test_bounds_no_elision_while_stale_len_alias_after_clear() {
+    // P1: clear() before the loop invalidates `n = len(arr)` aliases.
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let mut arr: [int] = [1, 2, 3];\n\
+         \x20   let n: int = len(arr);\n\
+         \x20   arr.clear();\n\
+         \x20   let mut i: int = 0;\n\
+         \x20   while i < n {\n\
+         \x20       print_int(arr[i]);\n\
+         \x20       i += 1;\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    let main_ir = extract_main_ir(&ir);
+    assert!(main_ir.contains("call void @__yorum_bounds_check"));
+}
+
+#[test]
+fn test_bounds_no_elision_while_body_alias_rebind() {
+    // P1: `b` aliases `arr`; rebinding `b` in the loop body can change
+    // the effective length seen by `arr[i]` in this backend.
+    // Bounds checks must remain.
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let mut arr: [int] = [1, 2, 3];\n\
+         \x20   let mut b: [int] = arr;\n\
+         \x20   let mut i: int = 2;\n\
+         \x20   while i < len(arr) {\n\
+         \x20       b = [9];\n\
+         \x20       print_int(arr[i]);\n\
+         \x20       i += 1;\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    let main_ir = extract_main_ir(&ir);
+    assert!(
+        main_ir.contains("call void @__yorum_bounds_check"),
+        "alias rebind in while body must block bounds-check elision"
+    );
+}
+
+#[test]
+fn test_bounds_no_elision_while_body_local_alias_rebind() {
+    // P1: loop-local alias declarations are not available in self.vars when
+    // detect_bounded_while scans the body, so alias rebinds must still block
+    // while-loop bounds-check elision.
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let mut arr: [int] = [1, 2, 3];\n\
+         \x20   let mut i: int = 2;\n\
+         \x20   while i < len(arr) {\n\
+         \x20       let mut b: [int] = arr;\n\
+         \x20       b = [9];\n\
+         \x20       print_int(arr[i]);\n\
+         \x20       i += 1;\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    let main_ir = extract_main_ir(&ir);
+    assert!(
+        main_ir.contains("call void @__yorum_bounds_check"),
+        "loop-local alias rebind in while body must block bounds-check elision"
+    );
+}
+
+#[test]
+fn test_bounds_no_elision_while_stale_len_alias_after_alias_rebind() {
+    // P1: `n = len(arr)` becomes stale if `arr` is rebound through alias `b`
+    // before the loop. Bounds checks must remain for `arr[i]`.
+    let ir = compile(
+        "fn main() -> int {\n\
+         \x20   let mut arr: [int] = [1, 2, 3];\n\
+         \x20   let n: int = len(arr);\n\
+         \x20   let mut b: [int] = arr;\n\
+         \x20   b = [9];\n\
+         \x20   let mut i: int = 0;\n\
+         \x20   while i < n {\n\
+         \x20       print_int(arr[i]);\n\
+         \x20       i += 1;\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    let main_ir = extract_main_ir(&ir);
+    assert!(
+        main_ir.contains("call void @__yorum_bounds_check"),
+        "alias rebind before while must invalidate len(arr) aliases"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════
 //  Phase 1: clear(), sum(), count()
 // ═══════════════════════════════════════════════════════════════
 

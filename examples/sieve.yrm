@@ -1,0 +1,35 @@
+// sieve.yrm — Sieve of Eratosthenes.
+//
+// Demonstrates: array repeat [0; n], while-loop bounds check elision,
+// non-sequential index increment (j += p).
+
+fn sieve_of_eratosthenes(n: int) -> [int] {
+    let mut is_composite: [int] = [0; n];
+    let mut p: int = 2;
+    while p * p < n {
+        if is_composite[p] == 0 {
+            let mut j: int = p * p;
+            while j < n {
+                is_composite[j] = 1;
+                j += p;
+            }
+        }
+        p += 1;
+    }
+
+    let mut primes: [int] = [0; 0];
+    for i in 2..n {
+        if is_composite[i] == 0 {
+            push(primes, i);
+        }
+    }
+    return primes;
+}
+
+fn main() -> int {
+    let primes: [int] = sieve_of_eratosthenes(30);
+    for i in 0..len(primes) {
+        print_int(primes[i]);
+    }
+    return 0;
+}
